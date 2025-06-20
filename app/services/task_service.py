@@ -105,7 +105,7 @@ class TaskService:
             # Create activity log (optional, can comment out if causing issues)
             try:
                 activity_doc = {
-                    "lead_object_id": lead["_id"],
+                    "lead_object_id": lead["lead_id"],
                     "activity_type": "task_created",
                     "description": f"Task '{task_data.task_title}' created",
                     "created_by": ObjectId(created_by),

@@ -6,7 +6,7 @@ import time
 
 from .config.settings import settings
 from .config.database import connect_to_mongo, close_mongo_connection
-from .routers import auth, leads, tasks
+from .routers import auth, leads, tasks, notes  # ✅ Added notes import
 
 # Configure logging
 logging.basicConfig(
@@ -34,7 +34,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.app_name,
     version=settings.version,
-    description="LeadG CRM - Customer Relationship Management API",
+    description="LeadG CRM - Customer Relationship Management API with Notes Module",
     lifespan=lifespan,
     docs_url="/docs" if settings.debug else None,
     redoc_url="/redoc" if settings.debug else None,
@@ -70,7 +70,8 @@ async def health_check():
     return {
         "status": "healthy",
         "message": "LeadG CRM API is running",
-        "version": settings.version
+        "version": settings.version,
+        "modules": ["auth", "leads", "tasks", "notes"]  # ✅ Added notes
     }
 
 # Root endpoint
@@ -78,13 +79,14 @@ async def health_check():
 async def root():
     """Root endpoint"""
     return {
-        "message": "Welcome to LeadG CRM API",
+        "message": "Welcome to LeadG CRM API with Notes Module",
         "version": settings.version,
         "docs": "/docs" if settings.debug else "Docs disabled in production",
         "endpoints": {
             "auth": "/api/v1/auth",
             "leads": "/api/v1/leads",
             "tasks": "/api/v1/tasks",
+            "notes": "/api/v1/notes",  # ✅ Added notes endpoint
             "health": "/health"
         }
     }
@@ -106,6 +108,13 @@ app.include_router(
     tasks.router,
     prefix="/api/v1/tasks",
     tags=["Tasks"]
+)
+
+# ✅ NEW: Include notes router
+app.include_router(
+    notes.router,
+    prefix="/api/v1/notes",
+    tags=["Notes"]
 )
 
 if __name__ == "__main__":
