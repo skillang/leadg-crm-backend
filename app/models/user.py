@@ -1,5 +1,7 @@
+# app/models/user.py - Updated with Assigned Leads Array
+
 from pydantic import BaseModel, EmailStr, Field, validator
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 from enum import Enum
 
@@ -63,6 +65,9 @@ class UserResponse(BaseModel):
     department: Optional[str] = None
     created_at: datetime
     last_login: Optional[datetime] = None
+    # ✅ NEW: Include assigned leads info in response
+    assigned_leads: List[str] = Field(default_factory=list, description="Array of assigned lead IDs")
+    total_assigned_leads: int = Field(default=0, description="Quick count of assigned leads")
 
     class Config:
         from_attributes = True
@@ -78,6 +83,9 @@ class UserInDB(UserBase):
     login_count: int = 0
     failed_login_attempts: int = 0
     locked_until: Optional[datetime] = None
+    # ✅ NEW: Assigned leads array for fast lookups
+    assigned_leads: List[str] = Field(default_factory=list, description="Array of assigned lead IDs (e.g., ['LD-1000', 'LD-1001'])")
+    total_assigned_leads: int = Field(default=0, description="Quick count of assigned leads")
 
     class Config:
         from_attributes = True
