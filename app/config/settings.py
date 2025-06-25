@@ -16,9 +16,17 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 7
     
-    # Database
-    mongodb_url: str = "mongodb://localhost:27017"
+    # 🔥 UPDATED: MongoDB Atlas Configuration
+    mongodb_url: str = "mongodb+srv://username:password@cluster.mongodb.net/database?retryWrites=true&w=majority"
     database_name: str = "leadg_crm"
+    
+    # 🔥 NEW: MongoDB Atlas Connection Options
+    mongodb_max_pool_size: int = 10
+    mongodb_min_pool_size: int = 1
+    mongodb_max_idle_time_ms: int = 30000
+    mongodb_server_selection_timeout_ms: int = 5000
+    mongodb_connect_timeout_ms: int = 10000
+    mongodb_socket_timeout_ms: int = 10000
     
     # Rate Limiting
     rate_limit_requests: int = 100
@@ -36,6 +44,14 @@ class Settings(BaseSettings):
             self.secret_key = os.getenv("SECRET_KEY")
         if os.getenv("DEBUG"):
             self.debug = os.getenv("DEBUG").lower() == "true"
+        
+        # 🔥 NEW: Atlas-specific environment variable handling
+        if os.getenv("MONGODB_URL"):
+            self.mongodb_url = os.getenv("MONGODB_URL")
+        if os.getenv("DATABASE_NAME"):
+            self.database_name = os.getenv("DATABASE_NAME")
+        if os.getenv("MONGODB_MAX_POOL_SIZE"):
+            self.mongodb_max_pool_size = int(os.getenv("MONGODB_MAX_POOL_SIZE"))
     
     def get_allowed_origins(self) -> List[str]:
         """Get allowed origins from env or default"""
@@ -45,6 +61,23 @@ class Settings(BaseSettings):
         except:
             # Fallback: split by comma if not JSON
             return [origin.strip() for origin in origins_str.split(",")]
+    
+    def get_mongodb_connection_options(self) -> dict:
+        """Get MongoDB Atlas connection options"""
+        return {
+            "maxPoolSize": self.mongodb_max_pool_size,
+            "minPoolSize": self.mongodb_min_pool_size,
+            "maxIdleTimeMS": self.mongodb_max_idle_time_ms,
+            "serverSelectionTimeoutMS": self.mongodb_server_selection_timeout_ms,
+            "connectTimeoutMS": self.mongodb_connect_timeout_ms,
+            "socketTimeoutMS": self.mongodb_socket_timeout_ms,
+            "retryWrites": True,
+            "w": "majority"
+        }
+    
+    def is_atlas_connection(self) -> bool:
+        """Check if using MongoDB Atlas"""
+        return "mongodb+srv://" in self.mongodb_url or "mongodb.net" in self.mongodb_url
 
 # Global settings instance
 settings = Settings()
