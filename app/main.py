@@ -6,7 +6,7 @@ import time
 
 from .config.settings import settings
 from .config.database import connect_to_mongo, close_mongo_connection
-from .routers import auth, leads, tasks, notes  # ✅ Added notes import
+from .routers import auth, leads, tasks, notes, documents  # ✅ Added documents import
 
 # Configure logging
 logging.basicConfig(
@@ -21,6 +21,10 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("🚀 Starting LeadG CRM API...")
     await connect_to_mongo()
+    
+    # ✅ OPTIONAL: Create indexes programmatically on startup
+    await create_database_indexes()
+    
     logger.info("✅ Application startup complete")
     
     yield
@@ -30,11 +34,49 @@ async def lifespan(app: FastAPI):
     await close_mongo_connection()
     logger.info("✅ Application shutdown complete")
 
+async def create_database_indexes():
+    """Create database indexes for optimal performance"""
+    try:
+        from .config.database import get_database
+        db = get_database()
+        
+        logger.info("📊 Creating database indexes...")
+        
+        # Documents indexes
+        await db.lead_documents.create_index([("lead_id", 1), ("uploaded_at", -1)])
+        await db.lead_documents.create_index([("uploaded_by", 1), ("uploaded_at", -1)])
+        await db.lead_documents.create_index([("status", 1), ("document_type", 1)])
+        await db.lead_documents.create_index([("is_active", 1)])
+        
+        # Lead activities indexes (if not already created)
+        await db.lead_activities.create_index([("lead_id", 1), ("created_at", -1)])
+        await db.lead_activities.create_index([("activity_type", 1), ("created_at", -1)])
+        
+        # Tasks indexes (if not already created)
+        await db.lead_tasks.create_index([("lead_id", 1), ("created_at", -1)])
+        await db.lead_tasks.create_index([("assigned_to", 1), ("due_datetime", 1)])
+        await db.lead_tasks.create_index([("status", 1)])
+        
+        # Leads indexes (if not already created)
+        await db.leads.create_index([("lead_id", 1)], unique=True)  # Unique lead_id
+        await db.leads.create_index([("assigned_to", 1), ("status", 1)])
+        await db.leads.create_index([("created_at", -1)])
+        
+        # Notes indexes (if you have notes)
+        await db.lead_notes.create_index([("lead_id", 1), ("created_at", -1)])
+        await db.lead_notes.create_index([("tags", 1)])
+        
+        logger.info("✅ Database indexes created successfully")
+        
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to create some indexes: {e}")
+        # Don't fail startup if index creation fails
+
 # Create FastAPI application
 app = FastAPI(
     title=settings.app_name,
     version=settings.version,
-    description="LeadG CRM - Customer Relationship Management API with Notes Module",
+    description="LeadG CRM - Customer Relationship Management API with Documents Module",  # ✅ Updated description
     lifespan=lifespan,
     docs_url="/docs" if settings.debug else None,
     redoc_url="/redoc" if settings.debug else None,
@@ -71,7 +113,7 @@ async def health_check():
         "status": "healthy",
         "message": "LeadG CRM API is running",
         "version": settings.version,
-        "modules": ["auth", "leads", "tasks", "notes"]  # ✅ Added notes
+        "modules": ["auth", "leads", "tasks", "notes", "documents"]  # ✅ Added documents
     }
 
 # Root endpoint
@@ -79,14 +121,15 @@ async def health_check():
 async def root():
     """Root endpoint"""
     return {
-        "message": "Welcome to LeadG CRM API with Notes Module",
+        "message": "Welcome to LeadG CRM API with Documents Module",  # ✅ Updated message
         "version": settings.version,
         "docs": "/docs" if settings.debug else "Docs disabled in production",
         "endpoints": {
             "auth": "/api/v1/auth",
             "leads": "/api/v1/leads",
             "tasks": "/api/v1/tasks",
-            "notes": "/api/v1/notes",  # ✅ Added notes endpoint
+            "notes": "/api/v1/notes",
+            "documents": "/api/v1/documents",  # ✅ Added documents endpoint
             "health": "/health"
         }
     }
@@ -110,11 +153,17 @@ app.include_router(
     tags=["Tasks"]
 )
 
-# ✅ NEW: Include notes router
 app.include_router(
     notes.router,
     prefix="/api/v1/notes",
     tags=["Notes"]
+)
+
+# ✅ NEW: Include documents router
+app.include_router(
+    documents.router,
+    prefix="/api/v1/documents",
+    tags=["Documents"]
 )
 
 if __name__ == "__main__":
