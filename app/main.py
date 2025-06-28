@@ -7,6 +7,7 @@ import time
 from .config.settings import settings
 from .config.database import connect_to_mongo, close_mongo_connection
 from .routers import auth, leads, tasks, notes, documents  # ✅ Added documents import
+from app.routers import timeline
 
 # Configure logging
 logging.basicConfig(
@@ -165,6 +166,11 @@ app.include_router(
     prefix="/api/v1/documents",
     tags=["Documents"]
 )
+app.include_router(
+    timeline.router,
+    prefix="/api/v1",
+    tags=["timeline"]
+    )
 
 if __name__ == "__main__":
     import uvicorn
