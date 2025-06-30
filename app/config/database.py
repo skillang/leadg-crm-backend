@@ -138,6 +138,23 @@ async def create_indexes():
             IndexModel([("created_at", ASCENDING)]),
         ])
         
+        # 🔗 NEW: Contacts collection indexes
+        contacts_collection = db.database.lead_contacts
+        await contacts_collection.create_indexes([
+            IndexModel([("lead_id", ASCENDING)]),
+            IndexModel([("created_by", ASCENDING)]),
+            IndexModel([("is_primary", ASCENDING)]),
+            IndexModel([("email", ASCENDING)]),
+            IndexModel([("role", ASCENDING)]),
+            IndexModel([("relationship", ASCENDING)]),
+            IndexModel([("created_at", ASCENDING)]),
+            IndexModel([("linked_leads", ASCENDING)]),  # For linked leads functionality
+            # Compound indexes for better query performance
+            IndexModel([("lead_id", ASCENDING), ("is_primary", ASCENDING)]),
+            IndexModel([("lead_id", ASCENDING), ("role", ASCENDING)]),
+            IndexModel([("lead_id", ASCENDING), ("created_at", ASCENDING)]),
+        ])
+        
         # Token blacklist for logout functionality
         token_blacklist = db.database.token_blacklist
         await token_blacklist.create_indexes([

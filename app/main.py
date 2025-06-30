@@ -4,10 +4,12 @@ from contextlib import asynccontextmanager
 import logging
 import time
 
+
 from .config.settings import settings
 from .config.database import connect_to_mongo, close_mongo_connection
 from .routers import auth, leads, tasks, notes, documents  # ✅ Added documents import
 from app.routers import timeline
+from app.routers import contacts  # Add this import
 
 # Configure logging
 logging.basicConfig(
@@ -171,6 +173,13 @@ app.include_router(
     prefix="/api/v1",
     tags=["timeline"]
     )
+app.include_router(
+    contacts.router,
+    prefix="/api/v1/contacts",
+    tags=["Contacts"]
+    )
+
+
 
 if __name__ == "__main__":
     import uvicorn
