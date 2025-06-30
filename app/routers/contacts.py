@@ -17,8 +17,8 @@ from app.utils.dependencies import get_current_user
 
 logger = logging.getLogger(__name__)
 
-# Create router without prefix (prefix will be added in main.py)
-router = APIRouter(tags=["contacts"])
+# Create router without tags (tags will be added in main.py)
+router = APIRouter()
 
 # =====================================================================
 # CONTACT CRUD OPERATIONS (All Existing Services Preserved)
