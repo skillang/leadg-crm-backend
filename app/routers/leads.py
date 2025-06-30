@@ -564,12 +564,11 @@ async def create_lead(
         )
 
 
-
 @router.get("/", response_model=LeadListResponse)
 async def get_leads(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
-    status: Optional[LeadStatus] = Query(None),
+    lead_status: Optional[LeadStatus] = Query(None),  # ✅ FIXED: Changed from 'status' to 'lead_status'
     assigned_to: Optional[str] = Query(None),
     source: Optional[LeadSource] = Query(None),
     course_level: Optional[CourseLevel] = Query(None),
@@ -590,9 +589,34 @@ async def get_leads(
         if current_user["role"] != "admin":
             query["assigned_to"] = current_user["email"]
         
-        # Apply filters
-        if status:
-            query["status"] = status
+        # Apply filters - ✅ FIXED: Use lead_status instead of status
+        if lead_status:
+            query["status"] = lead_status
+        if assigned_to:
+            query["assigned_to"] = assigned_to
+        if source:
+            query["source"] = source
+        if course_level:
+            query["course_level"] = course_level
+        if country:
+            query["country"] = country
+            
+        # Date filters
+        if created_from or created_to:
+            date_filter = {}
+            if created_from:
+                try:
+                    date_filter["$gte"] = datetime.fromisoformat(created_from.replace('Z', '+00:00'))
+                except ValueError:
+                    pass
+            if created_to:
+                try:
+                    date_filter["$lte"] = datetime.fromisoformat(created_to.replace('Z', '+00:00'))
+                except ValueError:
+                    pass
+            if date_filter:
+                query["created_at"] = date_filter
+                
         if search:
             query["$or"] = [
                 {"name": {"$regex": search, "$options": "i"}},
@@ -605,10 +629,59 @@ async def get_leads(
         
         leads = await db.leads.find(query).skip(skip).limit(limit).sort("created_at", -1).to_list(None)
         
-        # Fix ObjectId serialization
+        # 🔧 FIX: ObjectId serialization and Pydantic validation issues
         for lead in leads:
             lead["id"] = str(lead["_id"])
             lead["created_by"] = str(lead.get("created_by", ""))
+            
+            # 🔧 FIX 1: Handle stage enum mismatch
+            if lead.get("stage") == "open":
+                lead["stage"] = "initial"  # Map 'open' to valid enum value
+            elif lead.get("stage") not in ["initial", "contacted", "qualified", "proposal", "negotiation", "closed", "lost"]:
+                lead["stage"] = "initial"  # Default fallback
+            
+            # 🔧 FIX 2: Add missing created_by_name field
+            created_by_id = lead.get("created_by")
+            if created_by_id:
+                try:
+                    user_info = await db.users.find_one({"_id": ObjectId(created_by_id)})
+                    if user_info:
+                        lead["created_by_name"] = f"{user_info.get('first_name', '')} {user_info.get('last_name', '')}".strip()
+                        if not lead["created_by_name"]:
+                            lead["created_by_name"] = user_info.get('email', 'Unknown User')
+                    else:
+                        lead["created_by_name"] = "Unknown User"
+                except:
+                    lead["created_by_name"] = "Unknown User"
+            else:
+                lead["created_by_name"] = "Unknown User"
+            
+            # 🔧 FIX 3: Add assigned_to_name if missing
+            if "assigned_to_name" not in lead and lead.get("assigned_to"):
+                try:
+                    assigned_user = await db.users.find_one({"email": lead["assigned_to"]})
+                    if assigned_user:
+                        lead["assigned_to_name"] = f"{assigned_user.get('first_name', '')} {assigned_user.get('last_name', '')}".strip()
+                        if not lead["assigned_to_name"]:
+                            lead["assigned_to_name"] = assigned_user.get('email', 'Unknown')
+                    else:
+                        lead["assigned_to_name"] = lead["assigned_to"]
+                except:
+                    lead["assigned_to_name"] = lead.get("assigned_to", "")
+            
+            # 🔧 FIX 4: Ensure required fields have defaults
+            if "phone" not in lead:
+                lead["phone"] = lead.get("contact_number", "")
+            if "course_level" not in lead:
+                lead["course_level"] = None
+            if "source" not in lead:
+                lead["source"] = None
+            if "country" not in lead:
+                lead["country"] = ""
+            if "notes" not in lead:
+                lead["notes"] = ""
+            if "status" not in lead:
+                lead["status"] = "new"
         
         return LeadListResponse(
             leads=leads,
@@ -621,6 +694,7 @@ async def get_leads(
         
     except Exception as e:
         logger.error(f"Get leads error: {e}")
+        # ✅ FIXED: Now 'status' refers to the imported FastAPI status module
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve leads"
@@ -630,7 +704,7 @@ async def get_leads(
 async def get_my_leads(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
-    status: Optional[LeadStatus] = Query(None),
+    lead_status: Optional[LeadStatus] = Query(None),  # ✅ FIXED: Changed from 'status' to 'lead_status'
     search: Optional[str] = Query(None),
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):
@@ -641,8 +715,9 @@ async def get_my_leads(
         db = get_database()
         query = {"assigned_to": current_user["email"]}
         
-        if status:
-            query["status"] = status
+        # ✅ FIXED: Use lead_status instead of status
+        if lead_status:
+            query["status"] = lead_status
         if search:
             query["$or"] = [
                 {"name": {"$regex": search, "$options": "i"}},
@@ -655,11 +730,37 @@ async def get_my_leads(
         
         leads = await db.leads.find(query).skip(skip).limit(limit).sort("created_at", -1).to_list(None)
         
-        # Fix ObjectId serialization
+        # 🔧 FIX: ObjectId serialization and Pydantic validation issues
         for lead in leads:
             lead["id"] = str(lead["_id"])
             lead["created_by"] = str(lead.get("created_by", ""))
             lead["assigned_to_name"] = f"{current_user.get('first_name', '')} {current_user.get('last_name', '')}".strip()
+            
+            # 🔧 FIX 1: Handle stage enum mismatch
+            if lead.get("stage") == "open":
+                lead["stage"] = "initial"  # Map 'open' to valid enum value
+            elif lead.get("stage") not in ["initial", "contacted", "qualified", "proposal", "negotiation", "closed", "lost"]:
+                lead["stage"] = "initial"  # Default fallback
+            
+            # 🔧 FIX 2: Add missing created_by_name field
+            created_by_id = lead.get("created_by")
+            if created_by_id:
+                try:
+                    user_info = await db.users.find_one({"_id": ObjectId(created_by_id)})
+                    if user_info:
+                        lead["created_by_name"] = f"{user_info.get('first_name', '')} {user_info.get('last_name', '')}".strip()
+                        if not lead["created_by_name"]:
+                            lead["created_by_name"] = user_info.get('email', 'Unknown User')
+                    else:
+                        lead["created_by_name"] = "Unknown User"
+                except:
+                    lead["created_by_name"] = "Unknown User"
+            else:
+                lead["created_by_name"] = "Unknown User"
+            
+            # Ensure assigned_to_name has a fallback
+            if not lead["assigned_to_name"]:
+                lead["assigned_to_name"] = current_user.get('email', 'Unknown')
         
         return LeadListResponse(
             leads=leads,
@@ -672,10 +773,12 @@ async def get_my_leads(
         
     except Exception as e:
         logger.error(f"Get my leads error: {e}")
+        # ✅ FIXED: Now 'status' refers to the imported FastAPI status module
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve your leads"
         )
+
 
 @router.get("/stats", response_model=LeadStatsResponse)
 async def get_lead_stats(
