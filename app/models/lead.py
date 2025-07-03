@@ -256,3 +256,16 @@ class LeadStatusUpdate(BaseModel):
     """Lead status update model"""
     status: LeadStatus
     notes: Optional[str] = Field(None, max_length=500)
+
+
+class LeadBulkCreate(BaseModel):
+    """Bulk lead creation model"""
+    leads: List[LeadCreateComprehensive]
+    force_create: bool = False
+
+class LeadBulkCreateResponse(BaseModel):
+    """Bulk lead creation response"""
+    success: bool
+    message: str
+    summary: Dict[str, Any]
+    results: List[Dict[str, Any]]

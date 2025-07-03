@@ -1,19 +1,19 @@
+# app/main.py - Updated with Smartflo Test Router
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
 import time
 
-
 from .config.settings import settings
 from .config.database import connect_to_mongo, close_mongo_connection
-from .routers import auth, leads, tasks, notes, documents  # ✅ Added documents import
-from app.routers import timeline
-from app.routers import contacts  # Add this import
+from .routers import auth, leads, tasks, notes, documents, timeline, contacts
+# # 🚀 NEW: Import Smartflo test router
+# from .routers import smartflo_test
 
 # Configure logging
 logging.basicConfig(
-    level=logging.DEBUG,  # Changed to DEBUG for more details
+    level=logging.DEBUG,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
@@ -22,11 +22,19 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     # Startup
-    logger.info("🚀 Starting LeadG CRM API...")
+    logger.info("🚀 Starting LeadG CRM API with Smartflo Integration...")
     await connect_to_mongo()
     
     # ✅ OPTIONAL: Create indexes programmatically on startup
     await create_database_indexes()
+    
+    # 🚀 NEW: Log Smartflo configuration status on startup
+    if settings.is_smartflo_configured():
+        logger.info("📞 Smartflo integration is CONFIGURED and ENABLED")
+        logger.info(f"📞 Smartflo API URL: {settings.smartflo_api_base_url}")
+    else:
+        logger.warning("⚠️ Smartflo integration is NOT properly configured")
+        logger.warning("⚠️ User registration will work but without calling features")
     
     logger.info("✅ Application startup complete")
     
@@ -45,6 +53,12 @@ async def create_database_indexes():
         
         logger.info("📊 Creating database indexes...")
         
+        # 🚀 NEW: Smartflo-related indexes for users collection
+        await db.users.create_index([("extension_number", 1)])
+        await db.users.create_index([("smartflo_agent_id", 1)])
+        await db.users.create_index([("calling_status", 1)])
+        await db.users.create_index([("can_make_calls", 1)])
+        
         # Documents indexes
         await db.lead_documents.create_index([("lead_id", 1), ("uploaded_at", -1)])
         await db.lead_documents.create_index([("uploaded_by", 1), ("uploaded_at", -1)])
@@ -61,7 +75,7 @@ async def create_database_indexes():
         await db.lead_tasks.create_index([("status", 1)])
         
         # Leads indexes (if not already created)
-        await db.leads.create_index([("lead_id", 1)], unique=True)  # Unique lead_id
+        await db.leads.create_index([("lead_id", 1)], unique=True)
         await db.leads.create_index([("assigned_to", 1), ("status", 1)])
         await db.leads.create_index([("created_at", -1)])
         
@@ -69,17 +83,22 @@ async def create_database_indexes():
         await db.lead_notes.create_index([("lead_id", 1), ("created_at", -1)])
         await db.lead_notes.create_index([("tags", 1)])
         
+        # Contacts indexes
+        await db.lead_contacts.create_index([("lead_id", 1)])
+        await db.lead_contacts.create_index([("created_by", 1)])
+        await db.lead_contacts.create_index([("is_primary", 1)])
+        await db.lead_contacts.create_index([("email", 1)])
+        
         logger.info("✅ Database indexes created successfully")
         
     except Exception as e:
         logger.warning(f"⚠️ Failed to create some indexes: {e}")
-        # Don't fail startup if index creation fails
 
 # Create FastAPI application
 app = FastAPI(
     title=settings.app_name,
     version=settings.version,
-    description="LeadG CRM - Customer Relationship Management API with Documents Module",  # ✅ Updated description
+    description="LeadG CRM - Customer Relationship Management API with Smartflo Calling Integration",
     lifespan=lifespan,
     docs_url="/docs" if settings.debug else None,
     redoc_url="/redoc" if settings.debug else None,
@@ -114,9 +133,13 @@ async def health_check():
     """Health check endpoint"""
     return {
         "status": "healthy",
-        "message": "LeadG CRM API is running",
+        "message": "LeadG CRM API is running with Smartflo Integration",
         "version": settings.version,
-        "modules": ["auth", "leads", "tasks", "notes", "documents"]  # ✅ Added documents
+        "modules": ["auth", "leads", "tasks", "notes", "documents", "timeline", "contacts"],
+        "smartflo": {
+            "enabled": settings.smartflo_enabled,
+            "configured": settings.is_smartflo_configured()
+        }
     }
 
 # Root endpoint
@@ -124,7 +147,7 @@ async def health_check():
 async def root():
     """Root endpoint"""
     return {
-        "message": "Welcome to LeadG CRM API with Documents Module",  # ✅ Updated message
+        "message": "Welcome to LeadG CRM API with Smartflo Calling Integration",
         "version": settings.version,
         "docs": "/docs" if settings.debug else "Docs disabled in production",
         "endpoints": {
@@ -132,8 +155,15 @@ async def root():
             "leads": "/api/v1/leads",
             "tasks": "/api/v1/tasks",
             "notes": "/api/v1/notes",
-            "documents": "/api/v1/documents",  # ✅ Added documents endpoint
+            "documents": "/api/v1/documents",
+            "timeline": "/api/v1",
+            "contacts": "/api/v1/contacts",
+            "smartflo_test": "/api/v1/smartflo-test",  # 🚀 NEW
             "health": "/health"
+        },
+        "smartflo": {
+            "integration": "enabled" if settings.is_smartflo_configured() else "not_configured",
+            "status": "Users will get automatic calling setup" if settings.is_smartflo_configured() else "Manual configuration required"
         }
     }
 
@@ -162,24 +192,30 @@ app.include_router(
     tags=["Notes"]
 )
 
-# ✅ NEW: Include documents router
 app.include_router(
     documents.router,
     prefix="/api/v1/documents",
     tags=["Documents"]
 )
+
 app.include_router(
     timeline.router,
     prefix="/api/v1",
-    tags=["timeline"]
-    )
+    tags=["Timeline"]
+)
+
 app.include_router(
     contacts.router,
     prefix="/api/v1/contacts",
     tags=["Contacts"]
-    )
+)
 
-
+# # 🚀 NEW: Include Smartflo test router
+# app.include_router(
+#     smartflo_test.router,
+#     prefix="/api/v1",
+#     tags=["Smartflo Testing"]
+# )
 
 if __name__ == "__main__":
     import uvicorn

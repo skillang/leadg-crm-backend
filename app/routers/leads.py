@@ -10,7 +10,8 @@ from ..config.database import get_database
 from ..utils.dependencies import get_current_active_user, get_admin_user
 from ..models.lead import (
     LeadCreate, LeadUpdate, LeadResponse, LeadListResponse, 
-    LeadAssign, LeadStatusUpdate, LeadStatus, LeadSource, CourseLevel
+    LeadAssign, LeadStatusUpdate, LeadStatus, LeadSource, CourseLevel,
+    LeadBulkCreate, LeadBulkCreateResponse  
 )
 from ..schemas.lead import (
     LeadCreateResponse, LeadAssignResponse, LeadBulkAssign, 
@@ -1339,3 +1340,207 @@ async def delete_lead(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to delete lead"
         )
+    
+# Add this to app/routers/leads.py
+
+@router.post("/bulk-create", status_code=status.HTTP_201_CREATED)
+async def bulk_create_leads(
+    leads_data: List[dict],  # Array of lead objects
+    force_create: bool = Query(False, description="Create leads even if duplicates exist"),
+    current_user: Dict[str, Any] = Depends(get_admin_user)
+):
+    """
+    Create multiple leads at once with:
+    - Individual duplicate checking
+    - Round-robin assignment distribution
+    - Activity logging for each lead
+    - User array updates
+    - Error handling for individual failures
+    """
+    try:
+        logger.info(f"Bulk creating {len(leads_data)} leads by admin: {current_user['email']}")
+        
+        if len(leads_data) > 100:  # Limit bulk size
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Maximum 100 leads can be created at once"
+            )
+        
+        db = get_database()
+        results = []
+        successful_creates = 0
+        failed_creates = 0
+        
+        # Get next available user for round-robin
+        assignable_users = await db.users.find(
+            {"role": "user", "is_active": True},
+            {"email": 1, "first_name": 1, "last_name": 1, "total_assigned_leads": 1}
+        ).to_list(None)
+        
+        if assignable_users:
+            assignable_users.sort(key=lambda x: x.get("total_assigned_leads", 0))
+        
+        current_user_index = 0
+        
+        for index, lead_data in enumerate(leads_data):
+            try:
+                # Extract lead info (similar to single create logic)
+                if "basic_info" in lead_data:
+                    basic_info = lead_data.get("basic_info", {})
+                    name = basic_info.get("name", "")
+                    email = basic_info.get("email", "")
+                    contact_number = basic_info.get("contact_number", "")
+                else:
+                    name = lead_data.get("name", "")
+                    email = lead_data.get("email", "")
+                    contact_number = lead_data.get("contact_number", "")
+                
+                # Validate required fields
+                if not name or not email or not contact_number:
+                    results.append({
+                        "index": index,
+                        "status": "failed",
+                        "error": "Missing required fields (name, email, contact_number)",
+                        "input_data": lead_data
+                    })
+                    failed_creates += 1
+                    continue
+                
+                # Check for duplicates
+                duplicate_query = {
+                    "$or": [
+                        {"email": email.lower()},
+                        {"contact_number": contact_number}
+                    ]
+                }
+                
+                existing_lead = await db.leads.find_one(duplicate_query)
+                if existing_lead and not force_create:
+                    results.append({
+                        "index": index,
+                        "status": "skipped",
+                        "reason": "duplicate",
+                        "existing_lead_id": existing_lead.get("lead_id"),
+                        "input_data": lead_data
+                    })
+                    continue
+                
+                # Generate lead ID
+                last_lead = await db.leads.find_one(sort=[("created_at", -1)])
+                if last_lead and "lead_id" in last_lead:
+                    try:
+                        last_number = int(last_lead["lead_id"].split("-")[1])
+                        new_number = last_number + 1 + index  # Increment for each lead
+                    except (IndexError, ValueError):
+                        new_number = 1000 + index
+                else:
+                    new_number = 1000 + index
+                
+                lead_id = f"LD-{new_number}"
+                
+                # Round-robin assignment
+                assigned_to = None
+                assigned_to_name = "Unassigned"
+                assignment_method = "unassigned"
+                
+                if assignable_users:
+                    user = assignable_users[current_user_index % len(assignable_users)]
+                    assigned_to = user["email"]
+                    assigned_to_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip()
+                    if not assigned_to_name:
+                        assigned_to_name = user.get('email', 'Unknown')
+                    assignment_method = "round_robin_bulk"
+                    current_user_index += 1
+                
+                # Create lead document
+                lead_doc = {
+                    "lead_id": lead_id,
+                    "name": name,
+                    "email": email.lower(),
+                    "contact_number": contact_number,
+                    "phone_number": contact_number,
+                    "source": lead_data.get("source", "bulk_import"),
+                    "status": "open",
+                    "assigned_to": assigned_to,
+                    "assigned_to_name": assigned_to_name,
+                    "assignment_method": assignment_method,
+                    "tags": lead_data.get("tags", []),
+                    "notes": lead_data.get("notes", ""),
+                    "created_by": current_user["_id"],
+                    "created_at": datetime.utcnow(),
+                    "updated_at": datetime.utcnow()
+                }
+                
+                # Insert lead
+                result = await db.leads.insert_one(lead_doc)
+                
+                # Update user array if assigned
+                if assigned_to:
+                    await db.users.update_one(
+                        {"email": assigned_to},
+                        {
+                            "$push": {"assigned_leads": lead_id},
+                            "$inc": {"total_assigned_leads": 1}
+                        }
+                    )
+                
+                # Log activity
+                await db.lead_activities.insert_one({
+                    "lead_id": lead_id,
+                    "activity_type": "lead_created",
+                    "description": f"Lead '{name}' created via bulk import",
+                    "created_by": current_user["_id"],
+                    "created_by_name": f"{current_user.get('first_name', '')} {current_user.get('last_name', '')}".strip(),
+                    "created_at": datetime.utcnow(),
+                    "metadata": {
+                        "bulk_import": True,
+                        "batch_index": index,
+                        "assignment_method": assignment_method
+                    }
+                })
+                
+                results.append({
+                    "index": index,
+                    "status": "created",
+                    "lead_id": lead_id,
+                    "assigned_to": assigned_to,
+                    "assigned_to_name": assigned_to_name
+                })
+                
+                successful_creates += 1
+                
+            except Exception as lead_error:
+                logger.error(f"Error creating lead {index}: {str(lead_error)}")
+                results.append({
+                    "index": index,
+                    "status": "failed",
+                    "error": str(lead_error),
+                    "input_data": lead_data
+                })
+                failed_creates += 1
+        
+        logger.info(f"✅ Bulk create completed: {successful_creates} created, {failed_creates} failed")
+        
+        return {
+            "success": True,
+            "message": f"Bulk creation completed: {successful_creates} leads created, {failed_creates} failed",
+            "summary": {
+                "total_attempted": len(leads_data),
+                "successful_creates": successful_creates,
+                "failed_creates": failed_creates,
+                "duplicates_skipped": len([r for r in results if r.get("reason") == "duplicate"])
+            },
+            "results": results
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Bulk lead creation error: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create leads in bulk: {str(e)}"
+        )
+
