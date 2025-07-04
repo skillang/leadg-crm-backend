@@ -569,55 +569,27 @@ async def create_lead(
 async def get_leads(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
-    lead_status: Optional[LeadStatus] = Query(None),  # ✅ FIXED: Changed from 'status' to 'lead_status'
+    lead_status: Optional[LeadStatus] = Query(None),
     assigned_to: Optional[str] = Query(None),
-    source: Optional[LeadSource] = Query(None),
-    course_level: Optional[CourseLevel] = Query(None),
-    country: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
-    created_from: Optional[str] = Query(None),
-    created_to: Optional[str] = Query(None),
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):
     """
-    Get leads with filters and pagination
+    Get leads with comprehensive error handling and data validation
+    FIXED VERSION: Handles missing fields and ensures Pydantic validation
     """
     try:
+        logger.info(f"Get leads requested by: {current_user.get('email')}")
         db = get_database()
-        query = {}
         
-        # Role-based filtering
+        # Build query
+        query = {}
         if current_user["role"] != "admin":
             query["assigned_to"] = current_user["email"]
-        
-        # Apply filters - ✅ FIXED: Use lead_status instead of status
         if lead_status:
             query["status"] = lead_status
-        if assigned_to:
+        if assigned_to and current_user["role"] == "admin":
             query["assigned_to"] = assigned_to
-        if source:
-            query["source"] = source
-        if course_level:
-            query["course_level"] = course_level
-        if country:
-            query["country"] = country
-            
-        # Date filters
-        if created_from or created_to:
-            date_filter = {}
-            if created_from:
-                try:
-                    date_filter["$gte"] = datetime.fromisoformat(created_from.replace('Z', '+00:00'))
-                except ValueError:
-                    pass
-            if created_to:
-                try:
-                    date_filter["$lte"] = datetime.fromisoformat(created_to.replace('Z', '+00:00'))
-                except ValueError:
-                    pass
-            if date_filter:
-                query["created_at"] = date_filter
-                
         if search:
             query["$or"] = [
                 {"name": {"$regex": search, "$options": "i"}},
@@ -630,62 +602,91 @@ async def get_leads(
         
         leads = await db.leads.find(query).skip(skip).limit(limit).sort("created_at", -1).to_list(None)
         
-        # 🔧 FIX: ObjectId serialization and Pydantic validation issues
+        # 🔧 CRITICAL FIX: Ensure ALL required fields for Pydantic validation
+        processed_leads = []
+        
         for lead in leads:
-            lead["id"] = str(lead["_id"])
-            lead["created_by"] = str(lead.get("created_by", ""))
-            
-            # 🔧 FIX 1: Handle stage enum mismatch
-            if lead.get("stage") == "open":
-                lead["stage"] = "initial"  # Map 'open' to valid enum value
-            elif lead.get("stage") not in ["initial", "contacted", "qualified", "proposal", "negotiation", "closed", "lost"]:
-                lead["stage"] = "initial"  # Default fallback
-            
-            # 🔧 FIX 2: Add missing created_by_name field
-            created_by_id = lead.get("created_by")
-            if created_by_id:
-                try:
-                    user_info = await db.users.find_one({"_id": ObjectId(created_by_id)})
-                    if user_info:
-                        lead["created_by_name"] = f"{user_info.get('first_name', '')} {user_info.get('last_name', '')}".strip()
-                        if not lead["created_by_name"]:
-                            lead["created_by_name"] = user_info.get('email', 'Unknown User')
+            try:
+                # Basic field transformations
+                lead["id"] = str(lead["_id"])
+                lead["created_by"] = str(lead.get("created_by", ""))
+                
+                # 🚨 CRITICAL: Ensure lead_score exists (required by LeadResponseComprehensive)
+                if "lead_score" not in lead or lead["lead_score"] is None:
+                    lead["lead_score"] = 0
+                    logger.warning(f"Missing lead_score for lead {lead.get('lead_id', 'unknown')}, defaulting to 0")
+                
+                # 🚨 CRITICAL: Ensure stage is valid enum value
+                valid_stages = ["initial", "contacted", "qualified", "proposal", "negotiation", "closed", "lost"]
+                if lead.get("stage") not in valid_stages:
+                    if lead.get("stage") == "open":
+                        lead["stage"] = "initial"
                     else:
+                        lead["stage"] = "initial"
+                        logger.warning(f"Invalid stage '{lead.get('stage')}' for lead {lead.get('lead_id')}, defaulting to 'initial'")
+                
+                # 🚨 CRITICAL: Ensure all required fields have defaults
+                required_defaults = {
+                    "tags": [],
+                    "contact_number": lead.get("phone_number", ""),
+                    "source": "website",
+                    "assigned_to_name": None,
+                    "assignment_method": None,
+                    "notes": None,
+                    "last_contacted": None,
+                    "assignment_history": None
+                }
+                
+                for field, default_value in required_defaults.items():
+                    if field not in lead or lead[field] is None:
+                        lead[field] = default_value
+                
+                # Handle created_by_name
+                created_by_id = lead.get("created_by")
+                if created_by_id:
+                    try:
+                        user_info = await db.users.find_one({"_id": ObjectId(created_by_id)})
+                        if user_info:
+                            lead["created_by_name"] = f"{user_info.get('first_name', '')} {user_info.get('last_name', '')}".strip()
+                            if not lead["created_by_name"]:
+                                lead["created_by_name"] = user_info.get('email', 'Unknown User')
+                        else:
+                            lead["created_by_name"] = "Unknown User"
+                    except Exception as e:
+                        logger.error(f"Error fetching created_by user info: {e}")
                         lead["created_by_name"] = "Unknown User"
-                except:
+                else:
                     lead["created_by_name"] = "Unknown User"
-            else:
-                lead["created_by_name"] = "Unknown User"
-            
-            # 🔧 FIX 3: Add assigned_to_name if missing
-            if "assigned_to_name" not in lead and lead.get("assigned_to"):
-                try:
-                    assigned_user = await db.users.find_one({"email": lead["assigned_to"]})
-                    if assigned_user:
-                        lead["assigned_to_name"] = f"{assigned_user.get('first_name', '')} {assigned_user.get('last_name', '')}".strip()
-                        if not lead["assigned_to_name"]:
-                            lead["assigned_to_name"] = assigned_user.get('email', 'Unknown')
-                    else:
-                        lead["assigned_to_name"] = lead["assigned_to"]
-                except:
-                    lead["assigned_to_name"] = lead.get("assigned_to", "")
-            
-            # 🔧 FIX 4: Ensure required fields have defaults
-            if "phone" not in lead:
-                lead["phone"] = lead.get("contact_number", "")
-            if "course_level" not in lead:
-                lead["course_level"] = None
-            if "source" not in lead:
-                lead["source"] = None
-            if "country" not in lead:
-                lead["country"] = ""
-            if "notes" not in lead:
-                lead["notes"] = ""
-            if "status" not in lead:
-                lead["status"] = "new"
+                
+                # Handle assigned_to_name
+                if lead.get("assigned_to") and not lead.get("assigned_to_name"):
+                    try:
+                        assigned_user = await db.users.find_one({"email": lead["assigned_to"]})
+                        if assigned_user:
+                            lead["assigned_to_name"] = f"{assigned_user.get('first_name', '')} {assigned_user.get('last_name', '')}".strip()
+                            if not lead["assigned_to_name"]:
+                                lead["assigned_to_name"] = assigned_user.get('email', 'Unknown')
+                        else:
+                            lead["assigned_to_name"] = lead["assigned_to"]
+                    except Exception as e:
+                        logger.error(f"Error fetching assigned_to user info: {e}")
+                        lead["assigned_to_name"] = lead.get("assigned_to", "")
+                
+                # Ensure status has a default
+                if "status" not in lead or not lead["status"]:
+                    lead["status"] = "open"
+                
+                processed_leads.append(lead)
+                
+            except Exception as e:
+                logger.error(f"Error processing lead {lead.get('lead_id', 'unknown')}: {e}")
+                # Skip this lead rather than failing the entire request
+                continue
+        
+        logger.info(f"Successfully processed {len(processed_leads)} leads out of {len(leads)} total")
         
         return LeadListResponse(
-            leads=leads,
+            leads=processed_leads,
             total=total,
             page=page,
             limit=limit,
@@ -695,10 +696,62 @@ async def get_leads(
         
     except Exception as e:
         logger.error(f"Get leads error: {e}")
-        # ✅ FIXED: Now 'status' refers to the imported FastAPI status module
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve leads"
+        )
+    
+
+# 🔧 ADDITIONAL FIX: Database Migration to Add Missing Fields
+@router.post("/fix-missing-fields")
+async def fix_missing_lead_fields(
+    current_user: Dict[str, Any] = Depends(get_admin_user)
+):
+    """
+    One-time migration to fix leads missing required fields
+    """
+    try:
+        db = get_database()
+        
+        # Find leads missing lead_score
+        leads_missing_score = await db.leads.find({"lead_score": {"$exists": False}}).to_list(None)
+        
+        updated_count = 0
+        for lead in leads_missing_score:
+            await db.leads.update_one(
+                {"_id": lead["_id"]},
+                {"$set": {"lead_score": 0}}
+            )
+            updated_count += 1
+        
+        # Find leads with invalid stages
+        leads_invalid_stage = await db.leads.find({
+            "stage": {"$nin": ["initial", "contacted", "qualified", "proposal", "negotiation", "closed", "lost"]}
+        }).to_list(None)
+        
+        stage_updated_count = 0
+        for lead in leads_invalid_stage:
+            new_stage = "initial" if lead.get("stage") == "open" else "initial"
+            await db.leads.update_one(
+                {"_id": lead["_id"]},
+                {"$set": {"stage": new_stage}}
+            )
+            stage_updated_count += 1
+        
+        logger.info(f"Fixed {updated_count} leads missing lead_score and {stage_updated_count} leads with invalid stages")
+        
+        return {
+            "success": True,
+            "message": f"Fixed {updated_count} leads missing lead_score and {stage_updated_count} leads with invalid stages",
+            "leads_updated": updated_count,
+            "stages_updated": stage_updated_count
+        }
+        
+    except Exception as e:
+        logger.error(f"Fix missing fields error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fix missing fields"
         )
 
 @router.get("/my-leads", response_model=LeadListResponse)
