@@ -8,8 +8,8 @@ import time
 from .config.settings import settings
 from .config.database import connect_to_mongo, close_mongo_connection
 from .routers import auth, leads, tasks, notes, documents, timeline, contacts
-# # 🚀 NEW: Import Smartflo test router
-# from .routers import smartflo_test
+# 🚀 NEW: Import Smartflo test router
+from .routers import smartflo_test
 
 # Configure logging
 logging.basicConfig(
@@ -210,12 +210,12 @@ app.include_router(
     tags=["Contacts"]
 )
 
-# # 🚀 NEW: Include Smartflo test router
-# app.include_router(
-#     smartflo_test.router,
-#     prefix="/api/v1",
-#     tags=["Smartflo Testing"]
-# )
+# 🚀 NEW: Include Smartflo test router
+app.include_router(
+    smartflo_test.router,
+    prefix="/api/v1",
+    tags=["Smartflo Testing"]
+)
 
 if __name__ == "__main__":
     import uvicorn
