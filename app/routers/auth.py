@@ -12,83 +12,176 @@ from ..schemas.auth import (
     RefreshTokenRequest, RefreshTokenResponse,
     LogoutRequest, AuthResponse
 )
+
+
+from ..utils.dependencies import get_admin_user
 from ..models.user import UserCreate, UserResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+# REPLACE your existing register_user function in app/routers/auth.py with this:
 
-@router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
-async def register_user(user_data: UserCreate):
+# Updated register_user function for app/routers/auth.py - WITH CALL ROUTING
+
+@router.post("/register", response_model=Dict[str, Any], status_code=status.HTTP_201_CREATED)
+async def register_user(
+    user_data: UserCreate,
+    current_user: Dict[str, Any] = Depends(get_admin_user)
+):
     """
-    User registration endpoint
+    Register a new user with call routing capability (no fixed extensions)
+    Admin only endpoint with TATA Call Routing integration
     """
-    db = get_database()
-    
-    # Check if user already exists
-    existing_user = await db.users.find_one({
-        "$or": [
-            {"email": user_data.email},
-            {"username": user_data.username}
-        ]
-    })
-    
-    if existing_user:
-        if existing_user["email"] == user_data.email:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered"
-            )
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Username already taken"
-            )
-    
-    # Hash password
-    hashed_password = get_password_hash(user_data.password)
-    
-    # Create user document
-    user_doc = {
-        "email": user_data.email,
-        "username": user_data.username,
-        "first_name": user_data.first_name,
-        "last_name": user_data.last_name,
-        "role": user_data.role,
-        "is_active": True,
-        "phone": user_data.phone,
-        "department": user_data.department,
-        "hashed_password": hashed_password,
-        "created_at": datetime.utcnow(),
-        "updated_at": datetime.utcnow(),
-        "login_count": 0,
-        "failed_login_attempts": 0
-    }
-    
-    # Insert user into database
     try:
+        db = get_database()
+        logger.info(f"Admin {current_user.get('email')} registering new user: {user_data.email}")
+        
+        # Check if user already exists
+        existing_user = await db.users.find_one({"email": user_data.email})
+        if existing_user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="User with this email already exists"
+            )
+        
+        # Hash password
+        hashed_password = get_password_hash(user_data.password)
+        
+        # Prepare user document
+        user_doc = {
+            "email": user_data.email,
+            "username": user_data.username,
+            "first_name": user_data.first_name,
+            "last_name": user_data.last_name,
+            "full_name": f"{user_data.first_name} {user_data.last_name}",
+            "hashed_password": hashed_password,
+            "role": user_data.role,
+            "phone": user_data.phone,
+            "department": user_data.department,
+            "is_active": True,
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow(),
+            "created_by": current_user.get("email"),
+            
+            # Initialize call routing fields
+            "calling_enabled": False,
+            "routing_method": None,
+            "tata_agent_pool": [],
+            "calling_status": "pending",
+            "calling_setup_date": None
+        }
+        
+        # Insert user first
         result = await db.users.insert_one(user_doc)
         user_id = str(result.inserted_id)
         
-        logger.info(f"New user registered: {user_data.email}")
+        logger.info(f"User created with ID: {user_id}")
         
-        return RegisterResponse(
-            success=True,
-            message="User registered successfully",
-            user={
-                "id": user_id,
-                "email": user_data.email,
-                "username": user_data.username,
+        # Now try to setup call routing
+        calling_setup_successful = False
+        calling_error = None
+        available_agents = 0
+        routing_method = None
+        
+        try:
+            logger.info(f"Setting up call routing for user: {user_data.email}")
+            
+            smartflo_user_data = {
                 "first_name": user_data.first_name,
                 "last_name": user_data.last_name,
-                "role": user_data.role
+                "email": user_data.email,
+                "phone": user_data.phone,
+                "department": user_data.department
             }
-        )
+            
+            routing_result = await smartflo_jwt_service.create_agent(smartflo_user_data)
+            
+            if routing_result.get("success"):
+                available_agents = routing_result.get("available_agents", 0)
+                routing_method = routing_result.get("routing_method")
+                
+                # Update user with call routing information
+                update_success = await smartflo_jwt_service.update_user_calling_info(
+                    user_id=user_id,
+                    routing_info=routing_result
+                )
+                
+                if update_success:
+                    calling_setup_successful = True
+                    logger.info(f"✅ Call routing setup complete! {available_agents} agents available")
+                else:
+                    calling_error = "Failed to update user with routing info"
+                    logger.error(calling_error)
+            else:
+                calling_error = routing_result.get("error", "Unknown routing setup error")
+                logger.error(f"❌ Call routing setup failed: {calling_error}")
+                
+        except Exception as e:
+            calling_error = f"Call routing integration error: {str(e)}"
+            logger.error(calling_error)
         
+        # Get the updated user data
+        updated_user = await db.users.find_one({"_id": ObjectId(user_id)})
+        
+        # Prepare response
+        user_response = {
+            "id": user_id,
+            "email": updated_user["email"],
+            "username": updated_user["username"],
+            "first_name": updated_user["first_name"],
+            "last_name": updated_user["last_name"],
+            "role": updated_user["role"],
+            "phone": updated_user["phone"],
+            "department": updated_user["department"],
+            "is_active": updated_user["is_active"],
+            "calling_enabled": updated_user.get("calling_enabled", False),
+            "routing_method": updated_user.get("routing_method"),
+            "calling_status": updated_user.get("calling_status"),
+            "created_at": updated_user["created_at"].isoformat()
+        }
+        
+        # Success message with call routing info
+        if calling_setup_successful:
+            success_message = f"User registered successfully! 📞 Call routing enabled ({available_agents} agents available)"
+        elif calling_error:
+            success_message = f"User registered successfully! ⚠️ Call routing setup failed: {calling_error}"
+        else:
+            success_message = "User registered successfully! 📞 Call routing pending"
+        
+        response = {
+            "success": True,
+            "message": success_message,
+            "user": user_response
+        }
+        
+        # Add call routing setup info
+        if calling_setup_successful:
+            response["calling_setup"] = {
+                "setup_successful": True,
+                "routing_method": routing_method,
+                "available_agents": available_agents,
+                "authentication_method": "JWT Bearer Token",
+                "note": f"Calls will route through {available_agents} available TATA agents"
+            }
+        elif calling_error:
+            response["calling_setup"] = {
+                "setup_successful": False,
+                "error": calling_error,
+                "authentication_method": "JWT Bearer Token"
+            }
+        
+        logger.info(f"✅ User registration complete: {user_data.email}")
+        return response
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Registration error: {e}")
+        logger.error(f"Registration failed: {str(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to register user"
+            detail=f"Registration failed: {str(e)}"
         )
 
 @router.post("/login", response_model=LoginResponse)
