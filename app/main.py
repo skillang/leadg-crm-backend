@@ -1,4 +1,4 @@
-# app/main.py - Updated with Smartflo Test Router
+# app/main.py - Updated with Enhanced Debugging
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -7,7 +7,7 @@ import time
 
 from .config.settings import settings
 from .config.database import connect_to_mongo, close_mongo_connection
-from .routers import auth, leads, tasks, notes, documents, timeline, contacts
+from .routers import auth, leads, tasks, notes, documents, timeline, contacts, calls
 # 🚀 NEW: Import Smartflo test router
 from .routers import smartflo_test
 
@@ -28,11 +28,55 @@ async def lifespan(app: FastAPI):
     # ✅ OPTIONAL: Create indexes programmatically on startup
     await create_database_indexes()
     
-    # 🚀 NEW: Log Smartflo configuration status on startup
+    # 🔍 ENHANCED DEBUG: Complete environment variable debugging
+    import os
+    logger.info("🔍 === ENVIRONMENT VARIABLE DEBUG ===")
+    
+    # Check if .env file exists
+    env_file_exists = os.path.exists(".env")
+    logger.info(f"🔍 .env file exists: {env_file_exists}")
+    
+    # Check all SMARTFLO environment variables
+    smartflo_vars = {k: v for k, v in os.environ.items() if "SMARTFLO" in k}
+    logger.info(f"🔍 SMARTFLO environment variables found: {len(smartflo_vars)}")
+    for key, value in smartflo_vars.items():
+        display_value = f"{value[:30]}..." if len(value) > 30 else value
+        logger.info(f"🔍   {key} = {display_value}")
+    
+    # Direct environment variable checks
+    jwt_token = os.getenv("SMARTFLO_JWT_TOKEN")
+    mock_mode = os.getenv("SMARTFLO_MOCK_MODE")
+    base_url = os.getenv("TATA_CLOUDPHONE_BASE_URL")
+    enabled = os.getenv("SMARTFLO_ENABLED")
+    
+    logger.info(f"🔍 Direct checks:")
+    logger.info(f"🔍   SMARTFLO_JWT_TOKEN: {'LOADED' if jwt_token else 'NOT FOUND'}")
+    logger.info(f"🔍   SMARTFLO_MOCK_MODE: {mock_mode}")
+    logger.info(f"🔍   TATA_CLOUDPHONE_BASE_URL: {base_url}")
+    logger.info(f"🔍   SMARTFLO_ENABLED: {enabled}")
+    
+    if jwt_token:
+        logger.info(f"🔍   Token length: {len(jwt_token)}")
+        logger.info(f"🔍   Token preview: {jwt_token[:50]}...")
+    
+    # Check settings instance
+    logger.info(f"🔍 Settings instance:")
+    logger.info(f"🔍   settings.smartflo_api_token: {'LOADED' if settings.smartflo_api_token else 'EMPTY'}")
+    logger.info(f"🔍   settings.smartflo_enabled: {settings.smartflo_enabled}")
+    logger.info(f"🔍   settings.is_smartflo_configured(): {settings.is_smartflo_configured()}")
+    
+    logger.info("🔍 === END DEBUG ===")
+    
+    # 🚀 UPDATED: Use settings instance instead of direct env check
     if settings.is_smartflo_configured():
+        logger.info("📞 SMARTFLO JWT TOKEN: LOADED ✅")
+        logger.info(f"📞 TATA BASE URL: {base_url}")
+        logger.info(f"📞 MOCK MODE: {mock_mode}")
         logger.info("📞 Smartflo integration is CONFIGURED and ENABLED")
         logger.info(f"📞 Smartflo API URL: {settings.smartflo_api_base_url}")
     else:
+        logger.warning("⚠️ SMARTFLO JWT TOKEN: NOT FOUND ❌")
+        logger.warning("⚠️ TATA integration will not work")
         logger.warning("⚠️ Smartflo integration is NOT properly configured")
         logger.warning("⚠️ User registration will work but without calling features")
     
@@ -142,28 +186,33 @@ async def health_check():
         }
     }
 
-# Root endpoint
 @app.get("/")
 async def root():
     """Root endpoint"""
     return {
-        "message": "Welcome to LeadG CRM API with Smartflo Calling Integration",
+        "message": "Welcome to LeadG CRM API with TATA Cloud Phone Integration",
         "version": settings.version,
         "docs": "/docs" if settings.debug else "Docs disabled in production",
         "endpoints": {
             "auth": "/api/v1/auth",
             "leads": "/api/v1/leads",
-            "tasks": "/api/v1/tasks",
+            "tasks": "/api/v1/tasks", 
             "notes": "/api/v1/notes",
             "documents": "/api/v1/documents",
             "timeline": "/api/v1",
             "contacts": "/api/v1/contacts",
-            "smartflo_test": "/api/v1/smartflo-test",  # 🚀 NEW
+            "calls": "/api/v1/calls",
+            "smartflo_test": "/api/v1/smartflo-test",
             "health": "/health"
         },
-        "smartflo": {
-            "integration": "enabled" if settings.is_smartflo_configured() else "not_configured",
-            "status": "Users will get automatic calling setup" if settings.is_smartflo_configured() else "Manual configuration required"
+        "tata_integration": {
+            "status": "enabled" if settings.is_smartflo_configured() else "not_configured",
+            "calling_endpoints": [
+                "POST /api/v1/calls/make-call",
+                "GET /api/v1/calls/status", 
+                "GET /api/v1/calls/history",
+                "GET /api/v1/calls/agents"
+            ]
         }
     }
 
@@ -210,7 +259,12 @@ app.include_router(
     tags=["Contacts"]
 )
 
-# 🚀 NEW: Include Smartflo test router
+app.include_router(
+    calls.router,
+    prefix="/api/v1/calls",
+    tags=["Calls & TATA Integration"]
+)
+
 app.include_router(
     smartflo_test.router,
     prefix="/api/v1",
