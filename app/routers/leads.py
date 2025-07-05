@@ -1037,6 +1037,7 @@ async def assign_lead(
 # Keep the old PUT /{lead_id} for backward compatibility if needed
 # Complete universal update endpoint with activity logging
 # Replace your PUT /update endpoint with this complete version
+# Replace your existing PUT /update endpoint in app/routers/leads.py
 
 @router.put("/update")
 async def update_lead_universal(
@@ -1044,173 +1045,129 @@ async def update_lead_universal(
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):
     """
-    Universal lead update endpoint with activity logging
+    Universal lead update endpoint with user array synchronization
     """
     try:
-        logger.info(f"Universal update request by user: {current_user.get('email')}")
+        from services.user_lead_array_service import user_lead_array_service
         
-        # Validate lead_id is provided
-        if "lead_id" not in update_request:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="lead_id is required in request body"
-            )
-        
-        lead_id = update_request["lead_id"]
-        logger.info(f"Updating lead: {lead_id}")
-        
-        # Remove lead_id from update data
-        update_data = {k: v for k, v in update_request.items() if k != "lead_id"}
-        
-        if not update_data:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No fields to update provided"
-            )
+        logger.info(f"🔄 Update by {current_user.get('email')} with data: {update_request}")
         
         db = get_database()
         
-        # Check permissions
-        query = {"lead_id": lead_id}
-        if current_user["role"] != "admin":
-            query["assigned_to"] = current_user["email"]
-        
-        # Check if lead exists and user has permission
-        existing_lead = await db.leads.find_one(query)
-        if not existing_lead:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Lead not found or you don't have permission to update it"
-            )
-        
-        logger.info(f"Fields to update: {list(update_data.keys())}")
-        
-        # Process update data (keep your existing processing logic)
-        flat_update_data = {}
-        
-        # [Keep all your existing update processing logic here]
-        # ... (the code for handling structured/flat formats)
-        
-        # For brevity, I'll show the simplified version:
-        flat_update_data = update_data.copy()
-        
-        # Handle phone_number/contact_number sync
-        if "phone_number" in flat_update_data:
-            flat_update_data["contact_number"] = flat_update_data["phone_number"]
-        elif "contact_number" in flat_update_data:
-            flat_update_data["phone_number"] = flat_update_data["contact_number"]
-        
-        # Handle email lowercase
-        if "email" in flat_update_data:
-            flat_update_data["email"] = flat_update_data["email"].lower()
-        
-        # Add updated timestamp
-        flat_update_data["updated_at"] = datetime.utcnow()
-        
-        # Remove any None values or empty fields
-        flat_update_data = {k: v for k, v in flat_update_data.items() if v is not None and v != ""}
-        
-        if not flat_update_data:
+        # Get lead_id
+        lead_id = update_request.get("lead_id")
+        if not lead_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No valid fields to update"
+                detail="lead_id is required in update request"
             )
         
-        logger.info(f"Final update data: {list(flat_update_data.keys())}")
+        # Get current lead
+        lead = await db.leads.find_one({"lead_id": lead_id})
+        if not lead:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Lead not found"
+            )
         
-        # Perform the update
-        result = await db.leads.update_one(query, {"$set": flat_update_data})
+        # Check permissions
+        user_role = current_user.get("role", "user")
+        if user_role != "admin" and lead.get("assigned_to") != current_user.get("email"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only update leads assigned to you"
+            )
         
-        # 🔥 AUTO-ACTIVITY LOGGING
-        if result.modified_count > 0:
+        # Check if assignment is being changed
+        current_assigned_to = lead.get("assigned_to")
+        new_assigned_to = update_request.get("assigned_to")
+        assignment_changed = False
+        
+        if "assigned_to" in update_request and current_assigned_to != new_assigned_to:
+            assignment_changed = True
+            logger.info(f"🔄 Assignment change: '{current_assigned_to}' -> '{new_assigned_to}'")
+            
+            # Only admins can reassign
+            if user_role != "admin":
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Only admins can reassign leads"
+                )
+            
+            # Validate new assignee exists
+            if new_assigned_to:
+                new_user = await db.users.find_one({"email": new_assigned_to, "is_active": True})
+                if not new_user:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"User {new_assigned_to} not found or inactive"
+                    )
+                
+                # Add assigned_to_name
+                new_user_name = f"{new_user.get('first_name', '')} {new_user.get('last_name', '')}".strip() or new_assigned_to
+                update_request["assigned_to_name"] = new_user_name
+        
+        # Prepare update data
+        update_data = {k: v for k, v in update_request.items() if k != "lead_id"}
+        update_data["updated_at"] = datetime.utcnow()
+        
+        # Update the lead document
+        await db.leads.update_one(
+            {"lead_id": lead_id},
+            {"$set": update_data}
+        )
+        
+        logger.info(f"✅ Lead {lead_id} document updated")
+        
+        # Handle user array synchronization if assignment changed
+        if assignment_changed:
             try:
-                # Get updater name
-                updater_name = f"{current_user.get('first_name', '')} {current_user.get('last_name', '')}".strip()
-                if not updater_name:
-                    updater_name = current_user.get('email', 'Unknown User')
+                array_sync_success = await user_lead_array_service.move_lead_between_users(
+                    lead_id, current_assigned_to, new_assigned_to
+                )
                 
-                # Create activity description
-                updated_field_names = []
-                field_mapping = {
-                    'name': 'Name',
-                    'email': 'Email', 
-                    'contact_number': 'Contact Number',
-                    'lead_score': 'Lead Score',
-                    'stage': 'Stage',
-                    'tags': 'Tags',
-                    'assigned_to': 'Assignment',
-                    'notes': 'Notes',
-                    'status': 'Status',
-                    'priority': 'Priority',
-                    'source': 'Source'
-                }
-                
-                for field in flat_update_data.keys():
-                    if field != 'updated_at':
-                        display_name = field_mapping.get(field, field.replace('_', ' ').title())
-                        updated_field_names.append(display_name)
-                
-                # Create description
-                if len(updated_field_names) == 1:
-                    description = f"Lead {updated_field_names[0].lower()} updated"
-                elif len(updated_field_names) <= 3:
-                    description = f"Lead {', '.join(updated_field_names).lower()} updated"
+                if array_sync_success:
+                    logger.info(f"✅ User arrays synchronized for lead {lead_id}")
                 else:
-                    description = f"Lead updated ({len(updated_field_names)} fields changed)"
-                
-                # Check for duplicate activity
-                existing_activity = await db.lead_activities.find_one({
-                    "lead_id": lead_id,
-                    "activity_type": "lead_updated", 
-                    "created_by": ObjectId(current_user["_id"]),
-                    "created_at": {"$gte": datetime.utcnow() - timedelta(seconds=10)}
-                })
-                
-                if not existing_activity:
-                    activity_doc = {
-                        "lead_id": lead_id,
-                        "activity_type": "lead_updated",
-                        "description": description,
-                        "created_by": ObjectId(current_user["_id"]),
-                        "created_by_name": updater_name,
-                        "created_at": datetime.utcnow(),
-                        "is_system_generated": True,
-                        "metadata": {
-                            "updated_fields": updated_field_names,
-                            "updated_field_count": len(updated_field_names),
-                            "update_method": "universal_endpoint"
-                        }
-                    }
+                    logger.error(f"❌ Failed to synchronize user arrays for lead {lead_id}")
                     
-                    await db.lead_activities.insert_one(activity_doc)
-                    logger.info(f"✅ Lead update activity logged for {lead_id}")
-                else:
-                    logger.info("⚠️ Recent update activity exists, skipping duplicate")
-                    
-            except Exception as activity_error:
-                logger.warning(f"⚠️ Failed to log lead update activity: {activity_error}")
+            except Exception as sync_error:
+                logger.error(f"💥 Array synchronization error: {str(sync_error)}")
         
-        # Return updated lead
+        # Get updated lead
         updated_lead = await db.leads.find_one({"lead_id": lead_id})
-        structured_lead = transform_lead_to_structured_format(updated_lead)
+        
+        # Clean ObjectIds for response
+        def clean_response(doc):
+            clean_doc = {}
+            for key, value in doc.items():
+                if key == "_id" or key == "created_by":
+                    clean_doc[key] = str(value) if value else None
+                elif isinstance(value, ObjectId):
+                    clean_doc[key] = str(value)
+                else:
+                    clean_doc[key] = value
+            return clean_doc
+        
+        clean_lead = clean_response(updated_lead)
         
         return {
             "success": True,
             "message": f"Lead {lead_id} updated successfully",
-            "updated_fields": list(flat_update_data.keys()),
-            "lead": structured_lead
+            "assignment_changed": assignment_changed,
+            "lead": clean_lead
         }
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Universal update error: {e}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
+        logger.error(f"💥 Update error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update lead: {str(e)}"
         )
+
+
 # @router.patch("/{lead_id}/status")
 # async def update_lead_status(
 #     lead_id: str,
