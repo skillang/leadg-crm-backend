@@ -270,13 +270,71 @@ async def sync_user_arrays(
         )
 
 # ============================================================================
-# CORE LEAD ENDPOINTS
+# QUICK FIX ENDPOINT
 # ============================================================================
 
-# Replace the create_lead endpoint in your app/routers/leads.py with this version
-# This includes round-robin assignment like your previous version
-# Replace the create_lead endpoint in your app/routers/leads.py
-# This integrates with all your services properly
+@router.post("/fix-arrays-now")
+async def fix_user_arrays_now(
+    current_user: Dict[str, Any] = Depends(get_admin_user)
+):
+    """
+    One-time fix for current wrong user arrays
+    """
+    try:
+        db = get_database()
+        
+        print("🔧 Fixing user arrays...")
+        
+        # Get all active users
+        users = await db.users.find(
+            {"is_active": True}, 
+            {"email": 1, "assigned_leads": 1, "total_assigned_leads": 1}
+        ).to_list(length=None)
+        
+        fixed_count = 0
+        
+        for user in users:
+            user_email = user["email"]
+            
+            # Get actual assigned leads from leads collection
+            actual_leads = await db.leads.find(
+                {"assigned_to": user_email},
+                {"lead_id": 1}
+            ).to_list(length=None)
+            
+            actual_lead_ids = [lead["lead_id"] for lead in actual_leads]
+            current_array = user.get("assigned_leads", [])
+            
+            # Fix if different
+            if set(actual_lead_ids) != set(current_array):
+                await db.users.update_one(
+                    {"email": user_email},
+                    {
+                        "$set": {
+                            "assigned_leads": actual_lead_ids,
+                            "total_assigned_leads": len(actual_lead_ids)
+                        }
+                    }
+                )
+                
+                print(f"✅ Fixed {user_email}: {len(current_array)} -> {len(actual_lead_ids)} leads")
+                fixed_count += 1
+            else:
+                print(f"✅ {user_email} already correct ({len(actual_lead_ids)} leads)")
+        
+        return {
+            "success": True,
+            "message": f"Fixed {fixed_count} users",
+            "total_users_checked": len(users)
+        }
+        
+    except Exception as e:
+        print(f"Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================================================
+# CORE LEAD ENDPOINTS
+# ============================================================================
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_lead(
@@ -904,7 +962,6 @@ async def get_lead_stats(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve lead statistics"
         )
-# Replace your existing get_lead function with this
 
 @router.get("/{lead_id}")
 async def get_lead(
@@ -949,7 +1006,6 @@ async def get_lead(
         )
 
 # ============================================================================
-
 # ASSIGNMENT ENDPOINTS
 # ============================================================================
 
@@ -1031,13 +1087,10 @@ async def assign_lead(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to assign lead"
         )
-    
 
-# Add this new endpoint to app/routers/leads.py
-# Keep the old PUT /{lead_id} for backward compatibility if needed
-# Complete universal update endpoint with activity logging
-# Replace your PUT /update endpoint with this complete version
-# Replace your existing PUT /update endpoint in app/routers/leads.py
+# ============================================================================
+# UPDATE ENDPOINT (FIXED)
+# ============================================================================
 
 @router.put("/update")
 async def update_lead_universal(
@@ -1048,7 +1101,8 @@ async def update_lead_universal(
     Universal lead update endpoint with user array synchronization
     """
     try:
-        from services.user_lead_array_service import user_lead_array_service
+        # ✅ FIXED: Use correct import path
+        from ..services.user_lead_array_service import user_lead_array_service
         
         logger.info(f"🔄 Update by {current_user.get('email')} with data: {update_request}")
         
@@ -1167,132 +1221,9 @@ async def update_lead_universal(
             detail=f"Failed to update lead: {str(e)}"
         )
 
-
-# @router.patch("/{lead_id}/status")
-# async def update_lead_status(
-#     lead_id: str,
-#     status_update: LeadStatusUpdate,
-#     current_user: Dict[str, Any] = Depends(get_current_active_user)
-# ):
-#     """
-#     Update lead status
-#     """
-#     try:
-#         db = get_database()
-        
-#         query = {"lead_id": lead_id}
-#         if current_user["role"] != "admin":
-#             query["assigned_to"] = current_user["email"]
-        
-#         result = await db.leads.update_one(
-#             query,
-#             {
-#                 "$set": {
-#                     "status": status_update.status,
-#                     "updated_at": datetime.utcnow()
-#                 }
-#             }
-#         )
-        
-#         if result.modified_count == 0:
-#             raise HTTPException(
-#                 status_code=status.HTTP_404_NOT_FOUND,
-#                 detail="Lead not found or you don't have permission to update it"
-#             )
-        
-#         return {
-#             "success": True,
-#             "message": f"Lead status updated to {status_update.status}",
-#             "lead_id": lead_id
-#         }
-        
-#     except HTTPException:
-#         raise
-#     except Exception as e:
-#         logger.error(f"Update lead status error: {e}")
-#         raise HTTPException(
-#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-#             detail="Failed to update lead status"
-#         )
-# # Replace the update_lead endpoint in your app/routers/leads.py
-
-# @router.put("/{lead_id}")
-# async def update_lead(
-#     lead_id: str,
-#     lead_data: LeadUpdate,
-#     current_user: Dict[str, Any] = Depends(get_current_active_user)
-# ):
-#     """
-#     Update a lead - FIXED ObjectId serialization
-#     """
-#     try:
-#         db = get_database()
-        
-#         # Check permissions
-#         query = {"lead_id": lead_id}
-#         if current_user["role"] != "admin":
-#             query["assigned_to"] = current_user["email"]
-        
-#         # Prepare update data
-#         update_data = {}
-#         for field, value in lead_data.dict(exclude_unset=True).items():
-#             if value is not None:
-#                 update_data[field] = value
-        
-#         update_data["updated_at"] = datetime.utcnow()
-        
-#         result = await db.leads.update_one(query, {"$set": update_data})
-        
-#         if result.modified_count == 0:
-#             raise HTTPException(
-#                 status_code=status.HTTP_404_NOT_FOUND,
-#                 detail="Lead not found or you don't have permission to update it"
-#             )
-        
-#         # Return updated lead with ObjectId conversion
-#         updated_lead = await db.leads.find_one({"lead_id": lead_id})
-        
-#         # ✅ FIX: Convert ALL ObjectIds to strings
-#         clean_lead = {}
-#         for key, value in updated_lead.items():
-#             if key == "_id" or key == "created_by":
-#                 clean_lead[key] = str(value) if value else None
-#             elif isinstance(value, list):
-#                 # Handle arrays that might contain ObjectIds
-#                 clean_array = []
-#                 for item in value:
-#                     if isinstance(item, dict):
-#                         clean_item = {}
-#                         for sub_key, sub_value in item.items():
-#                             if isinstance(sub_value, ObjectId):
-#                                 clean_item[sub_key] = str(sub_value)
-#                             else:
-#                                 clean_item[sub_key] = sub_value
-#                         clean_array.append(clean_item)
-#                     else:
-#                         clean_array.append(item)
-#                 clean_lead[key] = clean_array
-#             else:
-#                 clean_lead[key] = value
-        
-#         clean_lead["id"] = clean_lead["_id"]
-        
-#         return {
-#             "success": True,
-#             "message": "Lead updated successfully",
-#             "lead": clean_lead
-#         }
-        
-#     except HTTPException:
-#         raise
-#     except Exception as e:
-#         logger.error(f"Update lead error: {e}")
-#         import traceback
-#         logger.error(f"Traceback: {traceback.format_exc()}")
-#         raise HTTPException(
-#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-#             detail="Failed to update lead"
-#         )
+# ============================================================================
+# DELETE ENDPOINT
+# ============================================================================
 
 @router.delete("/{lead_id}")
 async def delete_lead(
@@ -1350,8 +1281,10 @@ async def delete_lead(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to delete lead"
         )
-    
-# Add this to app/routers/leads.py
+
+# ============================================================================
+# BULK OPERATIONS
+# ============================================================================
 
 @router.post("/bulk-create", status_code=status.HTTP_201_CREATED)
 async def bulk_create_leads(
@@ -1553,4 +1486,3 @@ async def bulk_create_leads(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create leads in bulk: {str(e)}"
         )
-
