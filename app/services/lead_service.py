@@ -68,7 +68,7 @@ class LeadService:
             # Step 4: Create lead document
             lead_doc = {
                 "lead_id": lead_id,
-                "status": LeadStatus.OPEN,
+                "status": LeadStatus.INITIAL,
                 "name": lead_data.basic_info.name,
                 "email": lead_data.basic_info.email.lower(),
                 "contact_number": lead_data.basic_info.contact_number,
