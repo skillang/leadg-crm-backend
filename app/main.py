@@ -1,4 +1,4 @@
-# app/main.py - Updated with Enhanced Debugging
+# app/main.py - Updated with /v1 route prefix
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -194,80 +194,81 @@ async def root():
         "version": settings.version,
         "docs": "/docs" if settings.debug else "Docs disabled in production",
         "endpoints": {
-            "auth": "/api/v1/auth",
-            "leads": "/api/v1/leads",
-            "tasks": "/api/v1/tasks", 
-            "notes": "/api/v1/notes",
-            "documents": "/api/v1/documents",
-            "timeline": "/api/v1",
-            "contacts": "/api/v1/contacts",
-            "calls": "/api/v1/calls",
-            "smartflo_test": "/api/v1/smartflo-test",
+            "auth": "/v1/auth",
+            "leads": "/v1/leads",
+            "tasks": "/v1/tasks", 
+            "notes": "/v1/notes",
+            "documents": "/v1/documents",
+            "timeline": "/v1",
+            "contacts": "/v1/contacts",
+            "calls": "/v1/calls",
+            "smartflo_test": "/v1/smartflo-test",
+            "calling": "/v1/calling",
             "health": "/health"
         },
         "tata_integration": {
             "status": "enabled" if settings.is_smartflo_configured() else "not_configured",
             "calling_endpoints": [
-                "POST /api/v1/calls/make-call",
-                "GET /api/v1/calls/status", 
-                "GET /api/v1/calls/history",
-                "GET /api/v1/calls/agents"
+                "POST /v1/calls/make-call",
+                "GET /v1/calls/status", 
+                "GET /v1/calls/history",
+                "GET /v1/calls/agents"
             ]
         }
     }
 
-# Include routers
+# Include routers with /v1 prefix (removed /api)
 app.include_router(
     auth.router,
-    prefix="/api/v1/auth",
+    prefix="/v1/auth",
     tags=["Authentication"]
 )
 
 app.include_router(
     leads.router,
-    prefix="/api/v1/leads",
+    prefix="/v1/leads",
     tags=["Leads"]
 )
 
 app.include_router(
     tasks.router,
-    prefix="/api/v1/tasks",
+    prefix="/v1/tasks",
     tags=["Tasks"]
 )
 
 app.include_router(
     notes.router,
-    prefix="/api/v1/notes",
+    prefix="/v1/notes",
     tags=["Notes"]
 )
 
 app.include_router(
     documents.router,
-    prefix="/api/v1/documents",
+    prefix="/v1/documents",
     tags=["Documents"]
 )
 
 app.include_router(
     timeline.router,
-    prefix="/api/v1",
+    prefix="/v1",
     tags=["Timeline"]
 )
 
 app.include_router(
     contacts.router,
-    prefix="/api/v1/contacts",
+    prefix="/v1/contacts",
     tags=["Contacts"]
 )
 
 app.include_router(
     calls.router,
-    prefix="/api/v1/calls",
+    prefix="/v1/calls",
     tags=["Calls & TATA Integration"]
 )
 
 app.include_router(
     smartflo_test.router,
-    prefix="/api/v1",
+    prefix="/v1",
     tags=["Smartflo Testing"]
 )
 

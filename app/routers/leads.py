@@ -891,13 +891,12 @@ async def get_my_leads(
             detail="Failed to retrieve your leads"
         )
 
-
 @router.get("/stats", response_model=LeadStatsResponse)
 async def get_lead_stats(
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):
     """
-    Get lead statistics for dashboard (FIXED VERSION)
+    Get lead statistics for dashboard (custom statuses)
     """
     try:
         db = get_database()
@@ -917,51 +916,46 @@ async def get_lead_stats(
         
         result = await db.leads.aggregate(pipeline).to_list(None)
         
-        stats = {
-            "total_leads": 0,
-            "open_leads": 0,
-            "in_progress_leads": 0,
-            "closed_won_leads": 0,
-            "closed_lost_leads": 0,
-            "my_leads": 0,
-            "unassigned_leads": 0
-        }
+        # ✅ Your custom lead statuses
+        custom_statuses = [
+            "Followup", "Warm", "Prospect", "Junk", "Enrolled", "Yet to call",
+            "Counseled", "DNP", "INVALID", "Call Back", "Busy", "NI", "Ringing", "Wrong Number"
+        ]
         
+        # ✅ Initialize stats dictionary
+        stats = {status.lower().replace(" ", "_"): 0 for status in custom_statuses}
+        stats["total_leads"] = 0
+        stats["my_leads"] = 0
+        stats["unassigned_leads"] = 0
+        
+        # ✅ Map aggregation result
         for item in result:
             status_val = item["_id"]
             count = item["count"]
             stats["total_leads"] += count
-            
-            if status_val == "open":
-                stats["open_leads"] = count
-            elif status_val == "in_progress":
-                stats["in_progress_leads"] = count
-            elif status_val == "closed_won":
-                stats["closed_won_leads"] = count
-            elif status_val == "closed_lost":
-                stats["closed_lost_leads"] = count
+
+            key = status_val.lower().replace(" ", "_")
+            if key in stats:
+                stats[key] = count
         
-        # FIXED: Get user-specific stats
+        # ✅ Get my_leads / unassigned_leads
         if current_user["role"] != "admin":
             stats["my_leads"] = stats["total_leads"]
         else:
-            # For admin, get their email first, then count their leads
             admin_user = await db.users.find_one({"_id": ObjectId(current_user["_id"])})
             admin_email = admin_user["email"] if admin_user else ""
-            my_leads_count = await db.leads.count_documents({"assigned_to": admin_email})
-            stats["my_leads"] = my_leads_count
-            
-            unassigned_count = await db.leads.count_documents({"assigned_to": None})
-            stats["unassigned_leads"] = unassigned_count
+            stats["my_leads"] = await db.leads.count_documents({"assigned_to": admin_email})
+            stats["unassigned_leads"] = await db.leads.count_documents({"assigned_to": None})
         
         return LeadStatsResponse(**stats)
-        
+    
     except Exception as e:
         logger.error(f"Get lead stats error: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve lead statistics"
         )
+
 
 @router.get("/{lead_id}")
 async def get_lead(

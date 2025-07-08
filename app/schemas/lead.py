@@ -44,11 +44,21 @@ class LeadBulkAssignResponse(BaseModel):
     failed_leads: List[str] = []
 
 class LeadStatsResponse(BaseModel):
-    """Lead statistics response"""
+    """Lead statistics response with custom statuses"""
     total_leads: int
-    open_leads: int
-    in_progress_leads: int
-    closed_won_leads: int
-    closed_lost_leads: int
+    followup: int
+    warm: int 
+    prospect: int 
+    junk: int 
+    enrolled: int 
+    yet_to_call: int 
+    counseled: int 
+    dnp: int 
+    invalid: int 
+    call_back: int 
+    busy: int 
+    ni: int 
+    ringing: int
+    wrong_number: int 
     my_leads: int
     unassigned_leads: int

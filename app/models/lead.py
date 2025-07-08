@@ -7,13 +7,21 @@ from enum import Enum
 
 class LeadStatus(str, Enum):
     """Lead status enumeration"""
-    OPEN = "open"
-    IN_PROGRESS = "in_progress" 
-    CONTACTED = "contacted"
-    QUALIFIED = "qualified"
-    CLOSED_WON = "closed_won"
-    CLOSED_LOST = "closed_lost"
 
+    followup = "Followup"
+    warm = "Warm"
+    prospect = "Prospect"
+    junk = "Junk"
+    enrolled = "Enrolled"
+    yet_to_call = "Yet to call"
+    counseled = "Counseled"
+    dnp = "DNP"
+    invalid = "INVALID"
+    call_back = "Call Back"
+    busy = "Busy"
+    ni = "NI"
+    ringing = "Ringing"
+    wrong_number = "Wrong Number"
 class LeadStage(str, Enum):
     """Lead stage enumeration (from Status & Tags tab)"""
     INITIAL = "initial"
@@ -154,7 +162,7 @@ class LeadResponseComprehensive(BaseModel):
     # System fields
     id: str
     lead_id: str  # Auto-generated (e.g., LD-1029)
-    status: LeadStatus = LeadStatus.OPEN
+    status: LeadStatus = LeadStatus.followup
     
     # Basic Info
     name: str
