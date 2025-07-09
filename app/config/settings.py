@@ -1,4 +1,4 @@
-# app/config/settings.py - Force .env loading
+# app/config/settings.py - Cleaned version without Smartflo/TATA integration
 from pydantic_settings import BaseSettings
 from typing import List
 import secrets
@@ -6,7 +6,7 @@ import json
 import os
 from dotenv import load_dotenv
 
-# 🔧 FORCE: Load .env file before anything else
+# Load .env file before anything else
 load_dotenv(override=True)
 
 class Settings(BaseSettings):
@@ -33,19 +33,34 @@ class Settings(BaseSettings):
     mongodb_connect_timeout_ms: int = 10000
     mongodb_socket_timeout_ms: int = 10000
     
-    # Smartflo API Configuration
-    smartflo_enabled: bool = True
-    smartflo_api_base_url: str = "https://api-smartflo.tatateleservices.com/v1"
-    smartflo_api_token: str = ""
-    smartflo_timeout: int = 30
-    smartflo_retry_attempts: int = 3
-    smartflo_retry_delay: int = 5
-    smartflo_default_department: str = "Sales"
-    smartflo_create_extension: bool = True
-    
     # Rate Limiting
     rate_limit_requests: int = 100
     rate_limit_window: int = 60
+    
+    # Email Configuration
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from_email: str = "noreply@leadg.com"
+    smtp_from_name: str = "LeadG CRM"
+    
+    # File Upload Configuration
+    max_file_size: int = 10485760  # 10MB
+    allowed_file_types: List[str] = ["image/jpeg", "image/png", "application/pdf", "text/csv"]
+    upload_directory: str = "uploads/"
+    
+    # Redis Configuration (optional)
+    redis_url: str = "redis://localhost:6379"
+    redis_db: int = 0
+    
+    # Logging Configuration
+    log_level: str = "INFO"
+    log_file: str = "logs/app.log"
+    
+    # Server Configuration
+    host: str = "0.0.0.0"
+    port: int = 8000
     
     class Config:
         env_file = ".env"
@@ -53,13 +68,10 @@ class Settings(BaseSettings):
         extra = "allow"
     
     def __init__(self, **kwargs):
-        # 🔧 FORCE: Reload .env again to ensure loading
+        # Reload .env again to ensure loading
         load_dotenv(override=True)
         
         super().__init__(**kwargs)
-        
-        # 🔍 DEBUG: Print environment loading status
-        print(f"🔍 INIT DEBUG - SMARTFLO_JWT_TOKEN found: {bool(os.getenv('SMARTFLO_JWT_TOKEN'))}")
         
         # Override with environment variables if they exist
         if os.getenv("SECRET_KEY"):
@@ -74,18 +86,61 @@ class Settings(BaseSettings):
             self.database_name = os.getenv("DATABASE_NAME")
         if os.getenv("MONGODB_MAX_POOL_SIZE"):
             self.mongodb_max_pool_size = int(os.getenv("MONGODB_MAX_POOL_SIZE"))
+        if os.getenv("MONGODB_MIN_POOL_SIZE"):
+            self.mongodb_min_pool_size = int(os.getenv("MONGODB_MIN_POOL_SIZE"))
+        if os.getenv("MONGODB_MAX_IDLE_TIME_MS"):
+            self.mongodb_max_idle_time_ms = int(os.getenv("MONGODB_MAX_IDLE_TIME_MS"))
+        if os.getenv("MONGODB_SERVER_SELECTION_TIMEOUT_MS"):
+            self.mongodb_server_selection_timeout_ms = int(os.getenv("MONGODB_SERVER_SELECTION_TIMEOUT_MS"))
         
-        # 🚀 SMARTFLO environment variable handling - FIXED
-        if os.getenv("SMARTFLO_JWT_TOKEN"):
-            self.smartflo_api_token = os.getenv("SMARTFLO_JWT_TOKEN")
-            print(f"🔍 Successfully set smartflo_api_token: {bool(self.smartflo_api_token)}")
-        else:
-            print("🔍 SMARTFLO_JWT_TOKEN not found in environment")
-            
-        if os.getenv("SMARTFLO_ENABLED"):
-            self.smartflo_enabled = os.getenv("SMARTFLO_ENABLED").lower() == "true"
-        if os.getenv("SMARTFLO_API_BASE_URL"):
-            self.smartflo_api_base_url = os.getenv("SMARTFLO_API_BASE_URL")
+        # Email configuration
+        if os.getenv("SMTP_HOST"):
+            self.smtp_host = os.getenv("SMTP_HOST")
+        if os.getenv("SMTP_PORT"):
+            self.smtp_port = int(os.getenv("SMTP_PORT"))
+        if os.getenv("SMTP_USERNAME"):
+            self.smtp_username = os.getenv("SMTP_USERNAME")
+        if os.getenv("SMTP_PASSWORD"):
+            self.smtp_password = os.getenv("SMTP_PASSWORD")
+        if os.getenv("SMTP_FROM_EMAIL"):
+            self.smtp_from_email = os.getenv("SMTP_FROM_EMAIL")
+        if os.getenv("SMTP_FROM_NAME"):
+            self.smtp_from_name = os.getenv("SMTP_FROM_NAME")
+        
+        # File upload configuration
+        if os.getenv("MAX_FILE_SIZE"):
+            self.max_file_size = int(os.getenv("MAX_FILE_SIZE"))
+        if os.getenv("UPLOAD_DIRECTORY"):
+            self.upload_directory = os.getenv("UPLOAD_DIRECTORY")
+        if os.getenv("ALLOWED_FILE_TYPES"):
+            try:
+                self.allowed_file_types = json.loads(os.getenv("ALLOWED_FILE_TYPES"))
+            except:
+                pass
+        
+        # Server configuration
+        if os.getenv("HOST"):
+            self.host = os.getenv("HOST")
+        if os.getenv("PORT"):
+            self.port = int(os.getenv("PORT"))
+        
+        # Rate limiting
+        if os.getenv("RATE_LIMIT_REQUESTS"):
+            self.rate_limit_requests = int(os.getenv("RATE_LIMIT_REQUESTS"))
+        if os.getenv("RATE_LIMIT_WINDOW"):
+            self.rate_limit_window = int(os.getenv("RATE_LIMIT_WINDOW"))
+        
+        # Redis configuration
+        if os.getenv("REDIS_URL"):
+            self.redis_url = os.getenv("REDIS_URL")
+        if os.getenv("REDIS_DB"):
+            self.redis_db = int(os.getenv("REDIS_DB"))
+        
+        # Logging configuration
+        if os.getenv("LOG_LEVEL"):
+            self.log_level = os.getenv("LOG_LEVEL")
+        if os.getenv("LOG_FILE"):
+            self.log_file = os.getenv("LOG_FILE")
     
     def get_allowed_origins(self) -> List[str]:
         """Get allowed origins from env or default"""
@@ -112,21 +167,15 @@ class Settings(BaseSettings):
         """Check if using MongoDB Atlas"""
         return "mongodb+srv://" in self.mongodb_url or "mongodb.net" in self.mongodb_url
     
-    def get_smartflo_headers(self) -> dict:
-        """Get Smartflo API headers"""
-        return {
-            "Authorization": f"Bearer {self.smartflo_api_token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-        }
+    def get_upload_path(self) -> str:
+        """Get full upload directory path"""
+        if not os.path.exists(self.upload_directory):
+            os.makedirs(self.upload_directory, exist_ok=True)
+        return self.upload_directory
     
-    def is_smartflo_configured(self) -> bool:
-        """Check if Smartflo is properly configured"""
-        return (
-            self.smartflo_enabled and 
-            bool(self.smartflo_api_token) and 
-            bool(self.smartflo_api_base_url)
-        )
+    def is_email_configured(self) -> bool:
+        """Check if email is properly configured"""
+        return bool(self.smtp_username) and bool(self.smtp_password)
 
 # Global settings instance
 settings = Settings()
