@@ -17,10 +17,10 @@ __pycache__/
 *.code-workspace
 
 # Python virtual environments
-# venv/
-# env/
-# ENV/
-# .venv/
+venv/
+env/
+ENV/
+.venv/
 
 # pip dependency wheels
 *.whl
