@@ -1,8 +1,8 @@
-# app/routers/leads.py - Updated with Comprehensive Structure Support
+# app/routers/leads.py - Complete Updated with Status Migration Support
 
 from fastapi import APIRouter, HTTPException, status, Depends, Query
 from typing import Dict, Any, List, Optional
-from datetime import datetime, timedelta  # ✅ Add timedelta here
+from datetime import datetime, timedelta
 import logging
 from bson import ObjectId
 
@@ -22,10 +22,207 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # ============================================================================
-# SUPER FAST ENDPOINTS (Using User Arrays)
+# STATUS MIGRATION UTILITIES
 # ============================================================================
 
-# Add this function in app/routers/leads.py after imports, before the endpoints
+# Complete mapping from old status values to new ones
+OLD_TO_NEW_STATUS_MAPPING = {
+    "open": "Yet to call",  # 🔥 NEW: Open leads become "Yet to call"
+    "in_progress": "Warm", 
+    "contacted": "Prospect",
+    "qualified": "Prospect",
+    "closed_won": "Enrolled",
+    "closed_lost": "Junk",
+    "lost": "Junk",
+    "closed": "Enrolled",
+    "new": "Yet to call",
+    "pending": "Yet to call",
+    "follow_up": "Followup",
+    "followup": "Followup",
+    "hot": "Warm",
+    "cold": "Yet to call",
+    "converted": "Enrolled",
+    "rejected": "Junk",
+    "invalid": "INVALID",
+    "callback": "Call Back",
+    "call_back": "Call Back",
+    "no_response": "NI",
+    "no_interest": "NI",
+    "busy": "Busy",
+    "ringing": "Ringing",
+    "wrong_number": "Wrong Number",
+    "dnp": "DNP",
+    "enrolled": "Enrolled",
+    "initial": "Yet to call",  # If status accidentally set to 'initial'
+}
+
+# Valid new status values
+VALID_NEW_STATUSES = [
+    "Followup", "Warm", "Prospect", "Junk", "Enrolled", "Yet to call",
+    "Counseled", "DNP", "INVALID", "Call Back", "Busy", "NI", "Ringing", "Wrong Number"
+]
+
+# Valid stage values
+VALID_STAGES = ["initial", "contacted", "qualified", "proposal", "negotiation", "closed", "lost"]
+
+# 🎯 NEW LEAD DEFAULT STATUS
+DEFAULT_NEW_LEAD_STATUS = "Yet to call"
+
+def migrate_status_value(status: str) -> str:
+    """
+    Migrate old status values to new ones during transition period
+    """
+    if not status:
+        return DEFAULT_NEW_LEAD_STATUS  # Default for empty/null status
+    
+    # If already valid, return as-is
+    if status in VALID_NEW_STATUSES:
+        return status
+    
+    # Map old status to new status
+    mapped_status = OLD_TO_NEW_STATUS_MAPPING.get(status, DEFAULT_NEW_LEAD_STATUS)
+    
+    if status != mapped_status:
+        logger.debug(f"Status migration: '{status}' → '{mapped_status}'")
+    
+    return mapped_status
+
+def migrate_stage_value(stage: str) -> str:
+    """
+    Migrate old stage values to new ones during transition period
+    """
+    if not stage:
+        return "initial"  # Default
+    
+    # If already valid, return as-is
+    if stage in VALID_STAGES:
+        return stage
+    
+    # Map common invalid stages
+    stage_mapping = {
+        "open": "initial",
+        "closed_won": "closed",
+        "closed_lost": "lost",
+        "new": "initial",
+        "pending": "initial"
+    }
+    
+    mapped_stage = stage_mapping.get(stage, "initial")
+    
+    if stage != mapped_stage:
+        logger.debug(f"Stage migration: '{stage}' → '{mapped_stage}'")
+    
+    return mapped_stage
+
+async def process_lead_for_response(lead: Dict[str, Any], db, current_user: Dict[str, Any] = None) -> Dict[str, Any]:
+    """
+    Process a lead document for API response with complete data transformation
+    This function ensures all leads are properly formatted for Pydantic validation
+    """
+    try:
+        # Basic field transformations
+        lead["id"] = str(lead["_id"])
+        lead["created_by"] = str(lead.get("created_by", ""))
+        
+        # 🔧 CRITICAL: Migrate status and stage values
+        original_status = lead.get("status")
+        lead["status"] = migrate_status_value(original_status)
+        
+        original_stage = lead.get("stage")
+        lead["stage"] = migrate_stage_value(original_stage)
+        
+        # Log migrations for monitoring
+        if original_status != lead["status"]:
+            logger.info(f"Migrated status for lead {lead.get('lead_id', 'unknown')}: '{original_status}' → '{lead['status']}'")
+        if original_stage != lead["stage"]:
+            logger.info(f"Migrated stage for lead {lead.get('lead_id', 'unknown')}: '{original_stage}' → '{lead['stage']}'")
+        
+        # Ensure lead_score exists and is valid
+        if "lead_score" not in lead or lead["lead_score"] is None:
+            lead["lead_score"] = 0
+        elif not isinstance(lead["lead_score"], (int, float)):
+            lead["lead_score"] = 0
+        
+        # Ensure all required fields have proper defaults
+        required_defaults = {
+            "tags": [],
+            "contact_number": lead.get("phone_number", ""),
+            "phone_number": lead.get("contact_number", ""),  # Ensure both exist
+            "source": "website",
+            "notes": None,
+            "last_contacted": None,
+            "assignment_method": None,
+            "assignment_history": None,
+            "country_of_interest": "",
+            "course_level": None,
+            "priority": "medium"
+        }
+        
+        for field, default_value in required_defaults.items():
+            if field not in lead or lead[field] is None:
+                lead[field] = default_value
+        
+        # Ensure contact_number and phone_number are consistent
+        if lead["contact_number"] and not lead["phone_number"]:
+            lead["phone_number"] = lead["contact_number"]
+        elif lead["phone_number"] and not lead["contact_number"]:
+            lead["contact_number"] = lead["phone_number"]
+        
+        # Handle created_by_name
+        created_by_id = lead.get("created_by")
+        if created_by_id and created_by_id != "":
+            try:
+                user_info = await db.users.find_one({"_id": ObjectId(created_by_id)})
+                if user_info:
+                    full_name = f"{user_info.get('first_name', '')} {user_info.get('last_name', '')}".strip()
+                    lead["created_by_name"] = full_name if full_name else user_info.get('email', 'Unknown User')
+                else:
+                    lead["created_by_name"] = "Unknown User"
+            except Exception as e:
+                logger.error(f"Error fetching created_by user info: {e}")
+                lead["created_by_name"] = "Unknown User"
+        else:
+            lead["created_by_name"] = "Unknown User"
+        
+        # Handle assigned_to_name
+        if lead.get("assigned_to"):
+            if not lead.get("assigned_to_name"):
+                try:
+                    assigned_user = await db.users.find_one({"email": lead["assigned_to"]})
+                    if assigned_user:
+                        full_name = f"{assigned_user.get('first_name', '')} {assigned_user.get('last_name', '')}".strip()
+                        lead["assigned_to_name"] = full_name if full_name else assigned_user.get('email', 'Unknown')
+                    else:
+                        lead["assigned_to_name"] = lead["assigned_to"]
+                except Exception as e:
+                    logger.error(f"Error fetching assigned_to user info: {e}")
+                    lead["assigned_to_name"] = lead.get("assigned_to", "")
+        elif current_user:
+            # If no assigned_to but we have current_user (for my-leads endpoint)
+            full_name = f"{current_user.get('first_name', '')} {current_user.get('last_name', '')}".strip()
+            lead["assigned_to_name"] = full_name if full_name else current_user.get('email', 'Unknown')
+        else:
+            lead["assigned_to_name"] = None
+        
+        return lead
+        
+    except Exception as e:
+        logger.error(f"Error processing lead {lead.get('lead_id', 'unknown')}: {e}")
+        # Return lead with minimal processing to avoid complete failure
+        lead["id"] = str(lead["_id"])
+        lead["status"] = migrate_status_value(lead.get("status", DEFAULT_NEW_LEAD_STATUS))
+        lead["stage"] = migrate_stage_value(lead.get("stage", "initial"))
+        lead["lead_score"] = 0
+        lead["created_by_name"] = "Unknown User"
+        lead["assigned_to_name"] = "Unknown"
+        lead["tags"] = []
+        lead["contact_number"] = lead.get("phone_number", "")
+        lead["source"] = "website"
+        return lead
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
 
 def transform_lead_to_structured_format(lead: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -86,7 +283,7 @@ def transform_lead_to_structured_format(lead: Dict[str, Any]) -> Dict[str, Any]:
         "system_info": {
             "id": str(clean_lead["_id"]),
             "lead_id": clean_lead.get("lead_id", ""),
-            "status": clean_lead.get("status", "open"),
+            "status": migrate_status_value(clean_lead.get("status", DEFAULT_NEW_LEAD_STATUS)),  # 🔥 Updated default
             "created_by": clean_lead.get("created_by", ""),
             "created_at": clean_lead.get("created_at"),
             "updated_at": clean_lead.get("updated_at"),
@@ -95,6 +292,175 @@ def transform_lead_to_structured_format(lead: Dict[str, Any]) -> Dict[str, Any]:
     }
     
     return structured_lead
+
+# ============================================================================
+# ADMIN MIGRATION ENDPOINTS
+# ============================================================================
+
+@router.post("/admin/migrate-all-statuses")
+async def migrate_all_lead_statuses(
+    current_user: Dict[str, Any] = Depends(get_admin_user)
+):
+    """
+    Admin endpoint to migrate all lead statuses from old to new values
+    This updates the database records permanently
+    """
+    try:
+        logger.info(f"Admin migration requested by: {current_user.get('email')}")
+        db = get_database()
+        
+        total_updated = 0
+        migration_details = []
+        
+        # Migrate each old status to new status
+        for old_status, new_status in OLD_TO_NEW_STATUS_MAPPING.items():
+            count = await db.leads.count_documents({"status": old_status})
+            
+            if count > 0:
+                result = await db.leads.update_many(
+                    {"status": old_status},
+                    {
+                        "$set": {
+                            "status": new_status,
+                            "status_migration_date": datetime.utcnow(),
+                            "previous_status": old_status
+                        }
+                    }
+                )
+                
+                updated_count = result.modified_count
+                total_updated += updated_count
+                
+                migration_details.append({
+                    "old_status": old_status,
+                    "new_status": new_status,
+                    "leads_found": count,
+                    "leads_updated": updated_count
+                })
+                
+                logger.info(f"Migrated {updated_count} leads: '{old_status}' → '{new_status}'")
+        
+        # Fix invalid stages
+        stage_fixes = 0
+        invalid_stages = await db.leads.find({
+            "stage": {"$nin": VALID_STAGES}
+        }).to_list(None)
+        
+        for lead in invalid_stages:
+            old_stage = lead.get("stage")
+            new_stage = migrate_stage_value(old_stage)
+            
+            await db.leads.update_one(
+                {"_id": lead["_id"]},
+                {
+                    "$set": {
+                        "stage": new_stage,
+                        "stage_migration_date": datetime.utcnow(),
+                        "previous_stage": old_stage
+                    }
+                }
+            )
+            stage_fixes += 1
+        
+        # Ensure required fields
+        field_fixes = 0
+        
+        # Add missing lead_score
+        missing_score = await db.leads.count_documents({"lead_score": {"$exists": False}})
+        if missing_score > 0:
+            await db.leads.update_many(
+                {"lead_score": {"$exists": False}},
+                {"$set": {"lead_score": 0}}
+            )
+            field_fixes += missing_score
+        
+        # Add missing tags
+        missing_tags = await db.leads.count_documents({"tags": {"$exists": False}})
+        if missing_tags > 0:
+            await db.leads.update_many(
+                {"tags": {"$exists": False}},
+                {"$set": {"tags": []}}
+            )
+            field_fixes += missing_tags
+        
+        return {
+            "success": True,
+            "message": f"Migration completed successfully",
+            "summary": {
+                "status_migrations": total_updated,
+                "stage_fixes": stage_fixes,
+                "field_fixes": field_fixes,
+                "total_changes": total_updated + stage_fixes + field_fixes
+            },
+            "migration_details": migration_details
+        }
+        
+    except Exception as e:
+        logger.error(f"Admin migration error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to migrate lead statuses: {str(e)}"
+        )
+
+@router.get("/admin/status-analysis")
+async def analyze_lead_statuses(
+    current_user: Dict[str, Any] = Depends(get_admin_user)
+):
+    """
+    Analyze current status values in the database
+    """
+    try:
+        db = get_database()
+        
+        # Get status distribution
+        status_pipeline = [
+            {"$group": {"_id": "$status", "count": {"$sum": 1}}},
+            {"$sort": {"count": -1}}
+        ]
+        
+        status_results = await db.leads.aggregate(status_pipeline).to_list(None)
+        
+        valid_statuses = []
+        invalid_statuses = []
+        
+        for item in status_results:
+            status_value = item["_id"]
+            count = item["count"]
+            
+            if status_value in VALID_NEW_STATUSES:
+                valid_statuses.append({"status": status_value, "count": count, "valid": True})
+            else:
+                mapped_to = OLD_TO_NEW_STATUS_MAPPING.get(status_value, DEFAULT_NEW_LEAD_STATUS)
+                invalid_statuses.append({
+                    "status": status_value, 
+                    "count": count, 
+                    "valid": False,
+                    "will_migrate_to": mapped_to
+                })
+        
+        return {
+            "success": True,
+            "analysis": {
+                "statuses": {
+                    "valid": valid_statuses,
+                    "invalid": invalid_statuses,
+                    "needs_migration": len(invalid_statuses) > 0
+                },
+                "default_new_lead_status": DEFAULT_NEW_LEAD_STATUS,
+                "total_valid_statuses": len(VALID_NEW_STATUSES)
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Status analysis error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to analyze statuses: {str(e)}"
+        )
+
+# ============================================================================
+# SUPER FAST ENDPOINTS (Using User Arrays)
+# ============================================================================
 
 @router.get("/my-leads-fast")
 async def get_my_leads_fast(
@@ -131,21 +497,15 @@ async def get_my_leads_fast(
         leads_cursor = db.leads.find({"lead_id": {"$in": lead_ids}})
         leads = await leads_cursor.to_list(None)
         
-        # Fix ObjectId serialization issue
+        # Process leads with migration support
         clean_leads = []
         for lead in leads:
-            clean_lead = {}
-            for key, value in lead.items():
-                if key == "_id" or key == "created_by":
-                    clean_lead[key] = str(value) if value else None
-                else:
-                    clean_lead[key] = value
-            
-            clean_lead["id"] = clean_lead["_id"]
-            clean_lead["assigned_to_name"] = f"{current_user.get('first_name', '')} {current_user.get('last_name', '')}".strip() or current_user.get('email', 'Unknown')
-            clean_lead["created_by_name"] = "Admin User"
-            
-            clean_leads.append(clean_lead)
+            try:
+                processed_lead = await process_lead_for_response(lead, db, current_user)
+                clean_leads.append(processed_lead)
+            except Exception as e:
+                logger.error(f"Error processing lead {lead.get('lead_id', 'unknown')}: {e}")
+                continue
         
         logger.info(f"✅ Fast lookup returned {len(clean_leads)} leads")
         
@@ -269,10 +629,6 @@ async def sync_user_arrays(
             detail=f"Failed to sync arrays: {str(e)}"
         )
 
-# ============================================================================
-# QUICK FIX ENDPOINT
-# ============================================================================
-
 @router.post("/fix-arrays-now")
 async def fix_user_arrays_now(
     current_user: Dict[str, Any] = Depends(get_admin_user)
@@ -344,6 +700,7 @@ async def create_lead(
 ):
     """
     Create a new lead with comprehensive features:
+    - NEW: Default status is "Yet to call"
     - Duplicate detection and prevention
     - Round-robin auto-assignment
     - Activity logging
@@ -509,7 +866,7 @@ async def create_lead(
             "lead_score": lead_score,
             "priority": priority,
             "tags": tags,
-            "status": "open",
+            "status": DEFAULT_NEW_LEAD_STATUS,  # 🔥 NEW: Use "Yet to call" as default
             "assigned_to": assigned_to,
             "assigned_to_name": assigned_to_name,
             "assignment_method": assignment_method,
@@ -541,7 +898,7 @@ async def create_lead(
             activity_doc = {
                 "lead_id": lead_id,
                 "activity_type": "lead_created",
-                "description": f"Lead '{name}' created with score {lead_score}",
+                "description": f"Lead '{name}' created with status '{DEFAULT_NEW_LEAD_STATUS}' and score {lead_score}",
                 "created_by": current_user["_id"],
                 "created_by_name": f"{current_user.get('first_name', '')} {current_user.get('last_name', '')}".strip(),
                 "created_at": datetime.utcnow(),
@@ -550,6 +907,7 @@ async def create_lead(
                     "lead_name": name,
                     "email": email,
                     "source": source,
+                    "initial_status": DEFAULT_NEW_LEAD_STATUS,
                     "assignment_method": assignment_method,
                     "assigned_to": assigned_to,
                     "assigned_to_name": assigned_to_name
@@ -575,7 +933,7 @@ async def create_lead(
             "lead_score": lead_score,
             "priority": priority,
             "tags": tags,
-            "status": "open",
+            "status": DEFAULT_NEW_LEAD_STATUS,  # 🔥 NEW: Return new default status
             "assigned_to": assigned_to,
             "assigned_to_name": assigned_to_name,
             "assignment_method": assignment_method,
@@ -593,11 +951,11 @@ async def create_lead(
         elif assignment_method == "manual":
             assignment_message = f" and manually assigned to {assigned_to_name}"
         
-        logger.info(f"✅ Lead created successfully: {lead_id}")
+        logger.info(f"✅ Lead created successfully: {lead_id} with status '{DEFAULT_NEW_LEAD_STATUS}'")
         
         return {
             "success": True,
-            "message": f"Lead {lead_id} created successfully{assignment_message}",
+            "message": f"Lead {lead_id} created successfully with status '{DEFAULT_NEW_LEAD_STATUS}'{assignment_message}",
             "lead": response_lead,
             "assignment_info": {
                 "assigned_to": assigned_to,
@@ -622,7 +980,6 @@ async def create_lead(
             detail=f"Failed to create lead: {str(e)}"
         )
 
-
 @router.get("/", response_model=LeadListResponse)
 async def get_leads(
     page: int = Query(1, ge=1),
@@ -633,8 +990,8 @@ async def get_leads(
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):
     """
-    Get leads with comprehensive error handling and data validation
-    FIXED VERSION: Handles missing fields and ensures Pydantic validation
+    Get leads with complete status migration support
+    This endpoint handles both old and new status values seamlessly
     """
     try:
         logger.info(f"Get leads requested by: {current_user.get('email')}")
@@ -644,101 +1001,51 @@ async def get_leads(
         query = {}
         if current_user["role"] != "admin":
             query["assigned_to"] = current_user["email"]
+        
+        # Handle status filtering (support both old and new values)
         if lead_status:
-            query["status"] = lead_status
+            # Create OR query to match both old and new status values
+            possible_old_statuses = [k for k, v in OLD_TO_NEW_STATUS_MAPPING.items() if v == lead_status.value]
+            status_conditions = [{"status": lead_status.value}]
+            if possible_old_statuses:
+                status_conditions.extend([{"status": old_status} for old_status in possible_old_statuses])
+            query["$or"] = status_conditions
+        
         if assigned_to and current_user["role"] == "admin":
-            query["assigned_to"] = assigned_to
+            if "$or" in query:
+                # Combine with existing OR condition
+                query = {"$and": [{"assigned_to": assigned_to}, {"$or": query["$or"]}]}
+            else:
+                query["assigned_to"] = assigned_to
+        
         if search:
-            query["$or"] = [
-                {"name": {"$regex": search, "$options": "i"}},
-                {"email": {"$regex": search, "$options": "i"}},
-                {"lead_id": {"$regex": search, "$options": "i"}}
-            ]
+            search_condition = {
+                "$or": [
+                    {"name": {"$regex": search, "$options": "i"}},
+                    {"email": {"$regex": search, "$options": "i"}},
+                    {"lead_id": {"$regex": search, "$options": "i"}}
+                ]
+            }
+            if "$and" in query:
+                query["$and"].append(search_condition)
+            elif "$or" in query:
+                query = {"$and": [{"$or": query["$or"]}, search_condition]}
+            else:
+                query.update(search_condition)
         
         total = await db.leads.count_documents(query)
         skip = (page - 1) * limit
         
         leads = await db.leads.find(query).skip(skip).limit(limit).sort("created_at", -1).to_list(None)
         
-        # 🔧 CRITICAL FIX: Ensure ALL required fields for Pydantic validation
+        # Process leads with migration support
         processed_leads = []
-        
         for lead in leads:
             try:
-                # Basic field transformations
-                lead["id"] = str(lead["_id"])
-                lead["created_by"] = str(lead.get("created_by", ""))
-                
-                # 🚨 CRITICAL: Ensure lead_score exists (required by LeadResponseComprehensive)
-                if "lead_score" not in lead or lead["lead_score"] is None:
-                    lead["lead_score"] = 0
-                    logger.warning(f"Missing lead_score for lead {lead.get('lead_id', 'unknown')}, defaulting to 0")
-                
-                # 🚨 CRITICAL: Ensure stage is valid enum value
-                valid_stages = ["initial", "contacted", "qualified", "proposal", "negotiation", "closed", "lost"]
-                if lead.get("stage") not in valid_stages:
-                    if lead.get("stage") == "open":
-                        lead["stage"] = "initial"
-                    else:
-                        lead["stage"] = "initial"
-                        logger.warning(f"Invalid stage '{lead.get('stage')}' for lead {lead.get('lead_id')}, defaulting to 'initial'")
-                
-                # 🚨 CRITICAL: Ensure all required fields have defaults
-                required_defaults = {
-                    "tags": [],
-                    "contact_number": lead.get("phone_number", ""),
-                    "source": "website",
-                    "assigned_to_name": None,
-                    "assignment_method": None,
-                    "notes": None,
-                    "last_contacted": None,
-                    "assignment_history": None
-                }
-                
-                for field, default_value in required_defaults.items():
-                    if field not in lead or lead[field] is None:
-                        lead[field] = default_value
-                
-                # Handle created_by_name
-                created_by_id = lead.get("created_by")
-                if created_by_id:
-                    try:
-                        user_info = await db.users.find_one({"_id": ObjectId(created_by_id)})
-                        if user_info:
-                            lead["created_by_name"] = f"{user_info.get('first_name', '')} {user_info.get('last_name', '')}".strip()
-                            if not lead["created_by_name"]:
-                                lead["created_by_name"] = user_info.get('email', 'Unknown User')
-                        else:
-                            lead["created_by_name"] = "Unknown User"
-                    except Exception as e:
-                        logger.error(f"Error fetching created_by user info: {e}")
-                        lead["created_by_name"] = "Unknown User"
-                else:
-                    lead["created_by_name"] = "Unknown User"
-                
-                # Handle assigned_to_name
-                if lead.get("assigned_to") and not lead.get("assigned_to_name"):
-                    try:
-                        assigned_user = await db.users.find_one({"email": lead["assigned_to"]})
-                        if assigned_user:
-                            lead["assigned_to_name"] = f"{assigned_user.get('first_name', '')} {assigned_user.get('last_name', '')}".strip()
-                            if not lead["assigned_to_name"]:
-                                lead["assigned_to_name"] = assigned_user.get('email', 'Unknown')
-                        else:
-                            lead["assigned_to_name"] = lead["assigned_to"]
-                    except Exception as e:
-                        logger.error(f"Error fetching assigned_to user info: {e}")
-                        lead["assigned_to_name"] = lead.get("assigned_to", "")
-                
-                # Ensure status has a default
-                if "status" not in lead or not lead["status"]:
-                    lead["status"] = "Followup"
-                
-                processed_leads.append(lead)
-                
+                processed_lead = await process_lead_for_response(lead, db, current_user)
+                processed_leads.append(processed_lead)
             except Exception as e:
-                logger.error(f"Error processing lead {lead.get('lead_id', 'unknown')}: {e}")
-                # Skip this lead rather than failing the entire request
+                logger.error(f"Failed to process lead {lead.get('lead_id', 'unknown')}: {e}")
                 continue
         
         logger.info(f"Successfully processed {len(processed_leads)} leads out of {len(leads)} total")
@@ -758,128 +1065,66 @@ async def get_leads(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve leads"
         )
-    
-
-# 🔧 ADDITIONAL FIX: Database Migration to Add Missing Fields
-@router.post("/fix-missing-fields")
-async def fix_missing_lead_fields(
-    current_user: Dict[str, Any] = Depends(get_admin_user)
-):
-    """
-    One-time migration to fix leads missing required fields
-    """
-    try:
-        db = get_database()
-        
-        # Find leads missing lead_score
-        leads_missing_score = await db.leads.find({"lead_score": {"$exists": False}}).to_list(None)
-        
-        updated_count = 0
-        for lead in leads_missing_score:
-            await db.leads.update_one(
-                {"_id": lead["_id"]},
-                {"$set": {"lead_score": 0}}
-            )
-            updated_count += 1
-        
-        # Find leads with invalid stages
-        leads_invalid_stage = await db.leads.find({
-            "stage": {"$nin": ["initial", "contacted", "qualified", "proposal", "negotiation", "closed", "lost"]}
-        }).to_list(None)
-        
-        stage_updated_count = 0
-        for lead in leads_invalid_stage:
-            new_stage = "initial" if lead.get("stage") == "open" else "initial"
-            await db.leads.update_one(
-                {"_id": lead["_id"]},
-                {"$set": {"stage": new_stage}}
-            )
-            stage_updated_count += 1
-        
-        logger.info(f"Fixed {updated_count} leads missing lead_score and {stage_updated_count} leads with invalid stages")
-        
-        return {
-            "success": True,
-            "message": f"Fixed {updated_count} leads missing lead_score and {stage_updated_count} leads with invalid stages",
-            "leads_updated": updated_count,
-            "stages_updated": stage_updated_count
-        }
-        
-    except Exception as e:
-        logger.error(f"Fix missing fields error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to fix missing fields"
-        )
 
 @router.get("/my-leads", response_model=LeadListResponse)
 async def get_my_leads(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
-    lead_status: Optional[LeadStatus] = Query(None),  # ✅ FIXED: Changed from 'status' to 'lead_status'
+    lead_status: Optional[LeadStatus] = Query(None),
     search: Optional[str] = Query(None),
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):
     """
-    Get leads assigned to current user (Traditional method)
+    Get leads assigned to current user with complete migration support
     """
     try:
         db = get_database()
         query = {"assigned_to": current_user["email"]}
         
-        # ✅ FIXED: Use lead_status instead of status
+        # Handle status filtering with migration support
         if lead_status:
-            query["status"] = lead_status
+            possible_old_statuses = [k for k, v in OLD_TO_NEW_STATUS_MAPPING.items() if v == lead_status.value]
+            status_conditions = [{"status": lead_status.value}]
+            if possible_old_statuses:
+                status_conditions.extend([{"status": old_status} for old_status in possible_old_statuses])
+            query["$or"] = status_conditions
+        
         if search:
-            query["$or"] = [
-                {"name": {"$regex": search, "$options": "i"}},
-                {"email": {"$regex": search, "$options": "i"}},
-                {"lead_id": {"$regex": search, "$options": "i"}}
-            ]
+            search_condition = {
+                "$or": [
+                    {"name": {"$regex": search, "$options": "i"}},
+                    {"email": {"$regex": search, "$options": "i"}},
+                    {"lead_id": {"$regex": search, "$options": "i"}}
+                ]
+            }
+            if "$or" in query:
+                query = {
+                    "$and": [
+                        {"assigned_to": current_user["email"]},
+                        {"$or": query["$or"]},
+                        search_condition
+                    ]
+                }
+            else:
+                query.update(search_condition)
         
         total = await db.leads.count_documents(query)
         skip = (page - 1) * limit
         
         leads = await db.leads.find(query).skip(skip).limit(limit).sort("created_at", -1).to_list(None)
         
-        # 🔧 FIX: ObjectId serialization and Pydantic validation issues
+        # Process leads with migration support
+        processed_leads = []
         for lead in leads:
-            lead["id"] = str(lead["_id"])
-            lead["created_by"] = str(lead.get("created_by", ""))
-            lead["assigned_to_name"] = f"{current_user.get('first_name', '')} {current_user.get('last_name', '')}".strip()
-            
-# 🔧 FIX 1: Handle status and stage enum mismatches
-            if lead.get("status") == "open":
-                lead["status"] = "Followup"  # Replace 'open' with valid default
-
-            if lead.get("stage") == "open":
-                lead["stage"] = "initial"  # Replace invalid stage
-            elif lead.get("stage") not in ["initial", "contacted", "qualified", "proposal", "negotiation", "closed", "lost"]:
-                    lead["stage"] = "initial"
-  # Default fallback
-            
-            # 🔧 FIX 2: Add missing created_by_name field
-            created_by_id = lead.get("created_by")
-            if created_by_id:
-                try:
-                    user_info = await db.users.find_one({"_id": ObjectId(created_by_id)})
-                    if user_info:
-                        lead["created_by_name"] = f"{user_info.get('first_name', '')} {user_info.get('last_name', '')}".strip()
-                        if not lead["created_by_name"]:
-                            lead["created_by_name"] = user_info.get('email', 'Unknown User')
-                    else:
-                        lead["created_by_name"] = "Unknown User"
-                except:
-                    lead["created_by_name"] = "Unknown User"
-            else:
-                lead["created_by_name"] = "Unknown User"
-            
-            # Ensure assigned_to_name has a fallback
-            if not lead["assigned_to_name"]:
-                lead["assigned_to_name"] = current_user.get('email', 'Unknown')
+            try:
+                processed_lead = await process_lead_for_response(lead, db, current_user)
+                processed_leads.append(processed_lead)
+            except Exception as e:
+                logger.error(f"Failed to process lead {lead.get('lead_id', 'unknown')}: {e}")
+                continue
         
         return LeadListResponse(
-            leads=leads,
+            leads=processed_leads,
             total=total,
             page=page,
             limit=limit,
@@ -889,7 +1134,6 @@ async def get_my_leads(
         
     except Exception as e:
         logger.error(f"Get my leads error: {e}")
-        # ✅ FIXED: Now 'status' refers to the imported FastAPI status module
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve your leads"
@@ -900,7 +1144,7 @@ async def get_lead_stats(
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):
     """
-    Get lead statistics for dashboard (custom statuses)
+    Get lead statistics with migration-aware status counting
     """
     try:
         db = get_database()
@@ -920,35 +1164,46 @@ async def get_lead_stats(
         
         result = await db.leads.aggregate(pipeline).to_list(None)
         
-        # ✅ Your custom lead statuses
-        custom_statuses = [
-            "Followup", "Warm", "Prospect", "Junk", "Enrolled", "Yet to call",
-            "Counseled", "DNP", "INVALID", "Call Back", "Busy", "NI", "Ringing", "Wrong Number"
-        ]
+        # Initialize stats with your new status values
+        stats = {
+            "followup": 0,
+            "warm": 0,
+            "prospect": 0,
+            "junk": 0,
+            "enrolled": 0,
+            "yet_to_call": 0,
+            "counseled": 0,
+            "dnp": 0,
+            "invalid": 0,
+            "call_back": 0,
+            "busy": 0,
+            "ni": 0,
+            "ringing": 0,
+            "wrong_number": 0,
+            "total_leads": 0,
+            "my_leads": 0,
+            "unassigned_leads": 0
+        }
         
-        # ✅ Initialize stats dictionary
-        stats = {status.lower().replace(" ", "_"): 0 for status in custom_statuses}
-        stats["total_leads"] = 0
-        stats["my_leads"] = 0
-        stats["unassigned_leads"] = 0
-        
-        # ✅ Map aggregation result
+        # Process aggregation result with migration awareness
         for item in result:
             status_val = item["_id"]
             count = item["count"]
             stats["total_leads"] += count
-
-            key = status_val.lower().replace(" ", "_")
+            
+            # Migrate status value if needed
+            migrated_status = migrate_status_value(status_val)
+            
+            # Map to stats key
+            key = migrated_status.lower().replace(" ", "_")
             if key in stats:
-                stats[key] = count
+                stats[key] += count
         
-        # ✅ Get my_leads / unassigned_leads
+        # Calculate additional stats
         if current_user["role"] != "admin":
             stats["my_leads"] = stats["total_leads"]
         else:
-            admin_user = await db.users.find_one({"_id": ObjectId(current_user["_id"])})
-            admin_email = admin_user["email"] if admin_user else ""
-            stats["my_leads"] = await db.leads.count_documents({"assigned_to": admin_email})
+            stats["my_leads"] = await db.leads.count_documents({"assigned_to": current_user["email"]})
             stats["unassigned_leads"] = await db.leads.count_documents({"assigned_to": None})
         
         return LeadStatsResponse(**stats)
@@ -959,7 +1214,6 @@ async def get_lead_stats(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve lead statistics"
         )
-
 
 @router.get("/{lead_id}")
 async def get_lead(
@@ -984,7 +1238,7 @@ async def get_lead(
                 detail="Lead not found or you don't have permission to view it"
             )
         
-        # Transform to structured format
+        # Transform to structured format with migration support
         structured_lead = transform_lead_to_structured_format(lead)
         
         return {
@@ -1087,7 +1341,7 @@ async def assign_lead(
         )
 
 # ============================================================================
-# UPDATE ENDPOINT (FIXED)
+# UPDATE ENDPOINT
 # ============================================================================
 
 @router.put("/update")
@@ -1099,9 +1353,6 @@ async def update_lead_universal(
     Universal lead update endpoint with user array synchronization
     """
     try:
-        # ✅ FIXED: Use correct import path
-        from ..services.user_lead_array_service import user_lead_array_service
-        
         logger.info(f"🔄 Update by {current_user.get('email')} with data: {update_request}")
         
         db = get_database()
@@ -1174,14 +1425,27 @@ async def update_lead_universal(
         # Handle user array synchronization if assignment changed
         if assignment_changed:
             try:
-                array_sync_success = await user_lead_array_service.move_lead_between_users(
-                    lead_id, current_assigned_to, new_assigned_to
-                )
+                # Remove from old user's array
+                if current_assigned_to:
+                    await db.users.update_one(
+                        {"email": current_assigned_to},
+                        {
+                            "$pull": {"assigned_leads": lead_id},
+                            "$inc": {"total_assigned_leads": -1}
+                        }
+                    )
                 
-                if array_sync_success:
-                    logger.info(f"✅ User arrays synchronized for lead {lead_id}")
-                else:
-                    logger.error(f"❌ Failed to synchronize user arrays for lead {lead_id}")
+                # Add to new user's array
+                if new_assigned_to:
+                    await db.users.update_one(
+                        {"email": new_assigned_to},
+                        {
+                            "$push": {"assigned_leads": lead_id},
+                            "$inc": {"total_assigned_leads": 1}
+                        }
+                    )
+                
+                logger.info(f"✅ User arrays synchronized for lead {lead_id}")
                     
             except Exception as sync_error:
                 logger.error(f"💥 Array synchronization error: {str(sync_error)}")
@@ -1292,6 +1556,7 @@ async def bulk_create_leads(
 ):
     """
     Create multiple leads at once with:
+    - NEW: All leads get "Yet to call" status
     - Individual duplicate checking
     - Round-robin assignment distribution
     - Activity logging for each lead
@@ -1401,7 +1666,10 @@ async def bulk_create_leads(
                     "contact_number": contact_number,
                     "phone_number": contact_number,
                     "source": lead_data.get("source", "bulk_import"),
-                    "status": "open",
+                    "status": DEFAULT_NEW_LEAD_STATUS,  # 🔥 NEW: Use "Yet to call" for bulk import
+                    "stage": "initial",
+                    "lead_score": 0,
+                    "priority": "medium",
                     "assigned_to": assigned_to,
                     "assigned_to_name": assigned_to_name,
                     "assignment_method": assignment_method,
@@ -1429,13 +1697,14 @@ async def bulk_create_leads(
                 await db.lead_activities.insert_one({
                     "lead_id": lead_id,
                     "activity_type": "lead_created",
-                    "description": f"Lead '{name}' created via bulk import",
+                    "description": f"Lead '{name}' created via bulk import with status '{DEFAULT_NEW_LEAD_STATUS}'",
                     "created_by": current_user["_id"],
                     "created_by_name": f"{current_user.get('first_name', '')} {current_user.get('last_name', '')}".strip(),
                     "created_at": datetime.utcnow(),
                     "metadata": {
                         "bulk_import": True,
                         "batch_index": index,
+                        "initial_status": DEFAULT_NEW_LEAD_STATUS,
                         "assignment_method": assignment_method
                     }
                 })
@@ -1445,7 +1714,8 @@ async def bulk_create_leads(
                     "status": "created",
                     "lead_id": lead_id,
                     "assigned_to": assigned_to,
-                    "assigned_to_name": assigned_to_name
+                    "assigned_to_name": assigned_to_name,
+                    "initial_status": DEFAULT_NEW_LEAD_STATUS
                 })
                 
                 successful_creates += 1
@@ -1464,12 +1734,13 @@ async def bulk_create_leads(
         
         return {
             "success": True,
-            "message": f"Bulk creation completed: {successful_creates} leads created, {failed_creates} failed",
+            "message": f"Bulk creation completed: {successful_creates} leads created with status '{DEFAULT_NEW_LEAD_STATUS}', {failed_creates} failed",
             "summary": {
                 "total_attempted": len(leads_data),
                 "successful_creates": successful_creates,
                 "failed_creates": failed_creates,
-                "duplicates_skipped": len([r for r in results if r.get("reason") == "duplicate"])
+                "duplicates_skipped": len([r for r in results if r.get("reason") == "duplicate"]),
+                "default_status_used": DEFAULT_NEW_LEAD_STATUS
             },
             "results": results
         }
@@ -1483,4 +1754,59 @@ async def bulk_create_leads(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create leads in bulk: {str(e)}"
+        )
+
+# ============================================================================
+# LEGACY SUPPORT ENDPOINTS
+# ============================================================================
+
+@router.post("/fix-missing-fields")
+async def fix_missing_lead_fields(
+    current_user: Dict[str, Any] = Depends(get_admin_user)
+):
+    """
+    One-time migration to fix leads missing required fields
+    """
+    try:
+        db = get_database()
+        
+        # Find leads missing lead_score
+        leads_missing_score = await db.leads.find({"lead_score": {"$exists": False}}).to_list(None)
+        
+        updated_count = 0
+        for lead in leads_missing_score:
+            await db.leads.update_one(
+                {"_id": lead["_id"]},
+                {"$set": {"lead_score": 0}}
+            )
+            updated_count += 1
+        
+        # Find leads with invalid stages
+        leads_invalid_stage = await db.leads.find({
+            "stage": {"$nin": VALID_STAGES}
+        }).to_list(None)
+        
+        stage_updated_count = 0
+        for lead in leads_invalid_stage:
+            new_stage = "initial" if lead.get("stage") == "open" else "initial"
+            await db.leads.update_one(
+                {"_id": lead["_id"]},
+                {"$set": {"stage": new_stage}}
+            )
+            stage_updated_count += 1
+        
+        logger.info(f"Fixed {updated_count} leads missing lead_score and {stage_updated_count} leads with invalid stages")
+        
+        return {
+            "success": True,
+            "message": f"Fixed {updated_count} leads missing lead_score and {stage_updated_count} leads with invalid stages",
+            "leads_updated": updated_count,
+            "stages_updated": stage_updated_count
+        }
+        
+    except Exception as e:
+        logger.error(f"Fix missing fields error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fix missing fields"
         )
