@@ -732,7 +732,7 @@ async def get_leads(
                 
                 # Ensure status has a default
                 if "status" not in lead or not lead["status"]:
-                    lead["status"] = "open"
+                    lead["status"] = "Followup"
                 
                 processed_leads.append(lead)
                 
@@ -848,11 +848,15 @@ async def get_my_leads(
             lead["created_by"] = str(lead.get("created_by", ""))
             lead["assigned_to_name"] = f"{current_user.get('first_name', '')} {current_user.get('last_name', '')}".strip()
             
-            # 🔧 FIX 1: Handle stage enum mismatch
+# 🔧 FIX 1: Handle status and stage enum mismatches
+            if lead.get("status") == "open":
+                lead["status"] = "Followup"  # Replace 'open' with valid default
+
             if lead.get("stage") == "open":
-                lead["stage"] = "initial"  # Map 'open' to valid enum value
+                lead["stage"] = "initial"  # Replace invalid stage
             elif lead.get("stage") not in ["initial", "contacted", "qualified", "proposal", "negotiation", "closed", "lost"]:
-                lead["stage"] = "initial"  # Default fallback
+                    lead["stage"] = "initial"
+  # Default fallback
             
             # 🔧 FIX 2: Add missing created_by_name field
             created_by_id = lead.get("created_by")
