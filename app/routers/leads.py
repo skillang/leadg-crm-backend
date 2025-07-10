@@ -1,4 +1,4 @@
-# app/routers/leads.py - Complete Updated with Status Migration Support
+# app/routers/leads.py - Complete Updated with ObjectId Fix and Status Migration Support
 
 from fastapi import APIRouter, HTTPException, status, Depends, Query
 from typing import Dict, Any, List, Optional
@@ -20,6 +20,24 @@ from ..schemas.lead import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# ============================================================================
+# OBJECTID CONVERSION UTILITY - CRITICAL FIX
+# ============================================================================
+
+def convert_objectid_to_str(obj):
+    """
+    Recursively convert ObjectId to string in any data structure
+    This function fixes the JSON serialization error
+    """
+    if isinstance(obj, ObjectId):
+        return str(obj)
+    elif isinstance(obj, dict):
+        return {key: convert_objectid_to_str(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_objectid_to_str(item) for item in obj]
+    else:
+        return obj
 
 # ============================================================================
 # STATUS MIGRATION UTILITIES
@@ -228,32 +246,8 @@ def transform_lead_to_structured_format(lead: Dict[str, Any]) -> Dict[str, Any]:
     """
     Transform flat lead document to structured comprehensive format
     """
-    # Clean ObjectIds first
-    clean_lead = {}
-    for key, value in lead.items():
-        if key == "_id" or key == "created_by":
-            clean_lead[key] = str(value) if value else None
-        elif isinstance(value, ObjectId):
-            clean_lead[key] = str(value)
-        elif isinstance(value, list):
-            # Handle arrays that might contain ObjectIds (like assignment_history)
-            clean_array = []
-            for item in value:
-                if isinstance(item, dict):
-                    clean_item = {}
-                    for sub_key, sub_value in item.items():
-                        if isinstance(sub_value, ObjectId):
-                            clean_item[sub_key] = str(sub_value)
-                        else:
-                            clean_item[sub_key] = sub_value
-                    clean_array.append(clean_item)
-                elif isinstance(item, ObjectId):
-                    clean_array.append(str(item))
-                else:
-                    clean_array.append(item)
-            clean_lead[key] = clean_array
-        else:
-            clean_lead[key] = value
+    # Clean ObjectIds first using our utility function
+    clean_lead = convert_objectid_to_str(lead)
     
     # Transform to structured format
     structured_lead = {
@@ -281,7 +275,7 @@ def transform_lead_to_structured_format(lead: Dict[str, Any]) -> Dict[str, Any]:
             "notes": clean_lead.get("notes", "")
         },
         "system_info": {
-            "id": str(clean_lead["_id"]),
+            "id": str(clean_lead["_id"]) if "_id" in clean_lead else clean_lead.get("id"),
             "lead_id": clean_lead.get("lead_id", ""),
             "status": migrate_status_value(clean_lead.get("status", DEFAULT_NEW_LEAD_STATUS)),  # 🔥 Updated default
             "created_by": clean_lead.get("created_by", ""),
@@ -459,7 +453,7 @@ async def analyze_lead_statuses(
         )
 
 # ============================================================================
-# SUPER FAST ENDPOINTS (Using User Arrays)
+# SUPER FAST ENDPOINTS (Using User Arrays) - FIXED FOR OBJECTID
 # ============================================================================
 
 @router.get("/my-leads-fast")
@@ -467,7 +461,7 @@ async def get_my_leads_fast(
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):
     """
-    SUPER FAST user leads using user array lookup
+    SUPER FAST user leads using user array lookup - FIXED ObjectId serialization
     Performance: 5-50x faster than traditional query
     """
     try:
@@ -507,11 +501,14 @@ async def get_my_leads_fast(
                 logger.error(f"Error processing lead {lead.get('lead_id', 'unknown')}: {e}")
                 continue
         
-        logger.info(f"✅ Fast lookup returned {len(clean_leads)} leads")
+        # 🔥 CRITICAL FIX: Convert all ObjectIds to strings before returning
+        final_leads = convert_objectid_to_str(clean_leads)
+        
+        logger.info(f"✅ Fast lookup returned {len(final_leads)} leads")
         
         return {
             "success": True,
-            "leads": clean_leads,
+            "leads": final_leads,
             "total": total_count,
             "performance": "ultra_fast_array_lookup"
         }
@@ -530,7 +527,7 @@ async def get_admin_user_lead_stats(
     current_user: Dict[str, Any] = Depends(get_admin_user)
 ):
     """
-    SUPER FAST admin stats using user arrays
+    SUPER FAST admin stats using user arrays - FIXED ObjectId serialization
     """
     try:
         logger.info(f"Admin user stats requested by: {current_user.get('email')}")
@@ -563,7 +560,8 @@ async def get_admin_user_lead_stats(
         total_leads = await db.leads.count_documents({})
         unassigned_leads = await db.leads.count_documents({"assigned_to": None})
         
-        return {
+        # 🔥 CRITICAL FIX: Ensure ObjectIds are converted
+        final_response = convert_objectid_to_str({
             "success": True,
             "user_stats": user_stats,
             "summary": {
@@ -573,7 +571,9 @@ async def get_admin_user_lead_stats(
                 "unassigned_leads": unassigned_leads
             },
             "performance": "ultra_fast_array_lookup"
-        }
+        })
+        
+        return final_response
         
     except Exception as e:
         logger.error(f"Admin stats error: {str(e)}")
@@ -689,7 +689,7 @@ async def fix_user_arrays_now(
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
-# CORE LEAD ENDPOINTS
+# CORE LEAD ENDPOINTS - FIXED FOR OBJECTID
 # ============================================================================
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
@@ -779,7 +779,8 @@ async def create_lead(
                 })
             
             logger.warning(f"Duplicate lead creation prevented: {email}")
-            return {
+            # 🔥 CRITICAL FIX: Convert ObjectIds in duplicate info
+            return convert_objectid_to_str({
                 "success": False,
                 "message": f"Duplicate lead found! A lead with this email or phone number already exists.",
                 "duplicate_check": {
@@ -788,7 +789,7 @@ async def create_lead(
                     "match_criteria": ["email", "phone_number"]
                 },
                 "force_create_option": "Add ?force_create=true to create anyway"
-            }
+            })
         
         # Step 3: Generate lead ID
         last_lead = await db.leads.find_one(sort=[("created_at", -1)])
@@ -953,7 +954,8 @@ async def create_lead(
         
         logger.info(f"✅ Lead created successfully: {lead_id} with status '{DEFAULT_NEW_LEAD_STATUS}'")
         
-        return {
+        # 🔥 CRITICAL FIX: Convert ObjectIds in response
+        return convert_objectid_to_str({
             "success": True,
             "message": f"Lead {lead_id} created successfully with status '{DEFAULT_NEW_LEAD_STATUS}'{assignment_message}",
             "lead": response_lead,
@@ -967,7 +969,7 @@ async def create_lead(
                 "is_duplicate": False,
                 "checked": True
             }
-        }
+        })
         
     except HTTPException:
         raise
@@ -990,7 +992,7 @@ async def get_leads(
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):
     """
-    Get leads with complete status migration support
+    Get leads with complete status migration support - FIXED ObjectId serialization
     This endpoint handles both old and new status values seamlessly
     """
     try:
@@ -1048,10 +1050,13 @@ async def get_leads(
                 logger.error(f"Failed to process lead {lead.get('lead_id', 'unknown')}: {e}")
                 continue
         
-        logger.info(f"Successfully processed {len(processed_leads)} leads out of {len(leads)} total")
+        # 🔥 CRITICAL FIX: Convert ObjectIds before creating response model
+        final_leads = convert_objectid_to_str(processed_leads)
+        
+        logger.info(f"Successfully processed {len(final_leads)} leads out of {len(leads)} total")
         
         return LeadListResponse(
-            leads=processed_leads,
+            leads=final_leads,
             total=total,
             page=page,
             limit=limit,
@@ -1075,7 +1080,7 @@ async def get_my_leads(
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):
     """
-    Get leads assigned to current user with complete migration support
+    Get leads assigned to current user with complete migration support - FIXED ObjectId
     """
     try:
         db = get_database()
@@ -1123,8 +1128,11 @@ async def get_my_leads(
                 logger.error(f"Failed to process lead {lead.get('lead_id', 'unknown')}: {e}")
                 continue
         
+        # 🔥 CRITICAL FIX: Convert ObjectIds before response
+        final_leads = convert_objectid_to_str(processed_leads)
+        
         return LeadListResponse(
-            leads=processed_leads,
+            leads=final_leads,
             total=total,
             page=page,
             limit=limit,
@@ -1221,7 +1229,7 @@ async def get_lead(
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):
     """
-    Get a specific lead by ID in structured comprehensive format
+    Get a specific lead by ID in structured comprehensive format - FIXED ObjectId
     """
     try:
         db = get_database()
@@ -1238,9 +1246,10 @@ async def get_lead(
                 detail="Lead not found or you don't have permission to view it"
             )
         
-        # Transform to structured format with migration support
+        # Transform to structured format with migration support and ObjectId conversion
         structured_lead = transform_lead_to_structured_format(lead)
         
+        # 🔥 CRITICAL FIX: Already handled in transform_lead_to_structured_format
         return {
             "success": True,
             "lead": structured_lead
@@ -1258,7 +1267,7 @@ async def get_lead(
         )
 
 # ============================================================================
-# ASSIGNMENT ENDPOINTS
+# ASSIGNMENT ENDPOINTS - FIXED FOR OBJECTID
 # ============================================================================
 
 @router.post("/{lead_id}/assign", response_model=LeadAssignResponse)
@@ -1341,7 +1350,7 @@ async def assign_lead(
         )
 
 # ============================================================================
-# UPDATE ENDPOINT
+# UPDATE ENDPOINT - FIXED FOR OBJECTID
 # ============================================================================
 
 @router.put("/update")
@@ -1350,7 +1359,7 @@ async def update_lead_universal(
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):
     """
-    Universal lead update endpoint with user array synchronization
+    Universal lead update endpoint with user array synchronization - FIXED ObjectId
     """
     try:
         logger.info(f"🔄 Update by {current_user.get('email')} with data: {update_request}")
@@ -1453,19 +1462,8 @@ async def update_lead_universal(
         # Get updated lead
         updated_lead = await db.leads.find_one({"lead_id": lead_id})
         
-        # Clean ObjectIds for response
-        def clean_response(doc):
-            clean_doc = {}
-            for key, value in doc.items():
-                if key == "_id" or key == "created_by":
-                    clean_doc[key] = str(value) if value else None
-                elif isinstance(value, ObjectId):
-                    clean_doc[key] = str(value)
-                else:
-                    clean_doc[key] = value
-            return clean_doc
-        
-        clean_lead = clean_response(updated_lead)
+        # 🔥 CRITICAL FIX: Convert ObjectIds before response
+        clean_lead = convert_objectid_to_str(updated_lead)
         
         return {
             "success": True,
@@ -1545,7 +1543,7 @@ async def delete_lead(
         )
 
 # ============================================================================
-# BULK OPERATIONS
+# BULK OPERATIONS - FIXED FOR OBJECTID
 # ============================================================================
 
 @router.post("/bulk-create", status_code=status.HTTP_201_CREATED)
@@ -1732,7 +1730,8 @@ async def bulk_create_leads(
         
         logger.info(f"✅ Bulk create completed: {successful_creates} created, {failed_creates} failed")
         
-        return {
+        # 🔥 CRITICAL FIX: Convert ObjectIds in results
+        return convert_objectid_to_str({
             "success": True,
             "message": f"Bulk creation completed: {successful_creates} leads created with status '{DEFAULT_NEW_LEAD_STATUS}', {failed_creates} failed",
             "summary": {
@@ -1743,7 +1742,7 @@ async def bulk_create_leads(
                 "default_status_used": DEFAULT_NEW_LEAD_STATUS
             },
             "results": results
-        }
+        })
         
     except HTTPException:
         raise
@@ -1754,59 +1753,4 @@ async def bulk_create_leads(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create leads in bulk: {str(e)}"
-        )
-
-# ============================================================================
-# LEGACY SUPPORT ENDPOINTS
-# ============================================================================
-
-@router.post("/fix-missing-fields")
-async def fix_missing_lead_fields(
-    current_user: Dict[str, Any] = Depends(get_admin_user)
-):
-    """
-    One-time migration to fix leads missing required fields
-    """
-    try:
-        db = get_database()
-        
-        # Find leads missing lead_score
-        leads_missing_score = await db.leads.find({"lead_score": {"$exists": False}}).to_list(None)
-        
-        updated_count = 0
-        for lead in leads_missing_score:
-            await db.leads.update_one(
-                {"_id": lead["_id"]},
-                {"$set": {"lead_score": 0}}
-            )
-            updated_count += 1
-        
-        # Find leads with invalid stages
-        leads_invalid_stage = await db.leads.find({
-            "stage": {"$nin": VALID_STAGES}
-        }).to_list(None)
-        
-        stage_updated_count = 0
-        for lead in leads_invalid_stage:
-            new_stage = "initial" if lead.get("stage") == "open" else "initial"
-            await db.leads.update_one(
-                {"_id": lead["_id"]},
-                {"$set": {"stage": new_stage}}
-            )
-            stage_updated_count += 1
-        
-        logger.info(f"Fixed {updated_count} leads missing lead_score and {stage_updated_count} leads with invalid stages")
-        
-        return {
-            "success": True,
-            "message": f"Fixed {updated_count} leads missing lead_score and {stage_updated_count} leads with invalid stages",
-            "leads_updated": updated_count,
-            "stages_updated": stage_updated_count
-        }
-        
-    except Exception as e:
-        logger.error(f"Fix missing fields error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to fix missing fields"
         )

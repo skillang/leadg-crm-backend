@@ -94,6 +94,10 @@ async def create_indexes():
             IndexModel([("username", ASCENDING)], unique=True),
             IndexModel([("is_active", ASCENDING)]),
             IndexModel([("role", ASCENDING)]),
+            # 🚀 NEW: Department indexes for multi-department support
+            IndexModel([("departments", ASCENDING)]),  # Works for both string and array
+            IndexModel([("departments", ASCENDING), ("is_active", ASCENDING)]),  # Compound index
+            IndexModel([("departments", ASCENDING), ("role", ASCENDING)]),  # Role-based department queries
         ])
         
         # Leads collection indexes
@@ -153,6 +157,16 @@ async def create_indexes():
             IndexModel([("lead_id", ASCENDING), ("is_primary", ASCENDING)]),
             IndexModel([("lead_id", ASCENDING), ("role", ASCENDING)]),
             IndexModel([("lead_id", ASCENDING), ("created_at", ASCENDING)]),
+        ])
+        
+        # 🚀 NEW: Departments collection indexes
+        departments_collection = db.database.departments
+        await departments_collection.create_indexes([
+            IndexModel([("name", ASCENDING)], unique=True),  # Unique department names
+            IndexModel([("is_active", ASCENDING)]),  # Filter active departments
+            IndexModel([("name", ASCENDING), ("is_active", ASCENDING)]),  # Compound for fast lookups
+            IndexModel([("created_at", ASCENDING)]),  # For sorting by creation date
+            IndexModel([("created_by", ASCENDING)]),  # Track who created departments
         ])
         
         # Token blacklist for logout functionality

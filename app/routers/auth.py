@@ -1,21 +1,25 @@
-from fastapi import APIRouter, HTTPException, status, Request, Depends
+# REPLACE THE IMPORT SECTION AT THE TOP OF YOUR app/routers/auth.py
+
+from fastapi import APIRouter, HTTPException, status, Request, Depends, Query # type: ignore
 from datetime import datetime, timedelta
-from typing import Dict, Any
+from typing import Dict, Any, List, Union
 import logging
 from bson import ObjectId
 
 from ..config.database import get_database
 from ..utils.security import security, verify_password, get_password_hash
-from ..utils.dependencies import get_current_active_user
+from ..utils.dependencies import get_current_active_user, get_admin_user
 from ..schemas.auth import (
     LoginRequest, LoginResponse, RegisterResponse,
     RefreshTokenRequest, RefreshTokenResponse,
     LogoutRequest, AuthResponse
 )
 
-
-from ..utils.dependencies import get_admin_user
-from ..models.user import UserCreate, UserResponse
+# 🔥 FIXED: Import only the classes that exist in user models
+from ..models.user import (
+    UserCreate, UserResponse, UserUpdate, DepartmentHelper, 
+    DepartmentCreate, DepartmentType
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -314,24 +318,596 @@ async def logout_user(
             success=True,  # Return success even if session cleanup fails
             message="Logged out"
         )
-
 @router.get("/me", response_model=UserResponse)
 async def get_current_user_info(
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):
     """
-    Get current user information
+    Get current user information with multi-department support
+    Handles both old and new department formats
     """
-    return UserResponse(
-        id=current_user["_id"],
-        email=current_user["email"],
-        username=current_user["username"],
-        first_name=current_user["first_name"],
-        last_name=current_user["last_name"],
-        role=current_user["role"],
-        is_active=current_user["is_active"],
-        phone=current_user.get("phone"),
-        department=current_user.get("department"),
-        created_at=current_user["created_at"],
-        last_login=current_user.get("last_login")
-    )
+    try:
+        # 🔥 FIXED: Handle both old and new department formats
+        departments = current_user.get("departments")
+        old_department = current_user.get("department")
+        
+        # Determine departments field based on what's available
+        if departments is not None:
+            # New format - use departments field
+            if isinstance(departments, str):
+                department_list = [departments]
+                departments_field = departments
+            elif isinstance(departments, list):
+                department_list = departments
+                departments_field = departments
+            else:
+                department_list = []
+                departments_field = [] if current_user.get("role") == "user" else "admin"
+        elif old_department is not None:
+            # Old format - convert old department field
+            if current_user.get("role") == "admin":
+                departments_field = "admin"  # Admin gets string
+                department_list = ["admin"]
+            else:
+                departments_field = [old_department.lower()]  # User gets array
+                department_list = [old_department.lower()]
+        else:
+            # No department field at all - set defaults
+            if current_user.get("role") == "admin":
+                departments_field = "admin"
+                department_list = ["admin"]
+            else:
+                departments_field = []
+                department_list = []
+        
+        return UserResponse(
+            id=str(current_user["_id"]),
+            email=current_user["email"],
+            username=current_user["username"],
+            first_name=current_user["first_name"],
+            last_name=current_user["last_name"],
+            role=current_user["role"],
+            is_active=current_user["is_active"],
+            phone=current_user.get("phone"),
+            departments=departments_field,  # 🔥 FIXED: Properly set departments
+            department_list=department_list,  # 🔥 FIXED: Always as list
+            created_at=current_user["created_at"],
+            last_login=current_user.get("last_login"),
+            assigned_leads=current_user.get("assigned_leads", []),
+            total_assigned_leads=current_user.get("total_assigned_leads", 0),
+            extension_number=current_user.get("extension_number"),
+            smartflo_agent_id=current_user.get("smartflo_agent_id"),
+            smartflo_user_id=current_user.get("smartflo_user_id"),
+            calling_status=current_user.get("calling_status", "pending")
+        )
+        
+    except Exception as e:
+        logger.error(f"Error getting user info: {e}")
+        logger.error(f"User data: {current_user}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get user information"
+        )
+
+
+# Add this to your app/routers/auth.py file (TEMPORARY)
+
+@router.post("/emergency-admin", response_model=Dict[str, Any], status_code=status.HTTP_201_CREATED)
+async def create_emergency_admin(user_data: UserCreate):
+    """
+    🚨 EMERGENCY ENDPOINT: Create admin when database has no admins
+    ⚠️ REMOVE THIS ENDPOINT AFTER CREATING YOUR ADMIN!
+    """
+    try:
+        db = get_database()
+        
+        # Security check: Only allow if NO admin users exist
+        admin_count = await db.users.count_documents({"role": "admin"})
+        if admin_count > 0:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Emergency endpoint disabled - Admin users already exist. Use regular registration."
+            )
+        
+        logger.warning("🚨 EMERGENCY ADMIN CREATION INITIATED - NO ADMINS FOUND IN DATABASE")
+        
+        # Check if user already exists
+        existing_user = await db.users.find_one({"email": user_data.email})
+        if existing_user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="User with this email already exists"
+            )
+        
+        # Force admin role for security
+        user_data.role = "admin"
+        
+        # Hash password
+        hashed_password = get_password_hash(user_data.password)
+        
+        # Create admin user document
+        user_doc = {
+            "email": user_data.email,
+            "username": user_data.username,
+            "first_name": user_data.first_name,
+            "last_name": user_data.last_name,
+            "full_name": f"{user_data.first_name} {user_data.last_name}",
+            "hashed_password": hashed_password,
+            "role": "admin",
+            "phone": user_data.phone,
+            "department": user_data.department,
+            "is_active": True,
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow(),
+            "created_by": "emergency_system",
+            "failed_login_attempts": 0,
+            "login_count": 0
+        }
+        
+        # Insert admin user
+        result = await db.users.insert_one(user_doc)
+        user_id = str(result.inserted_id)
+        
+        logger.warning(f"🚨 EMERGENCY ADMIN CREATED: {user_data.email}")
+        
+        return {
+            "success": True,
+            "message": "🚨 EMERGENCY ADMIN CREATED! Remove this endpoint immediately for security!",
+            "user": {
+                "user_id": user_id,
+                "email": user_data.email,
+                "username": user_data.username,
+                "first_name": user_data.first_name,
+                "last_name": user_data.last_name,
+                "role": "admin",
+                "created_at": user_doc["created_at"]
+            },
+            "next_steps": [
+                "1. Test login with new admin credentials",
+                "2. Remove this /emergency-admin endpoint from code",
+                "3. Use regular /register endpoint for future users"
+            ]
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Emergency admin creation failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Emergency admin creation failed: {str(e)}"
+        )
+    
+# Add this TEMPORARY diagnostic endpoint to app/routers/auth.py
+
+@router.get("/debug-admin-users")
+async def debug_admin_users():
+    """
+    🔍 TEMPORARY DIAGNOSTIC: Show existing admin users (emails only for security)
+    ⚠️ REMOVE THIS ENDPOINT AFTER DEBUGGING!
+    """
+    try:
+        db = get_database()
+        
+        # Find all admin users (but only return safe fields)
+        admin_users = await db.users.find(
+            {"role": "admin"}, 
+            {
+                "email": 1, 
+                "username": 1, 
+                "first_name": 1, 
+                "last_name": 1, 
+                "is_active": 1,
+                "created_at": 1,
+                "created_by": 1
+            }
+        ).to_list(None)
+        
+        # Count total users by role
+        admin_count = await db.users.count_documents({"role": "admin"})
+        user_count = await db.users.count_documents({"role": "user"})
+        total_count = await db.users.count_documents({})
+        
+        return {
+            "database_status": "connected",
+            "admin_users_found": admin_count,
+            "regular_users_found": user_count,
+            "total_users": total_count,
+            "admin_users": [
+                {
+                    "email": user["email"],
+                    "username": user.get("username", "N/A"),
+                    "name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+                    "is_active": user.get("is_active", False),
+                    "created_at": user.get("created_at"),
+                    "created_by": user.get("created_by", "unknown")
+                }
+                for user in admin_users
+            ],
+            "next_steps": [
+                "1. Try logging in with one of these admin emails",
+                "2. If you forgot the password, you may need to reset it",
+                "3. Remove this diagnostic endpoint after debugging"
+            ]
+        }
+        
+    except Exception as e:
+        return {
+            "error": str(e),
+            "database_status": "connection_failed"
+        }
+    
+# ADD THESE ENDPOINTS TO app/routers/auth.py
+
+# 🚀 NEW: Department Management Endpoints
+
+@router.get("/departments", response_model=Dict[str, Any])
+async def get_all_departments(
+    include_user_count: bool = Query(False, description="Include user count for each department"),
+    current_user: Dict[str, Any] = Depends(get_current_active_user)
+):
+    """
+    Get all available departments (predefined + custom)
+    Used for dropdowns in user creation and lead assignment
+    """
+    try:
+        from ..models.user import DepartmentHelper, DepartmentType
+        
+        logger.info(f"Getting departments for user: {current_user.get('email')}")
+        
+        # Get all departments
+        all_departments = await DepartmentHelper.get_all_departments()
+        
+        # Add user counts if requested
+        if include_user_count:
+            for dept in all_departments:
+                dept["user_count"] = await DepartmentHelper.get_department_users_count(dept["name"])
+        
+        # Separate predefined and custom for better organization
+        predefined = [dept for dept in all_departments if dept.get("is_predefined", False)]
+        custom = [dept for dept in all_departments if not dept.get("is_predefined", False)]
+        
+        return {
+            "success": True,
+            "departments": {
+                "predefined": predefined,
+                "custom": custom,
+                "all": all_departments
+            },
+            "total_count": len(all_departments),
+            "predefined_count": len(predefined),
+            "custom_count": len(custom)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting departments: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get departments"
+        )
+
+@router.post("/departments", response_model=Dict[str, Any], status_code=status.HTTP_201_CREATED)
+async def create_department(
+    department_data: DepartmentCreate,
+    current_user: Dict[str, Any] = Depends(get_admin_user)  # Admin only
+):
+    """
+    Create a new custom department (Admin only)
+    """
+    try:
+        from ..models.user import DepartmentHelper, DepartmentType
+        
+        db = get_database()
+        logger.info(f"Admin {current_user.get('email')} creating new department: {department_data.name}")
+        
+        # Check if department already exists (predefined or custom)
+        # Check predefined departments
+        predefined_names = [dept.value for dept in DepartmentType]
+        if department_data.name in predefined_names:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Department '{department_data.name}' already exists as a predefined department"
+            )
+        
+        # Check custom departments
+        existing_custom = await db.departments.find_one({"name": department_data.name})
+        if existing_custom:
+            if existing_custom.get("is_active", True):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Department '{department_data.name}' already exists"
+                )
+            else:
+                # Reactivate if it was deactivated
+                await db.departments.update_one(
+                    {"_id": existing_custom["_id"]},
+                    {
+                        "$set": {
+                            "is_active": True,
+                            "description": department_data.description,
+                            "updated_at": datetime.utcnow(),
+                            "reactivated_by": current_user.get("email")
+                        }
+                    }
+                )
+                return {
+                    "success": True,
+                    "message": f"Department '{department_data.name}' reactivated successfully",
+                    "department_id": str(existing_custom["_id"]),
+                    "action": "reactivated"
+                }
+        
+        # Create new department
+        department_doc = {
+            "name": department_data.name,
+            "display_name": department_data.name.replace('-', ' ').title(),
+            "description": department_data.description,
+            "is_active": department_data.is_active,
+            "is_predefined": False,
+            "created_at": datetime.utcnow(),
+            "created_by": current_user.get("email"),
+            "updated_at": datetime.utcnow()
+        }
+        
+        result = await db.departments.insert_one(department_doc)
+        department_id = str(result.inserted_id)
+        
+        logger.info(f"✅ Custom department created: {department_data.name} by {current_user.get('email')}")
+        
+        return {
+            "success": True,
+            "message": f"Department '{department_data.name}' created successfully",
+            "department": {
+                "id": department_id,
+                "name": department_data.name,
+                "display_name": department_doc["display_name"],
+                "description": department_data.description,
+                "is_predefined": False,
+                "is_active": True
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating department: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create department: {str(e)}"
+        )
+
+@router.put("/users/{user_id}/departments", response_model=Dict[str, Any])
+async def update_user_departments(
+    user_id: str,
+    departments_data: Dict[str, Union[str, List[str]]],
+    current_user: Dict[str, Any] = Depends(get_admin_user)  # Admin only
+):
+    """
+    Update user departments (Admin only)
+    Supports both single department (for admin) and multiple departments (for users)
+    """
+    try:
+        from ..models.user import DepartmentHelper
+        
+        db = get_database()
+        
+        # Validate user exists
+        target_user = await db.users.find_one({"_id": ObjectId(user_id)})
+        if not target_user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        
+        new_departments = departments_data.get("departments")
+        if new_departments is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Departments field is required"
+            )
+        
+        # Convert to list for validation
+        if isinstance(new_departments, str):
+            dept_list = [new_departments]
+        else:
+            dept_list = new_departments
+        
+        # Validate all departments exist
+        invalid_departments = []
+        for dept in dept_list:
+            if not await DepartmentHelper.is_department_valid(dept):
+                invalid_departments.append(dept)
+        
+        if invalid_departments:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid departments: {invalid_departments}. Use GET /departments to see available departments."
+            )
+        
+        # 🔥 Normalize departments based on user role
+        user_role = target_user.get("role", "user")
+        normalized_departments = DepartmentHelper.normalize_departments(
+            new_departments, 
+            user_role
+        )
+        
+        # Update user
+        update_result = await db.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {
+                "$set": {
+                    "departments": normalized_departments,
+                    "updated_at": datetime.utcnow(),
+                    "departments_updated_by": current_user.get("email")
+                }
+            }
+        )
+        
+        if update_result.modified_count == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No changes made to user departments"
+            )
+        
+        logger.info(f"Admin {current_user.get('email')} updated departments for user {target_user.get('email')}: {normalized_departments}")
+        
+        return {
+            "success": True,
+            "message": f"Departments updated for user {target_user.get('email')}",
+            "user": {
+                "id": user_id,
+                "email": target_user.get("email"),
+                "name": f"{target_user.get('first_name', '')} {target_user.get('last_name', '')}".strip(),
+                "role": user_role,
+                "old_departments": target_user.get("departments", []),
+                "new_departments": normalized_departments
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating user departments: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update user departments: {str(e)}"
+        )
+
+@router.get("/departments/{department_name}/users", response_model=Dict[str, Any])
+async def get_department_users(
+    department_name: str,
+    current_user: Dict[str, Any] = Depends(get_admin_user)  # Admin only
+):
+    """
+    Get all users in a specific department (Admin only)
+    """
+    try:
+        from ..models.user import DepartmentHelper
+        
+        db = get_database()
+        
+        # Validate department exists
+        if not await DepartmentHelper.is_department_valid(department_name):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Department '{department_name}' not found"
+            )
+        
+        # Get users in this department
+        users_cursor = db.users.find(
+            {
+                "$or": [
+                    {"departments": department_name},  # String format (admin)
+                    {"departments": {"$in": [department_name]}}  # Array format (users)
+                ],
+                "is_active": True
+            },
+            {
+                "hashed_password": 0  # Exclude password
+            }
+        )
+        
+        users = await users_cursor.to_list(None)
+        
+        # Process users for response
+        department_users = []
+        for user in users:
+            departments = user.get("departments", [])
+            department_users.append({
+                "id": str(user["_id"]),
+                "email": user["email"],
+                "name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+                "role": user.get("role", "user"),
+                "departments": departments,
+                "assigned_leads_count": user.get("total_assigned_leads", 0),
+                "created_at": user.get("created_at"),
+                "last_login": user.get("last_login")
+            })
+        
+        return {
+            "success": True,
+            "department": department_name,
+            "users": department_users,
+            "total_users": len(department_users)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting department users: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get department users"
+        )
+
+@router.delete("/departments/{department_id}", response_model=Dict[str, Any])
+async def deactivate_department(
+    department_id: str,
+    current_user: Dict[str, Any] = Depends(get_admin_user)  # Admin only
+):
+    """
+    Deactivate a custom department (Admin only)
+    Note: Cannot delete predefined departments, only custom ones
+    """
+    try:
+        db = get_database()
+        
+        # Find the department
+        department = await db.departments.find_one({"_id": ObjectId(department_id)})
+        if not department:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Department not found"
+            )
+        
+        if department.get("is_predefined", False):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot deactivate predefined departments"
+            )
+        
+        # Check if any users are using this department
+        user_count = await db.users.count_documents({
+            "$or": [
+                {"departments": department["name"]},
+                {"departments": {"$in": [department["name"]]}}
+            ],
+            "is_active": True
+        })
+        
+        if user_count > 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot deactivate department '{department['name']}'. {user_count} users are currently assigned to this department. Please reassign users first."
+            )
+        
+        # Deactivate department
+        await db.departments.update_one(
+            {"_id": ObjectId(department_id)},
+            {
+                "$set": {
+                    "is_active": False,
+                    "deactivated_at": datetime.utcnow(),
+                    "deactivated_by": current_user.get("email")
+                }
+            }
+        )
+        
+        logger.info(f"Admin {current_user.get('email')} deactivated department: {department['name']}")
+        
+        return {
+            "success": True,
+            "message": f"Department '{department['name']}' deactivated successfully",
+            "department_id": department_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deactivating department: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to deactivate department"
+        )
+
+# 🔥 NEW: Import the models at the top of auth.py
