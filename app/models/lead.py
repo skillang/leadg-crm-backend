@@ -55,6 +55,7 @@ class LeadSource(str, Enum):
     REDDIT = "reddit"
     YOUTUBE = "youtube"
     BULK_UPLOAD = "bulk upload"
+    NAUKRI = "naukri" 
 
 class LeadPriority(str, Enum):
     """Lead priority enumeration - REMOVED"""
