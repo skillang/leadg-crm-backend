@@ -7,9 +7,9 @@ import time
 
 from .config.settings import settings
 from .config.database import connect_to_mongo, close_mongo_connection
-from .routers import auth, leads, tasks, notes, documents, timeline, contacts
+from .routers import auth, leads, tasks, notes, documents, timeline, contacts ,lead_categories
 
-# Configure logging
+
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -141,6 +141,11 @@ app.include_router(
     prefix="/v1/contacts",
     tags=["Contacts"]
 )
+app.include_router(
+    lead_categories.router,
+    prefix="/v1/lead-categories",
+    tags=["Lead Categories"]
+    )
 
 if __name__ == "__main__":
     import uvicorn

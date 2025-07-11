@@ -691,6 +691,7 @@ async def fix_user_arrays_now(
 # ============================================================================
 # CORE LEAD ENDPOINTS - FIXED FOR OBJECTID
 # ============================================================================
+# Replace the create_lead endpoint in app/routers/leads.py with this:
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_lead(
@@ -699,8 +700,8 @@ async def create_lead(
     current_user: Dict[str, Any] = Depends(get_admin_user)
 ):
     """
-    Create a new lead with comprehensive features:
-    - NEW: Default status is "Yet to call"
+    Create a new lead with category-based ID generation:
+    - Category-based lead IDs (NS-1, SA-1, WA-1, etc.)
     - Duplicate detection and prevention
     - Round-robin auto-assignment
     - Activity logging
@@ -709,266 +710,125 @@ async def create_lead(
     try:
         logger.info(f"Creating lead by admin: {current_user['email']}")
         
-        db = get_database()
-        
-        # Step 1: Extract and validate data
+        # Step 1: Parse and validate incoming data
         if "basic_info" in lead_data:
-            # Nested structure (comprehensive format)
-            basic_info = lead_data.get("basic_info", {})
-            status_and_tags = lead_data.get("status_and_tags", {})
-            assignment = lead_data.get("assignment", {})
-            additional_info = lead_data.get("additional_info", {})
-            
-            name = basic_info.get("name", "")
-            email = basic_info.get("email", "")
-            contact_number = basic_info.get("contact_number", "")
-            source = basic_info.get("source", "website")
-            stage = status_and_tags.get("stage", "initial")
-            lead_score = status_and_tags.get("lead_score", 0)
-            priority = status_and_tags.get("priority", "medium")
-            tags = status_and_tags.get("tags", [])
-            manual_assigned_to = assignment.get("assigned_to")
-            notes = additional_info.get("notes", "")
-            country_of_interest = basic_info.get("country_of_interest", "")
-            course_level = basic_info.get("course_level", "")
-        else:
-            # Flat structure (legacy format)
-            name = lead_data.get("name", "")
-            email = lead_data.get("email", "")
-            contact_number = lead_data.get("phone_number", "")
-            source = lead_data.get("source", "website")
-            stage = "initial"
-            lead_score = 0
-            priority = "medium"
-            tags = lead_data.get("tags", [])
-            manual_assigned_to = lead_data.get("assigned_to")
-            notes = lead_data.get("notes", "")
-            country_of_interest = lead_data.get("country_of_interest", "")
-            course_level = lead_data.get("course_level", "")
-        
-        # Validate required fields
-        if not name:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Name is required")
-        if not email:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email is required")
-        if not contact_number:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Contact number is required")
-        
-        # Step 2: Check for duplicates
-        logger.info(f"Checking for duplicates: {email}, {contact_number}")
-        
-        duplicate_query = {
-            "$or": [
-                {"email": email.lower()},
-                {"contact_number": contact_number},
-                {"phone_number": contact_number}
-            ]
-        }
-        
-        existing_leads = await db.leads.find(duplicate_query).to_list(None)
-        
-        if existing_leads and not force_create:
-            duplicate_info = []
-            for lead in existing_leads:
-                duplicate_info.append({
-                    "lead_id": lead.get("lead_id"),
-                    "name": lead.get("name"),
-                    "email": lead.get("email"),
-                    "contact_number": lead.get("contact_number"),
-                    "created_at": lead.get("created_at")
-                })
-            
-            logger.warning(f"Duplicate lead creation prevented: {email}")
-            # 🔥 CRITICAL FIX: Convert ObjectIds in duplicate info
-            return convert_objectid_to_str({
-                "success": False,
-                "message": f"Duplicate lead found! A lead with this email or phone number already exists.",
-                "duplicate_check": {
-                    "is_duplicate": True,
-                    "duplicate_leads": duplicate_info,
-                    "match_criteria": ["email", "phone_number"]
-                },
-                "force_create_option": "Add ?force_create=true to create anyway"
-            })
-        
-        # Step 3: Generate lead ID
-        last_lead = await db.leads.find_one(sort=[("created_at", -1)])
-        if last_lead and "lead_id" in last_lead:
+            # Comprehensive format - convert to LeadCreateComprehensive
             try:
-                last_number = int(last_lead["lead_id"].split("-")[1])
-                new_number = last_number + 1
-            except (IndexError, ValueError):
-                new_number = 1000
-        else:
-            new_number = 1000
-        
-        lead_id = f"LD-{new_number}"
-        
-        # Step 4: Assignment Logic (Round-Robin or Manual)
-        assigned_to = None
-        assigned_to_name = "Unassigned"
-        assignment_method = "unassigned"
-        assignment_history = []
-        
-        if manual_assigned_to:
-            # Manual assignment
-            assigned_user = await db.users.find_one({"email": manual_assigned_to, "is_active": True})
-            if assigned_user:
-                assigned_to = manual_assigned_to
-                assigned_to_name = f"{assigned_user.get('first_name', '')} {assigned_user.get('last_name', '')}".strip()
-                if not assigned_to_name:
-                    assigned_to_name = assigned_user.get('email', 'Unknown')
-                assignment_method = "manual"
-                logger.info(f"Manual assignment: {assigned_to}")
-        
-        if not assigned_to:
-            # Round-robin assignment
-            logger.info("Using round-robin assignment")
-            assignable_users = await db.users.find(
-                {"role": "user", "is_active": True},
-                {"email": 1, "first_name": 1, "last_name": 1, "total_assigned_leads": 1}
-            ).to_list(None)
-            
-            if assignable_users:
-                # Sort by total_assigned_leads for balanced distribution
-                assignable_users.sort(key=lambda x: x.get("total_assigned_leads", 0))
-                next_user = assignable_users[0]
+                from ..models.lead import LeadCreateComprehensive, LeadBasicInfo, LeadStatusAndTags, LeadAssignmentInfo, LeadAdditionalInfo
                 
-                assigned_to = next_user["email"]
-                assigned_to_name = f"{next_user.get('first_name', '')} {next_user.get('last_name', '')}".strip()
-                if not assigned_to_name:
-                    assigned_to_name = next_user.get('email', 'Unknown')
-                assignment_method = "round_robin"
-                logger.info(f"Round-robin assignment: {assigned_to} (had {next_user.get('total_assigned_leads', 0)} leads)")
+                # Extract sections
+                basic_info_data = lead_data.get("basic_info", {})
+                status_and_tags_data = lead_data.get("status_and_tags", {})
+                assignment_data = lead_data.get("assignment", {})
+                additional_info_data = lead_data.get("additional_info", {})
+                
+                # Validate category is provided
+                if not basic_info_data.get("category"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Category is required. Please select a valid lead category."
+                    )
+                
+                # Create structured data
+                structured_lead_data = LeadCreateComprehensive(
+                    basic_info=LeadBasicInfo(
+                        name=basic_info_data.get("name", ""),
+                        email=basic_info_data.get("email", ""),
+                        contact_number=basic_info_data.get("contact_number", ""),
+                        source=basic_info_data.get("source", "website"),
+                        category=basic_info_data.get("category")  # 🆕 Required category
+                    ),
+                    status_and_tags=LeadStatusAndTags(
+                        stage=status_and_tags_data.get("stage", "initial"),
+                        lead_score=status_and_tags_data.get("lead_score", 0),
+                        tags=status_and_tags_data.get("tags", [])
+                    ) if status_and_tags_data else None,
+                    assignment=LeadAssignmentInfo(
+                        assigned_to=assignment_data.get("assigned_to")
+                    ) if assignment_data else None,
+                    additional_info=LeadAdditionalInfo(
+                        notes=additional_info_data.get("notes")
+                    ) if additional_info_data else None
+                )
+                
+            except Exception as e:
+                logger.error(f"Error parsing comprehensive lead data: {str(e)}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid lead data format: {str(e)}"
+                )
+        else:
+            # Legacy flat format - convert to comprehensive
+            try:
+                from ..models.lead import LeadCreateComprehensive, LeadBasicInfo, LeadStatusAndTags, LeadAdditionalInfo
+                
+                # Validate category for legacy format too
+                if not lead_data.get("category"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Category is required. Please select a valid lead category."
+                    )
+                
+                structured_lead_data = LeadCreateComprehensive(
+                    basic_info=LeadBasicInfo(
+                        name=lead_data.get("name", ""),
+                        email=lead_data.get("email", ""),
+                        contact_number=lead_data.get("contact_number", ""),
+                        source=lead_data.get("source", "website"),
+                        category=lead_data.get("category")  # 🆕 Required category
+                    ),
+                    status_and_tags=LeadStatusAndTags(
+                        stage=lead_data.get("stage", "initial"),
+                        lead_score=lead_data.get("lead_score", 0),
+                        tags=lead_data.get("tags", [])
+                    ),
+                    additional_info=LeadAdditionalInfo(
+                        notes=lead_data.get("notes")
+                    )
+                )
+                
+            except Exception as e:
+                logger.error(f"Error parsing legacy lead data: {str(e)}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid lead data format: {str(e)}"
+                )
         
-        # Create assignment history
-        if assigned_to:
-            assignment_history.append({
-                "assigned_to": assigned_to,
-                "assigned_to_name": assigned_to_name,
-                "assigned_by": current_user["_id"],
-                "assigned_by_name": f"{current_user.get('first_name', '')} {current_user.get('last_name', '')}".strip(),
-                "assigned_at": datetime.utcnow(),
-                "assignment_method": assignment_method,
-                "notes": f"Initial assignment via {assignment_method}"
-            })
+        # Step 2: Use the lead service to create lead with category support
+        from ..services.lead_service import lead_service
         
-        # Step 5: Create lead document
-        lead_doc = {
-            "lead_id": lead_id,
-            "name": name,
-            "email": email.lower(),
-            "contact_number": contact_number,
-            "phone_number": contact_number,
-            "country_of_interest": country_of_interest,
-            "course_level": course_level,
-            "source": source,
-            "stage": stage,
-            "lead_score": lead_score,
-            "priority": priority,
-            "tags": tags,
-            "status": DEFAULT_NEW_LEAD_STATUS,  # 🔥 NEW: Use "Yet to call" as default
-            "assigned_to": assigned_to,
-            "assigned_to_name": assigned_to_name,
-            "assignment_method": assignment_method,
-            "assignment_history": assignment_history,
-            "notes": notes,
-            "created_by": current_user["_id"],
-            "created_at": datetime.utcnow(),
-            "updated_at": datetime.utcnow(),
-            "last_contacted": None
-        }
+        result = await lead_service.create_lead_comprehensive(
+            lead_data=structured_lead_data,
+            created_by=str(current_user["_id"]),
+            force_create=force_create
+        )
         
-        # Step 6: Insert lead
-        result = await db.leads.insert_one(lead_doc)
-        lead_object_id = result.inserted_id
+        if not result["success"]:
+            # Handle duplicate case
+            if result.get("duplicate_check", {}).get("is_duplicate"):
+                logger.warning(f"Duplicate lead detected: {structured_lead_data.basic_info.email}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=result["message"]
+                )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=result["message"]
+                )
         
-        # Step 7: Update user array if assigned
-        if assigned_to:
-            user_update_result = await db.users.update_one(
-                {"email": assigned_to, "is_active": True},
-                {
-                    "$push": {"assigned_leads": lead_id},
-                    "$inc": {"total_assigned_leads": 1}
-                }
-            )
-            logger.info(f"Lead {lead_id} assigned to {assigned_to} via {assignment_method}")
+        logger.info(f"✅ Lead created successfully: {result['lead']['lead_id']} in category {structured_lead_data.basic_info.category}")
         
-        # Step 8: Log activity
-        try:
-            activity_doc = {
-                "lead_id": lead_id,
-                "activity_type": "lead_created",
-                "description": f"Lead '{name}' created with status '{DEFAULT_NEW_LEAD_STATUS}' and score {lead_score}",
-                "created_by": current_user["_id"],
-                "created_by_name": f"{current_user.get('first_name', '')} {current_user.get('last_name', '')}".strip(),
-                "created_at": datetime.utcnow(),
-                "metadata": {
-                    "lead_id": lead_id,
-                    "lead_name": name,
-                    "email": email,
-                    "source": source,
-                    "initial_status": DEFAULT_NEW_LEAD_STATUS,
-                    "assignment_method": assignment_method,
-                    "assigned_to": assigned_to,
-                    "assigned_to_name": assigned_to_name
-                }
-            }
-            await db.lead_activities.insert_one(activity_doc)
-            logger.info(f"✅ Activity logged for lead creation: {lead_id}")
-        except Exception as activity_error:
-            logger.warning(f"Failed to log activity: {activity_error}")
-        
-        # Step 9: Prepare response
-        response_lead = {
-            "id": str(lead_object_id),
-            "lead_id": lead_id,
-            "name": name,
-            "email": email,
-            "contact_number": contact_number,
-            "phone_number": contact_number,
-            "country_of_interest": country_of_interest,
-            "course_level": course_level,
-            "source": source,
-            "stage": stage,
-            "lead_score": lead_score,
-            "priority": priority,
-            "tags": tags,
-            "status": DEFAULT_NEW_LEAD_STATUS,  # 🔥 NEW: Return new default status
-            "assigned_to": assigned_to,
-            "assigned_to_name": assigned_to_name,
-            "assignment_method": assignment_method,
-            "assignment_history": assignment_history,
-            "notes": notes,
-            "created_by": str(current_user["_id"]),
-            "created_by_name": f"{current_user.get('first_name', '')} {current_user.get('last_name', '')}".strip(),
-            "created_at": lead_doc["created_at"],
-            "updated_at": lead_doc["updated_at"]
-        }
-        
-        assignment_message = ""
-        if assignment_method == "round_robin":
-            assignment_message = f" and auto-assigned to {assigned_to_name} via round-robin"
-        elif assignment_method == "manual":
-            assignment_message = f" and manually assigned to {assigned_to_name}"
-        
-        logger.info(f"✅ Lead created successfully: {lead_id} with status '{DEFAULT_NEW_LEAD_STATUS}'")
-        
-        # 🔥 CRITICAL FIX: Convert ObjectIds in response
+        # Step 3: Return successful response
         return convert_objectid_to_str({
             "success": True,
-            "message": f"Lead {lead_id} created successfully with status '{DEFAULT_NEW_LEAD_STATUS}'{assignment_message}",
-            "lead": response_lead,
-            "assignment_info": {
-                "assigned_to": assigned_to,
-                "assigned_to_name": assigned_to_name,
-                "assignment_method": assignment_method,
-                "assignment_history": assignment_history
-            } if assigned_to else None,
-            "duplicate_check": {
+            "message": result["message"],
+            "lead": result["lead"],
+            "assignment_info": result.get("assignment_info"),
+            "duplicate_check": result.get("duplicate_check", {
                 "is_duplicate": False,
                 "checked": True
-            }
+            })
         })
         
     except HTTPException:
@@ -1754,3 +1614,4 @@ async def bulk_create_leads(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create leads in bulk: {str(e)}"
         )
+    

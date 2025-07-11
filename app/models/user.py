@@ -1,4 +1,4 @@
-# app/models/user.py - Enhanced with Dynamic Department Support
+# app/models/user.py - Fully Dynamic Department System
 
 from pydantic import BaseModel, EmailStr, Field, validator
 from typing import Optional, List, Union
@@ -18,21 +18,10 @@ class CallingStatus(str, Enum):
     DISABLED = "disabled"
     RETRYING = "retrying"
 
-# 🚀 PREDEFINED DEPARTMENTS (Your Base Departments)
+# 🚀 SIMPLIFIED: Only admin is predefined, everything else is dynamic
 class DepartmentType(str, Enum):
-    """Predefined department types - can be extended by admin"""
-    ADMIN = "admin"
-    SALES = "sales" 
-    PRE_SALES = "pre-sales"
-    MARKETING = "marketing"
-    SUPPORT = "support"
-    OPERATIONS = "operations"
-    HR = "hr"
-    FINANCE = "finance"
-    # Educational consultancy specific
-    COUNSELING = "counseling"
-    VISA_PROCESSING = "visa-processing"
-    UNIVERSITY_RELATIONS = "university-relations"
+    """Only essential predefined department"""
+    ADMIN = "admin"  # Only admin is predefined
 
 class UserBase(BaseModel):
     """Base user model with common fields"""
@@ -44,7 +33,7 @@ class UserBase(BaseModel):
     is_active: bool = True
     phone: Optional[str] = None
     
-    # 🔥 ENHANCED: Multi-department support with dynamic validation
+    # 🔥 DYNAMIC: Multi-department support with database validation
     departments: Union[str, List[str]] = Field(
         default_factory=list,
         description="Single department string for admin, array of departments for users"
@@ -52,7 +41,7 @@ class UserBase(BaseModel):
 
     @validator('departments')
     def validate_departments(cls, v, values):
-        """Validate departments (supports both predefined and custom departments)"""
+        """Validate departments (admin is always valid, others checked at runtime)"""
         user_role = values.get('role', UserRole.USER)
         
         # Handle both string and list inputs
@@ -74,6 +63,9 @@ class UserBase(BaseModel):
             # Default admin department
             if not departments_list:
                 return "admin"
+            # Admin can only have "admin" department
+            if departments_list[0] != "admin":
+                raise ValueError("Admin users can only have 'admin' department")
             return departments_list[0]  # Return string for admin
         else:
             # Regular users must have at least one department, max 5
@@ -112,7 +104,7 @@ class UserCreate(UserBase):
                 "password": "SecurePass123",
                 "role": "user",
                 "phone": "+1-555-123-4567",
-                "departments": ["sales", "pre-sales"]  # Array for regular users
+                "departments": ["sales", "marketing"]  # Admin creates these first
             }
         }
 
@@ -180,14 +172,6 @@ class UserUpdate(BaseModel):
         else:
             return v
         
-        # Validate department values (basic validation - could be enhanced with database check)
-        valid_predefined_depts = [dept.value for dept in DepartmentType]
-        for dept in departments_list:
-            # Allow predefined departments (custom departments would need database validation)
-            if dept not in valid_predefined_depts:
-                # Just a warning for now, as custom departments need database check
-                pass
-        
         return departments_list if len(departments_list) > 1 else (departments_list[0] if departments_list else None)
 
 # 🚀 NEW: Department Management Models
@@ -210,6 +194,9 @@ class DepartmentCreate(BaseModel):
         if len(cleaned) < 2:
             raise ValueError('Department name must be at least 2 characters')
         
+        if cleaned == "admin":
+            raise ValueError('Cannot create department named "admin" - it is reserved')
+        
         return cleaned
 
 class DepartmentResponse(BaseModel):
@@ -229,28 +216,27 @@ class DepartmentUpdate(BaseModel):
     description: Optional[str] = Field(None, max_length=200)
     is_active: Optional[bool] = None
 
-# 🚀 NEW: Department Helper Functions
+# 🚀 UPDATED: Dynamic Department Helper Functions
 class DepartmentHelper:
     """Helper class for department operations"""
     
     @staticmethod
     async def get_all_departments():
-        """Get all available departments (predefined + custom)"""
+        """Get all available departments (only admin is predefined, rest are custom)"""
         from ..config.database import get_database
         
-        # Get predefined departments
+        # Only admin is predefined now
         predefined = [
             {
-                "name": dept.value,
-                "display_name": dept.value.replace('-', ' ').title(),
+                "name": "admin",
+                "display_name": "Admin",
                 "is_predefined": True,
                 "is_active": True,
-                "description": DepartmentHelper._get_predefined_description(dept.value)
+                "description": "System administration and management"
             }
-            for dept in DepartmentType
         ]
         
-        # Get custom departments from database
+        # Get all custom departments from database
         db = get_database()
         custom_departments = await db.departments.find(
             {"is_active": True}
@@ -274,10 +260,9 @@ class DepartmentHelper:
     
     @staticmethod
     async def is_department_valid(department_name: str) -> bool:
-        """Check if department name is valid (predefined or custom)"""
-        # Check if predefined
-        predefined_names = [dept.value for dept in DepartmentType]
-        if department_name in predefined_names:
+        """Check if department name is valid (admin or exists in database)"""
+        # Admin is always valid
+        if department_name == "admin":
             return True
         
         # Check if custom department exists
@@ -308,24 +293,6 @@ class DepartmentHelper:
         return count
     
     @staticmethod
-    def _get_predefined_description(dept_name: str) -> str:
-        """Get description for predefined departments"""
-        descriptions = {
-            "admin": "System administration and management",
-            "sales": "Lead conversion and client acquisition",
-            "pre-sales": "Lead qualification and initial contact",
-            "marketing": "Campaign management and lead generation",
-            "support": "Customer support and assistance",
-            "operations": "Business operations and processes",
-            "hr": "Human resources and personnel management",
-            "finance": "Financial management and accounting",
-            "counseling": "Student counseling and guidance",
-            "visa-processing": "Visa application processing",
-            "university-relations": "University partnerships and relations"
-        }
-        return descriptions.get(dept_name, f"Department for {dept_name.replace('-', ' ')}")
-    
-    @staticmethod
     def normalize_departments(departments: Union[str, List[str]], role: str) -> Union[str, List[str]]:
         """Normalize departments based on role"""
         if isinstance(departments, str):
@@ -334,6 +301,59 @@ class DepartmentHelper:
             departments_list = departments or []
         
         if role == "admin":
-            return departments_list[0] if departments_list else "admin"
+            return "admin"  # Admin always gets "admin"
         else:
             return list(set(departments_list)) if departments_list else []
+
+# 🚀 NEW: Initial Setup Helper
+class DepartmentSetupHelper:
+    """Helper for setting up initial departments"""
+    
+    @staticmethod
+    async def create_starter_departments():
+        """Create a basic set of starter departments for new installations"""
+        from ..config.database import get_database
+        
+        db = get_database()
+        
+        # Check if any custom departments exist
+        existing_count = await db.departments.count_documents({})
+        
+        if existing_count > 0:
+            return  # Already have departments, don't create defaults
+        
+        # Create basic starter departments
+        starter_departments = [
+            {
+                "name": "sales",
+                "display_name": "Sales",
+                "description": "Sales and business development",
+                "is_active": True,
+                "is_predefined": False,
+                "created_at": datetime.utcnow(),
+                "created_by": "system_setup"
+            },
+            {
+                "name": "support",
+                "display_name": "Support", 
+                "description": "Customer support and assistance",
+                "is_active": True,
+                "is_predefined": False,
+                "created_at": datetime.utcnow(),
+                "created_by": "system_setup"
+            },
+            {
+                "name": "operations",
+                "display_name": "Operations",
+                "description": "Business operations and processes", 
+                "is_active": True,
+                "is_predefined": False,
+                "created_at": datetime.utcnow(),
+                "created_by": "system_setup"
+            }
+        ]
+        
+        # Insert starter departments
+        await db.departments.insert_many(starter_departments)
+        
+        return len(starter_departments)

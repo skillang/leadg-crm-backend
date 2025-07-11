@@ -541,21 +541,23 @@ async def debug_admin_users():
 
 # 🚀 NEW: Department Management Endpoints
 
+# UPDATE THESE FUNCTIONS IN app/routers/auth.py
+
 @router.get("/departments", response_model=Dict[str, Any])
 async def get_all_departments(
     include_user_count: bool = Query(False, description="Include user count for each department"),
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):
     """
-    Get all available departments (predefined + custom)
+    Get all available departments (only admin is predefined, rest are custom)
     Used for dropdowns in user creation and lead assignment
     """
     try:
-        from ..models.user import DepartmentHelper, DepartmentType
+        from ..models.user import DepartmentHelper
         
         logger.info(f"Getting departments for user: {current_user.get('email')}")
         
-        # Get all departments
+        # Get all departments (only admin predefined, rest custom)
         all_departments = await DepartmentHelper.get_all_departments()
         
         # Add user counts if requested
@@ -563,20 +565,21 @@ async def get_all_departments(
             for dept in all_departments:
                 dept["user_count"] = await DepartmentHelper.get_department_users_count(dept["name"])
         
-        # Separate predefined and custom for better organization
+        # Separate predefined (only admin) and custom
         predefined = [dept for dept in all_departments if dept.get("is_predefined", False)]
         custom = [dept for dept in all_departments if not dept.get("is_predefined", False)]
         
         return {
             "success": True,
             "departments": {
-                "predefined": predefined,
-                "custom": custom,
+                "predefined": predefined,  # Only admin
+                "custom": custom,          # All others
                 "all": all_departments
             },
             "total_count": len(all_departments),
-            "predefined_count": len(predefined),
-            "custom_count": len(custom)
+            "predefined_count": len(predefined),  # Should be 1 (admin)
+            "custom_count": len(custom),
+            "message": "Only 'admin' is predefined. All other departments are created by admins."
         }
         
     except Exception as e:
@@ -585,6 +588,273 @@ async def get_all_departments(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to get departments"
         )
+
+@router.post("/departments", response_model=Dict[str, Any], status_code=status.HTTP_201_CREATED)
+async def create_department(
+    department_data: DepartmentCreate,
+    current_user: Dict[str, Any] = Depends(get_admin_user)  # Admin only
+):
+    """
+    Create a new custom department (Admin only)
+    All departments except 'admin' are created this way
+    """
+    try:
+        from ..models.user import DepartmentHelper
+        
+        db = get_database()
+        logger.info(f"Admin {current_user.get('email')} creating new department: {department_data.name}")
+        
+        # Check if department already exists (custom departments only, admin is always reserved)
+        if department_data.name == "admin":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot create department named 'admin' - it is reserved for system administration"
+            )
+        
+        # Check custom departments
+        existing_custom = await db.departments.find_one({"name": department_data.name})
+        if existing_custom:
+            if existing_custom.get("is_active", True):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Department '{department_data.name}' already exists"
+                )
+            else:
+                # Reactivate if it was deactivated
+                await db.departments.update_one(
+                    {"_id": existing_custom["_id"]},
+                    {
+                        "$set": {
+                            "is_active": True,
+                            "description": department_data.description,
+                            "updated_at": datetime.utcnow(),
+                            "reactivated_by": current_user.get("email")
+                        }
+                    }
+                )
+                return {
+                    "success": True,
+                    "message": f"Department '{department_data.name}' reactivated successfully",
+                    "department_id": str(existing_custom["_id"]),
+                    "action": "reactivated"
+                }
+        
+        # Create new department
+        department_doc = {
+            "name": department_data.name,
+            "display_name": department_data.name.replace('-', ' ').title(),
+            "description": department_data.description,
+            "is_active": department_data.is_active,
+            "is_predefined": False,  # All created departments are custom
+            "created_at": datetime.utcnow(),
+            "created_by": current_user.get("email"),
+            "updated_at": datetime.utcnow()
+        }
+        
+        result = await db.departments.insert_one(department_doc)
+        department_id = str(result.inserted_id)
+        
+        logger.info(f"✅ Custom department created: {department_data.name} by {current_user.get('email')}")
+        
+        return {
+            "success": True,
+            "message": f"Department '{department_data.name}' created successfully",
+            "department": {
+                "id": department_id,
+                "name": department_data.name,
+                "display_name": department_doc["display_name"],
+                "description": department_data.description,
+                "is_predefined": False,
+                "is_active": True
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating department: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create department: {str(e)}"
+        )
+
+# 🚀 NEW: Bulk department creation endpoint
+@router.post("/departments/bulk", response_model=Dict[str, Any], status_code=status.HTTP_201_CREATED)
+async def create_departments_bulk(
+    departments_list: List[DepartmentCreate],
+    current_user: Dict[str, Any] = Depends(get_admin_user)  # Admin only
+):
+    """
+    Create multiple departments at once (Admin only)
+    Useful for initial setup or migrating from other systems
+    """
+    try:
+        db = get_database()
+        logger.info(f"Admin {current_user.get('email')} creating {len(departments_list)} departments in bulk")
+        
+        created_departments = []
+        failed_departments = []
+        
+        for dept_data in departments_list:
+            try:
+                # Check if department already exists
+                if dept_data.name == "admin":
+                    failed_departments.append({
+                        "name": dept_data.name,
+                        "error": "Cannot create 'admin' department - it is reserved"
+                    })
+                    continue
+                
+                existing = await db.departments.find_one({"name": dept_data.name})
+                if existing and existing.get("is_active", True):
+                    failed_departments.append({
+                        "name": dept_data.name,
+                        "error": "Department already exists"
+                    })
+                    continue
+                
+                # Create department
+                department_doc = {
+                    "name": dept_data.name,
+                    "display_name": dept_data.name.replace('-', ' ').title(),
+                    "description": dept_data.description,
+                    "is_active": dept_data.is_active,
+                    "is_predefined": False,
+                    "created_at": datetime.utcnow(),
+                    "created_by": current_user.get("email"),
+                    "updated_at": datetime.utcnow()
+                }
+                
+                result = await db.departments.insert_one(department_doc)
+                
+                created_departments.append({
+                    "id": str(result.inserted_id),
+                    "name": dept_data.name,
+                    "display_name": department_doc["display_name"],
+                    "description": dept_data.description
+                })
+                
+            except Exception as e:
+                failed_departments.append({
+                    "name": dept_data.name,
+                    "error": str(e)
+                })
+        
+        return {
+            "success": True,
+            "message": f"Bulk department creation completed",
+            "created_count": len(created_departments),
+            "failed_count": len(failed_departments),
+            "created_departments": created_departments,
+            "failed_departments": failed_departments
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in bulk department creation: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create departments in bulk: {str(e)}"
+        )
+
+# 🚀 NEW: Setup starter departments endpoint
+@router.post("/departments/setup-starter", response_model=Dict[str, Any])
+async def setup_starter_departments(
+    current_user: Dict[str, Any] = Depends(get_admin_user)  # Admin only
+):
+    """
+    Create a basic set of common departments for new installations
+    Only works if no custom departments exist yet
+    """
+    try:
+        from ..models.user import DepartmentSetupHelper
+        
+        db = get_database()
+        logger.info(f"Admin {current_user.get('email')} setting up starter departments")
+        
+        # Check if any custom departments already exist
+        existing_count = await db.departments.count_documents({})
+        
+        if existing_count > 0:
+            existing_depts = await db.departments.find({}, {"name": 1}).to_list(None)
+            dept_names = [dept["name"] for dept in existing_depts]
+            
+            return {
+                "success": False,
+                "message": "Starter departments not created - custom departments already exist",
+                "existing_departments": dept_names,
+                "suggestion": "Use the regular 'Create Department' endpoint to add more departments"
+            }
+        
+        # Create starter departments
+        starter_departments = [
+            {
+                "name": "sales",
+                "display_name": "Sales",
+                "description": "Sales and business development",
+                "is_active": True,
+                "is_predefined": False,
+                "created_at": datetime.utcnow(),
+                "created_by": current_user.get("email")
+            },
+            {
+                "name": "marketing",
+                "display_name": "Marketing", 
+                "description": "Marketing and lead generation",
+                "is_active": True,
+                "is_predefined": False,
+                "created_at": datetime.utcnow(),
+                "created_by": current_user.get("email")
+            },
+            {
+                "name": "support",
+                "display_name": "Support",
+                "description": "Customer support and assistance",
+                "is_active": True,
+                "is_predefined": False,
+                "created_at": datetime.utcnow(),
+                "created_by": current_user.get("email")
+            },
+            {
+                "name": "operations",
+                "display_name": "Operations",
+                "description": "Business operations and processes",
+                "is_active": True,
+                "is_predefined": False,
+                "created_at": datetime.utcnow(),
+                "created_by": current_user.get("email")
+            },
+            {
+                "name": "hr",
+                "display_name": "HR",
+                "description": "Human resources management",
+                "is_active": True,
+                "is_predefined": False,
+                "created_at": datetime.utcnow(),
+                "created_by": current_user.get("email")
+            }
+        ]
+        
+        # Insert starter departments
+        result = await db.departments.insert_many(starter_departments)
+        
+        created_names = [dept["name"] for dept in starter_departments]
+        
+        logger.info(f"✅ Created {len(starter_departments)} starter departments: {created_names}")
+        
+        return {
+            "success": True,
+            "message": f"Created {len(starter_departments)} starter departments",
+            "created_departments": created_names,
+            "note": "You can now create users with these departments or add more departments as needed"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error setting up starter departments: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to setup starter departments: {str(e)}"
+        )
+
 
 @router.post("/departments", response_model=Dict[str, Any], status_code=status.HTTP_201_CREATED)
 async def create_department(

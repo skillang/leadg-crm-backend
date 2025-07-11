@@ -62,11 +62,17 @@ class LeadPriority(str, Enum):
 
 # Basic Info Section (Tab 1)
 class LeadBasicInfo(BaseModel):
-    """Basic information section"""
-    name: str = Field(..., min_length=1, max_length=100, description="Lead's full name")
-    email: EmailStr = Field(..., description="Lead's email address")
-    contact_number: str = Field(..., min_length=10, max_length=20, description="Lead's phone number")
-    source: LeadSource = Field(default=LeadSource.WEBSITE, description="How the lead was acquired")
+    name: str = Field(..., min_length=1, max_length=100)
+    email: EmailStr = Field(...)
+    contact_number: str = Field(..., min_length=10, max_length=20)
+    source: LeadSource = Field(default=LeadSource.WEBSITE)
+    category: str = Field(..., min_length=1, description="Lead category (required)")  # 🆕 NEW
+    
+    @validator('category')
+    def validate_category(cls, v):
+        if not v.strip():
+            raise ValueError("Category is required")
+        return v.strip()
 
 # Status & Tags Section (Tab 2) 
 class LeadStatusAndTags(BaseModel):
@@ -169,6 +175,7 @@ class LeadResponseComprehensive(BaseModel):
     email: str
     contact_number: str
     source: LeadSource
+    category: str
     
     # Status & Tags
     stage: LeadStage
