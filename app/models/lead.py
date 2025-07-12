@@ -7,7 +7,7 @@ from enum import Enum
 
 class LeadStatus(str, Enum):
     """Lead status enumeration"""
-
+    initial = "Initial"  
     followup = "Followup"
     warm = "Warm"
     prospect = "Prospect"
@@ -22,6 +22,7 @@ class LeadStatus(str, Enum):
     ni = "NI"
     ringing = "Ringing"
     wrong_number = "Wrong Number"
+    
 class LeadStage(str, Enum):
     """Lead stage enumeration (from Status & Tags tab)"""
     INITIAL = "initial"

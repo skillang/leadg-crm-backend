@@ -178,7 +178,7 @@ class LeadService:
             # Step 5: Create lead document with category
             lead_doc = {
                 "lead_id": lead_id,  # Now category-based (NS-1, SA-1, etc.)
-                "status": LeadStatus.yet_to_call,# Default status
+               "status": LeadStatus.initial,  # Default status
                 "name": lead_data.basic_info.name,
                 "email": lead_data.basic_info.email.lower(),
                 "contact_number": lead_data.basic_info.contact_number,
@@ -238,7 +238,7 @@ class LeadService:
             
             return {
                 "success": True,
-                "message": f"Lead {lead_id} created successfully with status 'Yet to call' and auto-assigned to {assigned_to_name} via {assignment_method}",
+                "message": f"Lead {lead_id} created successfully with status 'Initial' and auto-assigned to {assigned_to_name} via {assignment_method}",
                 "lead": self._format_lead_response(lead_doc),
                 "assignment_info": {
                     "assigned_to": assigned_to,
