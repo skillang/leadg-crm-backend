@@ -88,13 +88,13 @@ async def root():
         "version": settings.version,
         "docs": "/docs" if settings.debug else "Docs disabled in production",
         "endpoints": {
-            "auth": "/v1/auth",
-            "leads": "/v1/leads",
-            "tasks": "/v1/tasks", 
-            "notes": "/v1/notes",
-            "documents": "/v1/documents",
-            "timeline": "/v1",
-            "contacts": "/v1/contacts",
+            "auth": "/auth",
+            "leads": "/leads",
+            "tasks": "/tasks", 
+            "notes": "/notes",
+            "documents": "/documents",
+            "timeline": "",
+            "contacts": "/contacts",
             "health": "/health"
         }
     }
@@ -102,48 +102,48 @@ async def root():
 # Include routers with /v1 prefix
 app.include_router(
     auth.router,
-    prefix="/v1/auth",
+    prefix="/auth",
     tags=["Authentication"]
 )
 
 app.include_router(
     leads.router,
-    prefix="/v1/leads",
+    prefix="/leads",
     tags=["Leads"]
 )
 
 app.include_router(
     tasks.router,
-    prefix="/v1/tasks",
+    prefix="/tasks",
     tags=["Tasks"]
 )
 
 app.include_router(
     notes.router,
-    prefix="/v1/notes",
+    prefix="/notes",
     tags=["Notes"]
 )
 
 app.include_router(
     documents.router,
-    prefix="/v1/documents",
+    prefix="/documents",
     tags=["Documents"]
 )
 
 app.include_router(
     timeline.router,
-    prefix="/v1",
+    prefix="",
     tags=["Timeline"]
 )
 
 app.include_router(
     contacts.router,
-    prefix="/v1/contacts",
+    prefix="/contacts",
     tags=["Contacts"]
 )
 app.include_router(
     lead_categories.router,
-    prefix="/v1/lead-categories",
+    prefix="/lead-categories",
     tags=["Lead Categories"]
     )
 
