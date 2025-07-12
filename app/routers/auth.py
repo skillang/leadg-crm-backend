@@ -61,7 +61,7 @@ async def register_user(
             "hashed_password": hashed_password,
             "role": user_data.role,
             "phone": user_data.phone,
-            "department": user_data.department,
+            "department": user_data.departments,
             "is_active": True,
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow(),
@@ -95,7 +95,7 @@ async def register_user(
                 "last_name": user_data.last_name,
                 "email": user_data.email,
                 "phone": user_data.phone,
-                "department": user_data.department
+                "department": user_data.departments
             }
             
             routing_result = await smartflo_jwt_service.create_agent(smartflo_user_data)
