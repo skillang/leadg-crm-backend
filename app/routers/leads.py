@@ -48,7 +48,11 @@ def convert_objectid_to_str(obj):
 
 # Complete mapping from old status values to new ones
 OLD_TO_NEW_STATUS_MAPPING = {
-    "open": "Yet to call",  # 🔥 NEW: Open leads become "Yet to call"
+    "open": "Initial",           # 🆕 Changed from "Yet to call"
+    "new": "Initial",            # 🆕 Changed from "Yet to call"  
+    "pending": "Initial",        # 🆕 Changed from "Yet to call"
+    "cold": "Initial",           # 🆕 Changed from "Yet to call"
+    "initial": "Initial",  # 🔥 NEW: Open leads become "Yet to call"
     "in_progress": "Warm", 
     "contacted": "Prospect",
     "qualified": "Prospect",
@@ -56,12 +60,10 @@ OLD_TO_NEW_STATUS_MAPPING = {
     "closed_lost": "Junk",
     "lost": "Junk",
     "closed": "Enrolled",
-    "new": "Yet to call",
-    "pending": "Yet to call",
     "follow_up": "Followup",
     "followup": "Followup",
     "hot": "Warm",
-    "cold": "Yet to call",
+    
     "converted": "Enrolled",
     "rejected": "Junk",
     "invalid": "INVALID",
@@ -74,12 +76,12 @@ OLD_TO_NEW_STATUS_MAPPING = {
     "wrong_number": "Wrong Number",
     "dnp": "DNP",
     "enrolled": "Enrolled",
-    "initial": "Yet to call",  # If status accidentally set to 'initial'
+    # If status accidentally set to 'initial'
 }
 
 # Valid new status values
 VALID_NEW_STATUSES = [
-    "Followup", "Warm", "Prospect", "Junk", "Enrolled", "Yet to call",
+    "Initial", "Followup", "Warm", "Prospect", "Junk", "Enrolled", "Yet to call",
     "Counseled", "DNP", "INVALID", "Call Back", "Busy", "NI", "Ringing", "Wrong Number"
 ]
 
@@ -87,7 +89,7 @@ VALID_NEW_STATUSES = [
 VALID_STAGES = ["initial", "contacted", "qualified", "proposal", "negotiation", "closed", "lost"]
 
 # 🎯 NEW LEAD DEFAULT STATUS
-DEFAULT_NEW_LEAD_STATUS = "Yet to call"
+DEFAULT_NEW_LEAD_STATUS = "Initial"
 
 def migrate_status_value(status: str) -> str:
     """
