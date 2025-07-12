@@ -86,7 +86,8 @@ VALID_NEW_STATUSES = [
 ]
 
 # Valid stage values
-VALID_STAGES = ["initial", "contacted", "qualified", "proposal", "negotiation", "closed", "lost"]
+VALID_STAGES = ["Initial", "Followup", "Warm", "Prospect", "Junk", "Enrolled", "Yet to call",
+    "Counseled", "DNP", "INVALID", "Call Back", "Busy", "NI", "Ringing", "Wrong Number"]
 
 # 🎯 NEW LEAD DEFAULT STATUS
 DEFAULT_NEW_LEAD_STATUS = "Initial"
@@ -110,32 +111,32 @@ def migrate_status_value(status: str) -> str:
     
     return mapped_status
 
-def migrate_stage_value(stage: str) -> str:
-    """
-    Migrate old stage values to new ones during transition period
-    """
-    if not stage:
-        return "initial"  # Default
+# def migrate_stage_value(stage: str) -> str:
+#     """
+#     Migrate old stage values to new ones during transition period
+#     """
+#     if not stage:
+#         return "initial"  # Default
     
-    # If already valid, return as-is
-    if stage in VALID_STAGES:
-        return stage
+#     # If already valid, return as-is
+#     if stage in VALID_STAGES:
+#         return stage
     
-    # Map common invalid stages
-    stage_mapping = {
-        "open": "initial",
-        "closed_won": "closed",
-        "closed_lost": "lost",
-        "new": "initial",
-        "pending": "initial"
-    }
+#     # Map common invalid stages
+#     stage_mapping = {
+#         "open": "initial",
+#         "closed_won": "closed",
+#         "closed_lost": "lost",
+#         "new": "initial",
+#         "pending": "initial"
+#     }
     
-    mapped_stage = stage_mapping.get(stage, "initial")
+#     mapped_stage = stage_mapping.get(stage, "initial")
     
-    if stage != mapped_stage:
-        logger.debug(f"Stage migration: '{stage}' → '{mapped_stage}'")
+#     if stage != mapped_stage:
+#         logger.debug(f"Stage migration: '{stage}' → '{mapped_stage}'")
     
-    return mapped_stage
+#     return mapped_stage
 
 async def process_lead_for_response(lead: Dict[str, Any], db, current_user: Dict[str, Any] = None) -> Dict[str, Any]:
     """
@@ -152,7 +153,7 @@ async def process_lead_for_response(lead: Dict[str, Any], db, current_user: Dict
         lead["status"] = migrate_status_value(original_status)
         
         original_stage = lead.get("stage")
-        lead["stage"] = migrate_stage_value(original_stage)
+        # lead["stage"] = migrate_stage_value(original_stage)
         
         # Log migrations for monitoring
         if original_status != lead["status"]:
