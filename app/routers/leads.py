@@ -262,7 +262,8 @@ def transform_lead_to_structured_format(lead: Dict[str, Any]) -> Dict[str, Any]:
             "contact_number": clean_lead.get("contact_number", ""),
             "source": clean_lead.get("source", "website"),
             "country_of_interest": clean_lead.get("country_of_interest", ""),
-            "course_level": clean_lead.get("course_level", "")
+            "course_level": clean_lead.get("course_level", ""),
+            "category": clean_lead.get("category", ""),  # 🔥 ADD THIS LINE
         },
         "status_and_tags": {
             "stage": clean_lead.get("stage", "initial"),
