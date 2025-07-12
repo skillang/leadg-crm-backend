@@ -54,15 +54,15 @@ class ContactBase(BaseModel):
                 raise ValueError("Phone number must be at least 10 digits")
         return v
 
-    @validator('linked_leads')
-    def validate_linked_leads(cls, v):
-        if v is None:
-            return []
-        # Validate lead ID format
-        for lead_id in v:
-            if not lead_id.startswith('LD-'):
-                raise ValueError(f"Invalid lead ID format: {lead_id}. Must start with 'LD-'")
-        return v
+    # @validator('linked_leads')
+    # def validate_linked_leads(cls, v):
+    #     if v is None:
+    #         return []
+    #     # Validate lead ID format
+    #     for lead_id in v:
+    #         if not lead_id.startswith('LD-'):
+    #             raise ValueError(f"Invalid lead ID format: {lead_id}. Must start with 'LD-'")
+    #     return v
 
     @validator('notes')
     def validate_notes(cls, v):
@@ -123,14 +123,14 @@ class ContactUpdate(BaseModel):
                 raise ValueError("Phone number must be at least 10 digits")
         return v
 
-    @validator('linked_leads')
-    def validate_linked_leads(cls, v):
-        if v is not None:
-            # Validate lead ID format
-            for lead_id in v:
-                if not lead_id.startswith('LD-'):
-                    raise ValueError(f"Invalid lead ID format: {lead_id}. Must start with 'LD-'")
-        return v
+    # @validator('linked_leads')
+    # def validate_linked_leads(cls, v):
+    #     if v is not None:
+    #         # Validate lead ID format
+    #         for lead_id in v:
+    #             if not lead_id.startswith('LD-'):
+    #                 raise ValueError(f"Invalid lead ID format: {lead_id}. Must start with 'LD-'")
+    #     return v
 
     @validator('notes')
     def validate_notes(cls, v):

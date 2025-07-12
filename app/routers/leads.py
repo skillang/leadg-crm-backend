@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import logging
 from bson import ObjectId
 
+from ..services.user_lead_array_service import user_lead_array_service
 from app.services import lead_category_service
 from ..services.lead_category_service import lead_category_service
 from ..config.database import get_database
@@ -1225,7 +1226,6 @@ async def update_lead_universal(
 ):
     """
     Universal lead update endpoint with COMPREHENSIVE ACTIVITY LOGGING
-    Logs ALL field changes like task/note modules do
     """
     try:
         logger.info(f"🔄 Update by {current_user.get('email')} with data: {update_request}")
@@ -1240,7 +1240,7 @@ async def update_lead_universal(
                 detail="lead_id is required in update request"
             )
         
-        # Get current lead BEFORE updating (CRITICAL for comparison)
+        # Get current lead BEFORE updating
         lead = await db.leads.find_one({"lead_id": lead_id})
         if not lead:
             raise HTTPException(
@@ -1255,37 +1255,6 @@ async def update_lead_universal(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You can only update leads assigned to you"
             )
-        
-        # 🎯 CAPTURE ALL OLD VALUES for comprehensive activity logging
-        updated_by = current_user.get("email", "unknown")
-        user_name = f"{current_user.get('first_name', '')} {current_user.get('last_name', '')}".strip() or updated_by
-        user_id = current_user.get("id", "")
-        
-        # Define trackable fields with their display names
-        TRACKABLE_FIELDS = {
-            # Contact Information
-            "name": "Name",
-            "email": "Email", 
-            "phone_number": "Phone Number",
-            "contact_number": "Contact Number",
-            
-            # Lead Details
-            "status": "Status",
-            "stage": "Stage", 
-            "source": "Source",
-            "category": "Category",
-            "priority": "Priority",
-            "lead_score": "Lead Score",
-            
-            # Assignment
-            "assigned_to": "Assigned To",
-            
-            # Additional Info
-            "tags": "Tags",
-            "notes": "Notes",
-            "country_of_interest": "Country of Interest",
-            "course_level": "Course Level"
-        }
         
         # Handle assignment change validation
         if "assigned_to" in update_request:
@@ -1317,7 +1286,7 @@ async def update_lead_universal(
         
         # Process each field in update request
         for key, value in update_request.items():
-            if key not in ["lead_id"]:  # Exclude lead_id from update
+            if key not in ["lead_id"]:
                 update_data[key] = value
         
         # Update the lead in database
@@ -1332,146 +1301,48 @@ async def update_lead_universal(
                 detail="Lead not found during update"
             )
         
-        # 🚀 COMPREHENSIVE ACTIVITY LOGGING
-        activities_to_log = []
-        changes_detected = {}
-        
-        # Check each trackable field for changes
-        for field_key, field_display_name in TRACKABLE_FIELDS.items():
-            if field_key in update_request:
-                old_value = lead.get(field_key)
-                new_value = update_request[field_key]
-                
-                # Handle different field types
-                if field_key == "tags":
-                    # Special handling for tags (list comparison)
-                    old_tags = set(old_value) if old_value else set()
-                    new_tags = set(new_value) if new_value else set()
-                    
-                    if old_tags != new_tags:
-                        added_tags = new_tags - old_tags
-                        removed_tags = old_tags - new_tags
-                        
-                        if added_tags or removed_tags:
-                            tag_activity = {
-                                "lead_id": lead_id,
-                                "lead_object_id": lead["_id"],
-                                "activity_type": "tags_updated",
-                                "description": f"Tags updated: {format_tag_changes(added_tags, removed_tags)}",
-                                "created_by": ObjectId(user_id) if ObjectId.is_valid(user_id) else None,
-                                "created_by_name": user_name,
-                                "created_at": datetime.utcnow(),
-                                "is_system_generated": True,
-                                "metadata": {
-                                    "field": field_key,
-                                    "old_tags": list(old_tags),
-                                    "new_tags": list(new_tags),
-                                    "added_tags": list(added_tags),
-                                    "removed_tags": list(removed_tags),
-                                    "changed_by": updated_by
-                                }
-                            }
-                            activities_to_log.append(tag_activity)
-                            changes_detected["tags"] = True
-                            logger.info(f"🏷️  Tags change detected: +{added_tags} -{removed_tags}")
-                
-                elif old_value != new_value:
-                    # Handle all other field types
-                    activity_type = get_activity_type_for_field(field_key)
-                    description = get_field_change_description(field_display_name, old_value, new_value)
-                    
-                    field_activity = {
-                        "lead_id": lead_id,
-                        "lead_object_id": lead["_id"],
-                        "activity_type": activity_type,
-                        "description": description,
-                        "created_by": ObjectId(user_id) if ObjectId.is_valid(user_id) else None,
-                        "created_by_name": user_name,
-                        "created_at": datetime.utcnow(),
-                        "is_system_generated": True,
-                        "metadata": {
-                            "field": field_key,
-                            "field_display_name": field_display_name,
-                            "old_value": old_value,
-                            "new_value": new_value,
-                            "changed_by": updated_by,
-                            "change_type": "field_update"
-                        }
-                    }
-                    activities_to_log.append(field_activity)
-                    changes_detected[field_key] = True
-                    logger.info(f"📝 {field_display_name} change: '{old_value}' → '{new_value}'")
-        
-        # Add general lead_updated activity if any changes occurred
-        if activities_to_log:
-            changed_fields = [TRACKABLE_FIELDS.get(key, key) for key in changes_detected.keys()]
-            general_activity = {
-                "lead_id": lead_id,
-                "lead_object_id": lead["_id"],
-                "activity_type": "lead_updated",
-                "description": f"Lead updated: {', '.join(changed_fields)}",
-                "created_by": ObjectId(user_id) if ObjectId.is_valid(user_id) else None,
-                "created_by_name": user_name,
-                "created_at": datetime.utcnow(),
-                "is_system_generated": True,
-                "metadata": {
-                    "updated_fields": list(changes_detected.keys()),
-                    "updated_by": updated_by,
-                    "update_count": len(changes_detected)
-                }
-            }
-            activities_to_log.append(general_activity)
-        
-        # 🏆 BULK INSERT all activities to lead_activities collection
-        if activities_to_log:
-            await db.lead_activities.insert_many(activities_to_log)
-            logger.info(f"✅ {len(activities_to_log)} activities logged for lead {lead_id}")
-        else:
-            logger.info(f"ℹ️  No changes detected for lead {lead_id}")
-        
-        # Update user arrays if assignment changed
-        if "assigned_to" in changes_detected:
+        # 🔧 FIXED: Handle assignment changes with proper service calls
+        if "assigned_to" in update_request:
             current_assigned_to = lead.get("assigned_to")
             new_assigned_to = update_request.get("assigned_to")
             
             # Remove from old user's array
-            if current_assigned_to:
-                await update_user_lead_array(db, current_assigned_to, "remove", lead_id)
+            if current_assigned_to and current_assigned_to != new_assigned_to:
+                await user_lead_array_service.remove_lead_from_user_array(current_assigned_to, lead_id)
+                logger.info(f"Removed lead {lead_id} from {current_assigned_to}")
             
             # Add to new user's array
-            if new_assigned_to:
-                await update_user_lead_array(db, new_assigned_to, "add", lead_id)
+            if new_assigned_to and new_assigned_to != current_assigned_to:
+                await user_lead_array_service.add_lead_to_user_array(new_assigned_to, lead_id)
+                logger.info(f"Added lead {lead_id} to {new_assigned_to}")
         
         # Get updated lead for response
         updated_lead = await db.leads.find_one({"lead_id": lead_id})
         
-        # Process for response
+        # Process for response (assuming you have these helper functions)
         if updated_lead:
-            updated_lead = convert_objectid_to_str(updated_lead)
-            updated_lead = await process_lead_for_response(updated_lead, db, current_user)
+            # Convert ObjectId to string if needed
+            if "_id" in updated_lead:
+                updated_lead["_id"] = str(updated_lead["_id"])
         
-        logger.info(f"✅ Lead {lead_id} updated successfully with {len(activities_to_log)} activities logged")
+        logger.info(f"✅ Lead {lead_id} updated successfully")
         
         return {
             "success": True,
             "message": "Lead updated successfully",
-            "lead": updated_lead,
-            "activities_logged": len(activities_to_log),
-            "changes_detected": changes_detected,
-            "tracked_fields": list(changes_detected.keys())
+            "lead": updated_lead
         }
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error updating lead: {str(e)}")
+        logger.error(f"Update lead error: {e}")
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update lead: {str(e)}"
+            detail="Failed to update lead"
         )
-
 # 🛠️ HELPER FUNCTIONS for activity logging
 
 def get_activity_type_for_field(field_key: str) -> str:
