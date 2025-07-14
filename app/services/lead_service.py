@@ -1,4 +1,4 @@
-# app/services/lead_service.py - Complete fixed version with category support and assignment fix
+# app/services/lead_service.py - Complete fixed version with corrected duplicate detection
 
 from typing import List, Optional, Dict, Any
 from datetime import datetime
@@ -30,32 +30,59 @@ class LeadService:
         return get_database()
     
     async def check_for_duplicates(self, lead_data: LeadCreateComprehensive) -> DuplicateCheckResult:
-        """Check for duplicate leads based on email and phone number"""
+        """
+        🔧 FIXED: Check for duplicate leads - Only duplicate if ALL 3 fields match:
+        - Name (case-insensitive)
+        - Email (case-insensitive) 
+        - Phone number
+        
+        If ANY field is different, allow as new lead
+        """
         db = self.get_db()
         
         try:
-            # Search for existing leads with same email or phone
+            # Normalize inputs for comparison
+            incoming_name = lead_data.basic_info.name.strip().lower()
+            incoming_email = lead_data.basic_info.email.strip().lower()
+            incoming_phone = lead_data.basic_info.contact_number.strip()
+            
+            logger.info(f"🔍 Checking duplicates for: {incoming_name} | {incoming_email} | {incoming_phone}")
+            
+            # ✅ FIXED: Only duplicate if ALL 3 fields match exactly
             query = {
-                "$or": [
-                    {"email": lead_data.basic_info.email.lower()},
-                    {"contact_number": lead_data.basic_info.contact_number},
-                    {"phone_number": lead_data.basic_info.contact_number}
+                "$and": [
+                    {
+                        "$expr": {
+                            "$eq": [
+                                {"$toLower": {"$trim": {"input": "$name"}}},
+                                incoming_name
+                            ]
+                        }
+                    },
+                    {
+                        "$expr": {
+                            "$eq": [
+                                {"$toLower": {"$trim": {"input": "$email"}}},
+                                incoming_email
+                            ]
+                        }
+                    },
+                    {
+                        "$or": [
+                            {"contact_number": incoming_phone},
+                            {"phone_number": incoming_phone}
+                        ]
+                    }
                 ]
             }
             
             existing_leads = await db.leads.find(query).to_list(length=10)
             
             if existing_leads:
-                duplicate_info = []
-                match_criteria = []
+                logger.warning(f"🚫 TRUE DUPLICATE FOUND: All 3 fields match for {incoming_email}")
                 
+                duplicate_info = []
                 for lead in existing_leads:
-                    if lead["email"].lower() == lead_data.basic_info.email.lower():
-                        match_criteria.append("email")
-                    if (lead.get("contact_number") == lead_data.basic_info.contact_number or 
-                        lead.get("phone_number") == lead_data.basic_info.contact_number):
-                        match_criteria.append("phone")
-                    
                     duplicate_info.append({
                         "lead_id": lead["lead_id"],
                         "name": lead["name"],
@@ -68,15 +95,72 @@ class LeadService:
                 return DuplicateCheckResult(
                     is_duplicate=True,
                     duplicate_leads=duplicate_info,
-                    match_criteria=list(set(match_criteria))
+                    match_criteria=["name", "email", "phone"]  # All 3 matched
                 )
             
+            # ✅ No exact match found - allow creation
+            logger.info(f"✅ NO DUPLICATE: {incoming_email} can be created (unique enough)")
             return DuplicateCheckResult(is_duplicate=False)
             
         except Exception as e:
             logger.error(f"Error checking duplicates: {str(e)}")
+            # On error, allow creation (fail open)
             return DuplicateCheckResult(is_duplicate=False)
-    
+
+    async def check_for_duplicates_simple_fallback(self, lead_data: LeadCreateComprehensive) -> DuplicateCheckResult:
+        """
+        🔄 FALLBACK: Simple version if MongoDB expressions cause issues
+        Check for duplicates using Python logic instead of MongoDB aggregation
+        """
+        db = self.get_db()
+        
+        try:
+            # Normalize inputs
+            incoming_name = lead_data.basic_info.name.strip().lower()
+            incoming_email = lead_data.basic_info.email.strip().lower()
+            incoming_phone = lead_data.basic_info.contact_number.strip()
+            
+            logger.info(f"🔍 Fallback duplicate check for: {incoming_name} | {incoming_email} | {incoming_phone}")
+            
+            # Get all leads and check in Python (simpler but less efficient)
+            all_leads = await db.leads.find({}).to_list(length=None)
+            
+            true_duplicates = []
+            
+            for lead in all_leads:
+                lead_name = lead.get("name", "").strip().lower()
+                lead_email = lead.get("email", "").strip().lower()
+                lead_phone = lead.get("contact_number", lead.get("phone_number", "")).strip()
+                
+                # Check if ALL 3 fields match
+                if (lead_name == incoming_name and 
+                    lead_email == incoming_email and 
+                    lead_phone == incoming_phone):
+                    
+                    true_duplicates.append({
+                        "lead_id": lead["lead_id"],
+                        "name": lead["name"],
+                        "email": lead["email"],
+                        "phone": lead_phone,
+                        "status": lead["status"],
+                        "created_at": lead["created_at"].isoformat() if isinstance(lead["created_at"], datetime) else str(lead["created_at"])
+                    })
+            
+            if true_duplicates:
+                logger.warning(f"🚫 TRUE DUPLICATE (fallback): All 3 fields match for {incoming_email}")
+                return DuplicateCheckResult(
+                    is_duplicate=True,
+                    duplicate_leads=true_duplicates,
+                    match_criteria=["name", "email", "phone"]
+                )
+            
+            logger.info(f"✅ NO DUPLICATE (fallback): {incoming_email} is unique enough to create")
+            return DuplicateCheckResult(is_duplicate=False)
+            
+        except Exception as e:
+            logger.error(f"Error in fallback duplicate check: {str(e)}")
+            return DuplicateCheckResult(is_duplicate=False)
+
     async def generate_lead_id(self) -> str:
         """Generate legacy lead ID (fallback method)"""
         db = self.get_db()
@@ -140,14 +224,19 @@ class LeadService:
                     detail="Category is required for lead creation"
                 )
             
-            # Step 2: Check for duplicates
-            duplicate_check = await self.check_for_duplicates(lead_data)
+            # Step 2: Check for duplicates using FIXED logic
+            try:
+                duplicate_check = await self.check_for_duplicates(lead_data)
+            except Exception as duplicate_error:
+                logger.warning(f"Primary duplicate check failed, using fallback: {str(duplicate_error)}")
+                # Use fallback method if MongoDB expressions fail
+                duplicate_check = await self.check_for_duplicates_simple_fallback(lead_data)
             
             if duplicate_check.is_duplicate and not force_create:
-                logger.warning(f"Duplicate lead creation attempted: {lead_data.basic_info.email}")
+                logger.warning(f"Duplicate lead creation blocked: {lead_data.basic_info.email} - ALL 3 fields match existing lead")
                 return {
                     "success": False,
-                    "message": f"Duplicate lead found. Matches existing lead(s) by: {', '.join(duplicate_check.match_criteria)}",
+                    "message": f"Duplicate lead found. ALL 3 fields (name, email, phone) match an existing lead. Use force_create=true to override.",
                     "duplicate_check": duplicate_check,
                     "lead": None
                 }
@@ -178,7 +267,7 @@ class LeadService:
             # Step 5: Create lead document with category
             lead_doc = {
                 "lead_id": lead_id,  # Now category-based (NS-1, SA-1, etc.)
-               "status": LeadStatus.initial,  # Default status
+                "status": LeadStatus.initial,  # Default status
                 "name": lead_data.basic_info.name,
                 "email": lead_data.basic_info.email.lower(),
                 "contact_number": lead_data.basic_info.contact_number,
@@ -230,11 +319,12 @@ class LeadService:
                 additional_data={
                     "category": lead_data.basic_info.category,
                     "source": lead_data.basic_info.source,
-                    "assignment_method": assignment_method
+                    "assignment_method": assignment_method,
+                    "duplicate_check_passed": True
                 }
             )
             
-            logger.info(f"Lead {lead_id} created successfully in category {lead_data.basic_info.category}")
+            logger.info(f"✅ Lead {lead_id} created successfully in category {lead_data.basic_info.category} (duplicate check passed)")
             
             return {
                 "success": True,
@@ -248,7 +338,8 @@ class LeadService:
                 },
                 "duplicate_check": {
                     "is_duplicate": False,
-                    "checked": True
+                    "checked": True,
+                    "method": "all_3_fields_required"
                 }
             }
             
