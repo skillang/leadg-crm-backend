@@ -872,7 +872,7 @@ async def create_department(
         
         # Check if department already exists (predefined or custom)
         # Check predefined departments
-        predefined_names = [dept.value for dept in DepartmentType]
+        predefined_names = ["admin", "sales", "pre_sales", "hr", "documents"]
         if department_data.name in predefined_names:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -945,6 +945,8 @@ async def create_department(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create department: {str(e)}"
         )
+
+
 
 @router.put("/users/{user_id}/departments", response_model=Dict[str, Any])
 async def update_user_departments(

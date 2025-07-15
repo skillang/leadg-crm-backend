@@ -194,7 +194,8 @@ class DepartmentCreate(BaseModel):
         if len(cleaned) < 2:
             raise ValueError('Department name must be at least 2 characters')
         
-        if cleaned == "admin":
+        predefined_list = ["admin", "sales", "pre_sales", "hr", "documents"]
+        if cleaned in predefined_list:
             raise ValueError('Cannot create department named "admin" - it is reserved')
         
         return cleaned
@@ -233,7 +234,36 @@ class DepartmentHelper:
                 "is_predefined": True,
                 "is_active": True,
                 "description": "System administration and management"
+            },
+            {
+                "name": "sales",
+                "display_name": "Sales",
+                "is_predefined": True,
+                "is_active": True,
+                "description": "Sales and business development"
+            },
+            {
+                "name": "pre_sales",
+                "display_name": "Pre Sales",
+                "is_predefined": True,
+                "is_active": True,
+                "description": "Pre-sales and lead qualification"
+            },
+                    {
+                "name": "hr",
+                "display_name": "HR",
+                "is_predefined": True,
+                "is_active": True,
+                "description": "Human resources management"
+            },
+            {
+                "name": "documents",
+                "display_name": "Documents",
+                "is_predefined": True,
+                "is_active": True,
+                "description": "Document management and processing"
             }
+                    
         ]
         
         # Get all custom departments from database
@@ -262,7 +292,8 @@ class DepartmentHelper:
     async def is_department_valid(department_name: str) -> bool:
         """Check if department name is valid (admin or exists in database)"""
         # Admin is always valid
-        if department_name == "admin":
+        predefined_list = ["admin", "sales", "pre_sales", "hr", "documents"]
+        if department_name in predefined_list:
             return True
         
         # Check if custom department exists
