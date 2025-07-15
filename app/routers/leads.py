@@ -138,6 +138,9 @@ def migrate_status_value(status: str) -> str:
     
 #     return mapped_stage
 
+# UPDATED FUNCTIONS FOR app/routers/leads.py - Add these updates to your existing file
+
+# 1. UPDATE the process_lead_for_response function to handle new fields
 async def process_lead_for_response(lead: Dict[str, Any], db, current_user: Dict[str, Any] = None) -> Dict[str, Any]:
     """
     Process a lead document for API response with complete data transformation
@@ -167,12 +170,18 @@ async def process_lead_for_response(lead: Dict[str, Any], db, current_user: Dict
         elif not isinstance(lead["lead_score"], (int, float)):
             lead["lead_score"] = 0
         
+        # 🆕 NEW: Handle new optional fields with proper defaults
+        lead["age"] = lead.get("age")  # Keep None if not set
+        lead["experience"] = lead.get("experience")  # Keep None if not set
+        lead["nationality"] = lead.get("nationality")  # Keep None if not set
+        
         # Ensure all required fields have proper defaults
         required_defaults = {
             "tags": [],
             "contact_number": lead.get("phone_number", ""),
             "phone_number": lead.get("contact_number", ""),  # Ensure both exist
             "source": "website",
+            "category": lead.get("category", ""),  # Ensure category exists
             "notes": None,
             "last_contacted": None,
             "assignment_method": None,
@@ -242,7 +251,290 @@ async def process_lead_for_response(lead: Dict[str, Any], db, current_user: Dict
         lead["tags"] = []
         lead["contact_number"] = lead.get("phone_number", "")
         lead["source"] = "website"
+        lead["category"] = lead.get("category", "")
+        # 🆕 NEW: Set defaults for new fields
+        lead["age"] = lead.get("age")
+        lead["experience"] = lead.get("experience")
+        lead["nationality"] = lead.get("nationality")
         return lead
+
+
+# 2. UPDATE the transform_lead_to_structured_format function to handle new fields
+def transform_lead_to_structured_format(lead: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Transform flat lead document to structured comprehensive format
+    """
+    # Clean ObjectIds first using our utility function
+    clean_lead = convert_objectid_to_str(lead)
+    
+    # Transform to structured format
+    structured_lead = {
+        "basic_info": {
+            "name": clean_lead.get("name", ""),
+            "email": clean_lead.get("email", ""),
+            "contact_number": clean_lead.get("contact_number", ""),
+            "source": clean_lead.get("source", "website"),
+            "country_of_interest": clean_lead.get("country_of_interest", ""),
+            "course_level": clean_lead.get("course_level", ""),
+            "category": clean_lead.get("category", ""),
+            # 🆕 NEW: Add new fields to structured format
+            "age": clean_lead.get("age"),
+            "experience": clean_lead.get("experience"),
+            "nationality": clean_lead.get("nationality"),
+        },
+        "status_and_tags": {
+            "stage": clean_lead.get("stage", "initial"),
+            "lead_score": clean_lead.get("lead_score", 0),
+            "priority": clean_lead.get("priority", "medium"),
+            "tags": clean_lead.get("tags", [])
+        },
+        "assignment": {
+            "assigned_to": clean_lead.get("assigned_to"),
+            "assigned_to_name": clean_lead.get("assigned_to_name"),
+            "assignment_method": clean_lead.get("assignment_method"),
+            "assignment_history": clean_lead.get("assignment_history", [])
+        },
+        "additional_info": {
+            "notes": clean_lead.get("notes", "")
+        },
+        "system_info": {
+            "id": str(clean_lead["_id"]) if "_id" in clean_lead else clean_lead.get("id"),
+            "lead_id": clean_lead.get("lead_id", ""),
+            "status": migrate_status_value(clean_lead.get("status", DEFAULT_NEW_LEAD_STATUS)),
+            "created_by": clean_lead.get("created_by", ""),
+            "created_at": clean_lead.get("created_at"),
+            "updated_at": clean_lead.get("updated_at"),
+            "last_contacted": clean_lead.get("last_contacted")
+        }
+    }
+    
+    return structured_lead
+
+
+# 3. UPDATE the format_lead_response function to handle new fields
+def format_lead_response(lead_doc: dict) -> dict:
+    """Format lead document for API response with new fields"""
+    if not lead_doc:
+        return None
+        
+    return {
+        "id": str(lead_doc["_id"]),
+        "lead_id": lead_doc["lead_id"],
+        "name": lead_doc["name"],
+        "email": lead_doc["email"],
+        "phone_number": lead_doc.get("phone_number", ""),
+        "contact_number": lead_doc.get("contact_number", ""),
+        "country_of_interest": lead_doc.get("country_of_interest", ""),
+        "course_level": lead_doc.get("course_level", ""),
+        "source": lead_doc["source"],
+        "category": lead_doc.get("category", ""),
+        
+        # 🆕 NEW: Include new fields in response
+        "age": lead_doc.get("age"),
+        "experience": lead_doc.get("experience"),
+        "nationality": lead_doc.get("nationality"),
+        
+        "stage": lead_doc.get("stage", "initial"),
+        "lead_score": lead_doc.get("lead_score", 0),
+        "priority": lead_doc.get("priority", "medium"),
+        "tags": lead_doc.get("tags", []),
+        "status": lead_doc["status"],
+        "assigned_to": lead_doc.get("assigned_to"),
+        "assigned_to_name": lead_doc.get("assigned_to_name"),
+        "assignment_method": lead_doc.get("assignment_method"),
+        "assignment_history": lead_doc.get("assignment_history", []),
+        "notes": lead_doc.get("notes"),
+        "created_by": lead_doc["created_by"],
+        "created_by_name": lead_doc.get("created_by_name", "Unknown"),
+        "created_at": lead_doc["created_at"],
+        "updated_at": lead_doc["updated_at"]
+    }
+
+
+# 4. UPDATE the create_lead function to handle legacy format with new fields
+@router.post("/", status_code=status.HTTP_201_CREATED)
+async def create_lead(
+    lead_data: dict,  # Accept any JSON structure
+    force_create: bool = Query(False, description="Create lead even if duplicates exist"),
+    current_user: Dict[str, Any] = Depends(get_admin_user)
+):
+    """
+    Create a new lead with category-based ID generation and new optional fields:
+    - Category-based lead IDs (NS-1, SA-1, WA-1, etc.)
+    - NEW: AGE, EXPERIENCE, Nationality fields (optional)
+    - Duplicate detection and prevention
+    - Round-robin auto-assignment
+    - Activity logging
+    - User array updates
+    """
+    try:
+        logger.info(f"Creating lead by admin: {current_user['email']}")
+        
+        # Step 1: Parse and validate incoming data
+        if "basic_info" in lead_data:
+            # Comprehensive format - convert to LeadCreateComprehensive
+            try:
+                from ..models.lead import LeadCreateComprehensive, LeadBasicInfo, LeadStatusAndTags, LeadAssignmentInfo, LeadAdditionalInfo
+                
+                # Extract sections
+                basic_info_data = lead_data.get("basic_info", {})
+                status_and_tags_data = lead_data.get("status_and_tags", {})
+                assignment_data = lead_data.get("assignment", {})
+                additional_info_data = lead_data.get("additional_info", {})
+                
+                # Validate category is provided
+                if not basic_info_data.get("category"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Category is required. Please select a valid lead category."
+                    )
+                
+                # Create structured data with new fields
+                structured_lead_data = LeadCreateComprehensive(
+                    basic_info=LeadBasicInfo(
+                        name=basic_info_data.get("name", ""),
+                        email=basic_info_data.get("email", ""),
+                        contact_number=basic_info_data.get("contact_number", ""),
+                        source=basic_info_data.get("source", "website"),
+                        category=basic_info_data.get("category"),
+                        # 🆕 NEW: Handle new optional fields
+                        age=basic_info_data.get("age"),
+                        experience=basic_info_data.get("experience"),
+                        nationality=basic_info_data.get("nationality")
+                    ),
+                    status_and_tags=LeadStatusAndTags(
+                        stage=status_and_tags_data.get("stage", "initial"),
+                        lead_score=status_and_tags_data.get("lead_score", 0),
+                        tags=status_and_tags_data.get("tags", [])
+                    ) if status_and_tags_data else None,
+                    assignment=LeadAssignmentInfo(
+                        assigned_to=assignment_data.get("assigned_to")
+                    ) if assignment_data else None,
+                    additional_info=LeadAdditionalInfo(
+                        notes=additional_info_data.get("notes")
+                    ) if additional_info_data else None
+                )
+                
+            except Exception as e:
+                logger.error(f"Error parsing comprehensive lead data: {str(e)}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid lead data format: {str(e)}"
+                )
+        else:
+            # Legacy flat format - convert to comprehensive
+            try:
+                from ..models.lead import LeadCreateComprehensive, LeadBasicInfo, LeadStatusAndTags, LeadAdditionalInfo
+                
+                # Validate category for legacy format too
+                if not lead_data.get("category"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Category is required. Please select a valid lead category."
+                    )
+                
+                structured_lead_data = LeadCreateComprehensive(
+                    basic_info=LeadBasicInfo(
+                        name=lead_data.get("name", ""),
+                        email=lead_data.get("email", ""),
+                        contact_number=lead_data.get("contact_number", ""),
+                        source=lead_data.get("source", "website"),
+                        category=lead_data.get("category"),
+                        # 🆕 NEW: Handle new optional fields in legacy format
+                        age=lead_data.get("age"),
+                        experience=lead_data.get("experience"),
+                        nationality=lead_data.get("nationality")
+                    ),
+                    status_and_tags=LeadStatusAndTags(
+                        stage=lead_data.get("stage", "initial"),
+                        lead_score=lead_data.get("lead_score", 0),
+                        tags=lead_data.get("tags", [])
+                    ),
+                    additional_info=LeadAdditionalInfo(
+                        notes=lead_data.get("notes")
+                    )
+                )
+                
+            except Exception as e:
+                logger.error(f"Error parsing legacy lead data: {str(e)}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid lead data format: {str(e)}"
+                )
+        
+        # Step 2: Use the lead service to create lead with category support
+        from ..services.lead_service import lead_service
+        
+        result = await lead_service.create_lead_comprehensive(
+            lead_data=structured_lead_data,
+            created_by=str(current_user["_id"]),
+            force_create=force_create
+        )
+        
+        if not result["success"]:
+            # Handle duplicate case
+            if result.get("duplicate_check", {}).get("is_duplicate"):
+                logger.warning(f"Duplicate lead detected: {structured_lead_data.basic_info.email}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=result["message"]
+                )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=result["message"]
+                )
+        
+        logger.info(f"✅ Lead created successfully: {result['lead']['lead_id']} in category {structured_lead_data.basic_info.category}")
+        
+        # Step 3: Return successful response
+        return convert_objectid_to_str({
+            "success": True,
+            "message": result["message"],
+            "lead": result["lead"],
+            "assignment_info": result.get("assignment_info"),
+            "duplicate_check": result.get("duplicate_check", {
+                "is_duplicate": False,
+                "checked": True
+            })
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Lead creation error: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create lead: {str(e)}"
+        )
+
+
+# 5. UPDATE the get_activity_type_for_field function to handle new fields
+def get_activity_type_for_field(field_key: str) -> str:
+    """Get specific activity type based on field"""
+    activity_mapping = {
+        "status": "status_changed",
+        "stage": "stage_changed", 
+        "assigned_to": "lead_reassigned",
+        "name": "contact_info_updated",
+        "email": "contact_info_updated",
+        "phone_number": "contact_info_updated",
+        "contact_number": "contact_info_updated",
+        "source": "source_updated",
+        "category": "category_updated",
+        "priority": "priority_updated",
+        "lead_score": "lead_score_updated",
+        "notes": "notes_updated",
+        "country_of_interest": "preferences_updated",
+        "course_level": "preferences_updated",
+        # 🆕 NEW: Activity types for new fields
+        "age": "personal_info_updated",
+        "experience": "personal_info_updated",
+        "nationality": "personal_info_updated"
+    }
+    return activity_mapping.get(field_key, "field_updated")
 
 # ============================================================================
 # HELPER FUNCTIONS

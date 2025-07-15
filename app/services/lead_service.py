@@ -1,26 +1,22 @@
-# app/services/lead_service.py - Complete fixed version with corrected duplicate detection
+# app/services/lead_service.py - Updated to handle AGE, EXPERIENCE, and Nationality
 
-from typing import List, Optional, Dict, Any
+from typing import Dict, Any, Optional, List
 from datetime import datetime
-from bson import ObjectId  # type: ignore
+from bson import ObjectId
 import logging
-import re
-from fastapi import HTTPException  # 🆕 ADD THIS IMPORT
 
 from ..config.database import get_database
 from ..models.lead import (
-    LeadCreateComprehensive, LeadUpdateComprehensive, LeadStatus, LeadStage,
-    DuplicateCheckResult, LeadCreate, LeadUpdate
+    LeadCreateComprehensive, LeadStatus, LeadStage, 
+    ExperienceLevel, LeadSource, CourseLevel
 )
-from ..schemas.lead import LeadFilterParams
 from .lead_assignment_service import lead_assignment_service
 from .user_lead_array_service import user_lead_array_service
-from .lead_category_service import lead_category_service  # 🆕 CATEGORY SERVICE
 
 logger = logging.getLogger(__name__)
 
 class LeadService:
-    """Core lead service - CRUD operations and business logic"""
+    """Service for lead-related operations with support for new fields"""
     
     def __init__(self):
         pass
@@ -29,255 +25,81 @@ class LeadService:
         """Get database connection"""
         return get_database()
     
-    async def check_for_duplicates(self, lead_data: LeadCreateComprehensive) -> DuplicateCheckResult:
-        """
-        🔧 FIXED: Check for duplicate leads - Only duplicate if ALL 3 fields match:
-        - Name (case-insensitive)
-        - Email (case-insensitive) 
-        - Phone number
-        
-        If ANY field is different, allow as new lead
-        """
-        db = self.get_db()
-        
-        try:
-            # Normalize inputs for comparison
-            incoming_name = lead_data.basic_info.name.strip().lower()
-            incoming_email = lead_data.basic_info.email.strip().lower()
-            incoming_phone = lead_data.basic_info.contact_number.strip()
-            
-            logger.info(f"🔍 Checking duplicates for: {incoming_name} | {incoming_email} | {incoming_phone}")
-            
-            # ✅ FIXED: Only duplicate if ALL 3 fields match exactly
-            query = {
-                "$and": [
-                    {
-                        "$expr": {
-                            "$eq": [
-                                {"$toLower": {"$trim": {"input": "$name"}}},
-                                incoming_name
-                            ]
-                        }
-                    },
-                    {
-                        "$expr": {
-                            "$eq": [
-                                {"$toLower": {"$trim": {"input": "$email"}}},
-                                incoming_email
-                            ]
-                        }
-                    },
-                    {
-                        "$or": [
-                            {"contact_number": incoming_phone},
-                            {"phone_number": incoming_phone}
-                        ]
-                    }
-                ]
-            }
-            
-            existing_leads = await db.leads.find(query).to_list(length=10)
-            
-            if existing_leads:
-                logger.warning(f"🚫 TRUE DUPLICATE FOUND: All 3 fields match for {incoming_email}")
-                
-                duplicate_info = []
-                for lead in existing_leads:
-                    duplicate_info.append({
-                        "lead_id": lead["lead_id"],
-                        "name": lead["name"],
-                        "email": lead["email"],
-                        "phone": lead.get("contact_number", lead.get("phone_number", "")),
-                        "status": lead["status"],
-                        "created_at": lead["created_at"].isoformat() if isinstance(lead["created_at"], datetime) else str(lead["created_at"])
-                    })
-                
-                return DuplicateCheckResult(
-                    is_duplicate=True,
-                    duplicate_leads=duplicate_info,
-                    match_criteria=["name", "email", "phone"]  # All 3 matched
-                )
-            
-            # ✅ No exact match found - allow creation
-            logger.info(f"✅ NO DUPLICATE: {incoming_email} can be created (unique enough)")
-            return DuplicateCheckResult(is_duplicate=False)
-            
-        except Exception as e:
-            logger.error(f"Error checking duplicates: {str(e)}")
-            # On error, allow creation (fail open)
-            return DuplicateCheckResult(is_duplicate=False)
-
-    async def check_for_duplicates_simple_fallback(self, lead_data: LeadCreateComprehensive) -> DuplicateCheckResult:
-        """
-        🔄 FALLBACK: Simple version if MongoDB expressions cause issues
-        Check for duplicates using Python logic instead of MongoDB aggregation
-        """
-        db = self.get_db()
-        
-        try:
-            # Normalize inputs
-            incoming_name = lead_data.basic_info.name.strip().lower()
-            incoming_email = lead_data.basic_info.email.strip().lower()
-            incoming_phone = lead_data.basic_info.contact_number.strip()
-            
-            logger.info(f"🔍 Fallback duplicate check for: {incoming_name} | {incoming_email} | {incoming_phone}")
-            
-            # Get all leads and check in Python (simpler but less efficient)
-            all_leads = await db.leads.find({}).to_list(length=None)
-            
-            true_duplicates = []
-            
-            for lead in all_leads:
-                lead_name = lead.get("name", "").strip().lower()
-                lead_email = lead.get("email", "").strip().lower()
-                lead_phone = lead.get("contact_number", lead.get("phone_number", "")).strip()
-                
-                # Check if ALL 3 fields match
-                if (lead_name == incoming_name and 
-                    lead_email == incoming_email and 
-                    lead_phone == incoming_phone):
-                    
-                    true_duplicates.append({
-                        "lead_id": lead["lead_id"],
-                        "name": lead["name"],
-                        "email": lead["email"],
-                        "phone": lead_phone,
-                        "status": lead["status"],
-                        "created_at": lead["created_at"].isoformat() if isinstance(lead["created_at"], datetime) else str(lead["created_at"])
-                    })
-            
-            if true_duplicates:
-                logger.warning(f"🚫 TRUE DUPLICATE (fallback): All 3 fields match for {incoming_email}")
-                return DuplicateCheckResult(
-                    is_duplicate=True,
-                    duplicate_leads=true_duplicates,
-                    match_criteria=["name", "email", "phone"]
-                )
-            
-            logger.info(f"✅ NO DUPLICATE (fallback): {incoming_email} is unique enough to create")
-            return DuplicateCheckResult(is_duplicate=False)
-            
-        except Exception as e:
-            logger.error(f"Error in fallback duplicate check: {str(e)}")
-            return DuplicateCheckResult(is_duplicate=False)
-
-    async def generate_lead_id(self) -> str:
-        """Generate legacy lead ID (fallback method)"""
-        db = self.get_db()
-        
-        try:
-            # Get the highest lead ID number
-            pipeline = [
-                {"$match": {"lead_id": {"$regex": "^LD-"}}},
-                {"$addFields": {
-                    "lead_number": {
-                        "$toInt": {"$substr": ["$lead_id", 3, -1]}
-                    }
-                }},
-                {"$sort": {"lead_number": -1}},
-                {"$limit": 1}
-            ]
-            
-            result = await db.leads.aggregate(pipeline).to_list(length=1)
-            
-            if result:
-                next_number = result[0]["lead_number"] + 1
-            else:
-                next_number = 1000  # Start from LD-1000
-            
-            return f"LD-{next_number}"
-            
-        except Exception as e:
-            logger.error(f"Error generating lead ID: {str(e)}")
-            # Fallback to timestamp-based ID
-            timestamp = int(datetime.utcnow().timestamp())
-            return f"LD-{timestamp}"
-    
     async def create_lead_comprehensive(
-        self, 
-        lead_data: LeadCreateComprehensive, 
+        self,
+        lead_data: LeadCreateComprehensive,
         created_by: str,
         force_create: bool = False
     ) -> Dict[str, Any]:
-        """Create a comprehensive lead with category-based lead ID generation"""
-        db = self.get_db()
-        
+        """
+        Create a comprehensive lead with support for AGE, EXPERIENCE, and Nationality
+        """
         try:
-            # Step 1: Validate category exists and is active
-            if hasattr(lead_data.basic_info, 'category') and lead_data.basic_info.category:
-                category_exists = await db.lead_categories.find_one({
-                    "name": lead_data.basic_info.category,
-                    "is_active": True
-                })
-                
-                if not category_exists:
-                    logger.error(f"Category '{lead_data.basic_info.category}' not found or inactive")
-                    raise HTTPException(
-                        status_code=400, 
-                        detail=f"Category '{lead_data.basic_info.category}' not found or inactive"
-                    )
-            else:
-                # If no category provided, use fallback
-                logger.warning("No category provided in lead creation")
-                raise HTTPException(
-                    status_code=400,
-                    detail="Category is required for lead creation"
-                )
+            db = self.get_db()
             
-            # Step 2: Check for duplicates using FIXED logic
-            try:
-                duplicate_check = await self.check_for_duplicates(lead_data)
-            except Exception as duplicate_error:
-                logger.warning(f"Primary duplicate check failed, using fallback: {str(duplicate_error)}")
-                # Use fallback method if MongoDB expressions fail
-                duplicate_check = await self.check_for_duplicates_simple_fallback(lead_data)
+            # Step 1: Extract basic info including new fields
+            basic_info = lead_data.basic_info
+            status_and_tags = lead_data.status_and_tags or {}
+            assignment = lead_data.assignment or {}
+            additional_info = lead_data.additional_info or {}
             
-            if duplicate_check.is_duplicate and not force_create:
-                logger.warning(f"Duplicate lead creation blocked: {lead_data.basic_info.email} - ALL 3 fields match existing lead")
-                return {
-                    "success": False,
-                    "message": f"Duplicate lead found. ALL 3 fields (name, email, phone) match an existing lead. Use force_create=true to override.",
-                    "duplicate_check": duplicate_check,
-                    "lead": None
-                }
+            logger.info(f"Creating lead with new fields: age={basic_info.age}, experience={basic_info.experience}, nationality={basic_info.nationality}")
+            
+            # Step 2: Check for duplicates
+            if not force_create:
+                duplicate_check = await self.check_duplicate_lead(basic_info.email)
+                if duplicate_check["is_duplicate"]:
+                    return {
+                        "success": False,
+                        "message": "Lead with this email already exists",
+                        "duplicate_check": duplicate_check
+                    }
             
             # Step 3: Generate category-based lead ID
-            try:
-                lead_id = await lead_category_service.generate_lead_id(lead_data.basic_info.category)
-                logger.info(f"Generated category-based lead ID: {lead_id} for category: {lead_data.basic_info.category}")
-            except Exception as e:
-                logger.error(f"Failed to generate category-based lead ID: {str(e)}")
-                # Fallback to old method if category service fails
-                lead_id = await self.generate_lead_id()
-                logger.info(f"Using fallback lead ID: {lead_id}")
+            lead_id = await self.generate_lead_id_by_category(basic_info.category)
             
-            # Step 4: Get round-robin assignment - 🔧 FIXED METHOD NAME
-            assigned_to = await lead_assignment_service.get_next_assignee_round_robin()
-            assignment_method = "round_robin" if assigned_to else "none"
+            # Step 4: Handle assignment
+            assigned_to = assignment.assigned_to if assignment else None
+            assigned_to_name = None
+            assignment_method = "manual" if assigned_to else "round_robin"
             
-            # Get assigned user's name
-            assigned_to_name = "Unassigned"
+            if not assigned_to:
+                # Auto-assign using round-robin
+                assigned_to = await lead_assignment_service.get_next_round_robin_user()
+                assignment_method = "round_robin"
+                logger.info(f"Auto-assigned to: {assigned_to}")
+            
+            # Get assignee name
             if assigned_to:
-                assigned_user = await db.users.find_one({"email": assigned_to})
-                if assigned_user:
-                    first_name = assigned_user.get('first_name', '')
-                    last_name = assigned_user.get('last_name', '')
-                    assigned_to_name = f"{first_name} {last_name}".strip() or assigned_user.get('email', 'Unknown')
+                assignee = await db.users.find_one({"email": assigned_to})
+                if assignee:
+                    assigned_to_name = f"{assignee.get('first_name', '')} {assignee.get('last_name', '')}".strip()
+                    if not assigned_to_name:
+                        assigned_to_name = assignee.get('email', 'Unknown')
             
-            # Step 5: Create lead document with category
+            # Step 5: Create lead document with new fields
             lead_doc = {
-                "lead_id": lead_id,  # Now category-based (NS-1, SA-1, etc.)
-                "status": LeadStatus.initial,  # Default status
-                "name": lead_data.basic_info.name,
-                "email": lead_data.basic_info.email.lower(),
-                "contact_number": lead_data.basic_info.contact_number,
-                "phone_number": lead_data.basic_info.contact_number,  # Legacy field
-                "source": lead_data.basic_info.source,
-                "category": lead_data.basic_info.category,  # 🆕 NEW: Store category
-                "stage": lead_data.status_and_tags.stage if lead_data.status_and_tags else LeadStage.INITIAL,
-                "lead_score": lead_data.status_and_tags.lead_score if lead_data.status_and_tags else 0,
-                "priority": "medium",  # Default priority
-                "tags": lead_data.status_and_tags.tags if lead_data.status_and_tags else [],
+                "lead_id": lead_id,
+                "status": LeadStatus.INITIAL,
+                "name": basic_info.name,
+                "email": basic_info.email.lower(),
+                "contact_number": basic_info.contact_number,
+                "phone_number": basic_info.contact_number,  # Legacy field
+                "source": basic_info.source,
+                "category": basic_info.category,
+                
+                # 🆕 NEW: Add the new optional fields
+                "age": basic_info.age,
+                "experience": basic_info.experience,
+                "nationality": basic_info.nationality,
+                
+                # Status and tags
+                "stage": status_and_tags.stage if hasattr(status_and_tags, 'stage') else LeadStage.INITIAL,
+                "lead_score": status_and_tags.lead_score if hasattr(status_and_tags, 'lead_score') else 0,
+                "priority": "medium",
+                "tags": status_and_tags.tags if hasattr(status_and_tags, 'tags') else [],
+                
+                # Assignment
                 "assigned_to": assigned_to,
                 "assigned_to_name": assigned_to_name,
                 "assignment_method": assignment_method,
@@ -291,14 +113,19 @@ class LeadService:
                         "reason": "Initial auto-assignment via round-robin"
                     }
                 ] if assigned_to else [],
-                "notes": lead_data.additional_info.notes if lead_data.additional_info else None,
+                
+                # Additional info
+                "notes": additional_info.notes if hasattr(additional_info, 'notes') else None,
+                
+                # System fields
                 "created_by": created_by,
                 "created_at": datetime.utcnow(),
                 "updated_at": datetime.utcnow(),
                 "last_contacted": None,
+                
                 # Legacy fields for compatibility
                 "country_of_interest": "",
-                "course_level": ""
+                "course_level": None
             }
             
             # Step 6: Insert lead
@@ -310,214 +137,192 @@ class LeadService:
             if assigned_to:
                 await user_lead_array_service.add_lead_to_user_array(assigned_to, lead_id)
                 
-            # Log activity
-            await self.log_activity(
-                lead_id=lead_id,
-                activity_type="lead_created",
-                description=f"Lead created in category '{lead_data.basic_info.category}' with ID {lead_id}",
-                performed_by=created_by,
-                additional_data={
-                    "category": lead_data.basic_info.category,
-                    "source": lead_data.basic_info.source,
-                    "assignment_method": assignment_method,
-                    "duplicate_check_passed": True
-                }
-            )
+                # Log lead creation activity
+                await self.log_lead_activity(
+                    lead_id=lead_id,
+                    lead_object_id=result.inserted_id,
+                    activity_type="lead_created",
+                    description=f"Lead '{basic_info.name}' created with ID {lead_id}",
+                    created_by=created_by,
+                    metadata={
+                        "lead_id": lead_id,
+                        "lead_name": basic_info.name,
+                        "lead_email": basic_info.email,
+                        "category": basic_info.category,
+                        "assigned_to": assigned_to,
+                        "assignment_method": assignment_method,
+                        # Include new fields in metadata
+                        "age": basic_info.age,
+                        "experience": basic_info.experience,
+                        "nationality": basic_info.nationality
+                    }
+                )
             
-            logger.info(f"✅ Lead {lead_id} created successfully in category {lead_data.basic_info.category} (duplicate check passed)")
+            logger.info(f"✅ Lead created successfully: {lead_id} with new fields")
             
             return {
                 "success": True,
-                "message": f"Lead {lead_id} created successfully with status 'Initial' and auto-assigned to {assigned_to_name} via {assignment_method}",
-                "lead": self._format_lead_response(lead_doc),
+                "message": f"Lead created successfully with ID: {lead_id}",
+                "lead": self.format_lead_response(lead_doc),
                 "assignment_info": {
                     "assigned_to": assigned_to,
                     "assigned_to_name": assigned_to_name,
-                    "assignment_method": assignment_method,
-                    "assignment_history": lead_doc.get("assignment_history", [])
+                    "assignment_method": assignment_method
                 },
                 "duplicate_check": {
                     "is_duplicate": False,
-                    "checked": True,
-                    "method": "all_3_fields_required"
+                    "checked": True
                 }
             }
             
-        except HTTPException:
-            raise
         except Exception as e:
-            logger.error(f"Error creating comprehensive lead: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Failed to create lead: {str(e)}")
+            logger.error(f"Error creating lead: {str(e)}")
+            return {
+                "success": False,
+                "message": f"Failed to create lead: {str(e)}"
+            }
     
-    def _format_lead_response(self, lead_doc: Dict[str, Any]) -> Dict[str, Any]:
-        """Format lead document for response"""
+    async def check_duplicate_lead(self, email: str) -> Dict[str, Any]:
+        """Check if lead with email already exists"""
+        try:
+            db = self.get_db()
+            existing_lead = await db.leads.find_one({"email": email.lower()})
+            
+            if existing_lead:
+                return {
+                    "is_duplicate": True,
+                    "checked": True,
+                    "existing_lead_id": existing_lead.get("lead_id"),
+                    "duplicate_field": "email",
+                    "message": f"Lead with email {email} already exists"
+                }
+            
+            return {
+                "is_duplicate": False,
+                "checked": True
+            }
+            
+        except Exception as e:
+            logger.error(f"Error checking duplicate: {str(e)}")
+            return {
+                "is_duplicate": False,
+                "checked": False,
+                "message": f"Error checking duplicate: {str(e)}"
+            }
+    
+    async def generate_lead_id_by_category(self, category: str) -> str:
+        """Generate category-based lead ID"""
+        try:
+            db = self.get_db()
+            
+            # Get category short form
+            category_short = await self.get_category_short_form(category)
+            
+            # Get next sequence number for this category
+            sequence_doc = await db.lead_sequences.find_one_and_update(
+                {"category": category},
+                {"$inc": {"sequence": 1}},
+                upsert=True,
+                return_document=True
+            )
+            
+            sequence_number = sequence_doc["sequence"]
+            lead_id = f"{category_short}-{sequence_number}"
+            
+            logger.info(f"Generated lead ID: {lead_id} for category: {category}")
+            return lead_id
+            
+        except Exception as e:
+            logger.error(f"Error generating lead ID: {str(e)}")
+            # Fallback to simple numeric ID
+            return f"LD-{int(datetime.utcnow().timestamp())}"
+    
+    async def get_category_short_form(self, category: str) -> str:
+        """Get short form for category"""
+        try:
+            db = self.get_db()
+            category_doc = await db.lead_categories.find_one({"name": category})
+            
+            if category_doc and category_doc.get("short_form"):
+                return category_doc["short_form"]
+            
+            # Generate short form if not found
+            words = category.split()
+            if len(words) >= 2:
+                return "".join([word[0].upper() for word in words[:2]])
+            else:
+                return category[:2].upper()
+                
+        except Exception as e:
+            logger.error(f"Error getting category short form: {str(e)}")
+            return "LD"
+    
+    async def log_lead_activity(
+        self,
+        lead_id: str,
+        lead_object_id: ObjectId,
+        activity_type: str,
+        description: str,
+        created_by: str,
+        metadata: Dict[str, Any] = None
+    ):
+        """Log lead activity"""
+        try:
+            db = self.get_db()
+            
+            activity_doc = {
+                "lead_id": lead_id,
+                "lead_object_id": lead_object_id,
+                "activity_type": activity_type,
+                "description": description,
+                "created_by": ObjectId(created_by) if ObjectId.is_valid(created_by) else created_by,
+                "created_at": datetime.utcnow(),
+                "is_system_generated": True,
+                "metadata": metadata or {}
+            }
+            
+            await db.lead_activities.insert_one(activity_doc)
+            logger.info(f"✅ Activity logged: {activity_type} for lead {lead_id}")
+            
+        except Exception as e:
+            logger.error(f"Error logging activity: {str(e)}")
+    
+    def format_lead_response(self, lead_doc: Dict[str, Any]) -> Dict[str, Any]:
+        """Format lead document for response with new fields"""
         return {
-            "id": str(lead_doc["_id"]) if "_id" in lead_doc else lead_doc.get("id"),
-            "lead_id": lead_doc["lead_id"],
-            "name": lead_doc["name"],
-            "email": lead_doc["email"],
-            "contact_number": lead_doc["contact_number"],
-            "phone_number": lead_doc.get("phone_number", lead_doc["contact_number"]),
-            "country_of_interest": lead_doc.get("country_of_interest", ""),
-            "course_level": lead_doc.get("course_level", ""),
-            "source": lead_doc["source"],
-            "category": lead_doc.get("category", ""),  # 🆕 Include category
-            "stage": lead_doc.get("stage", "initial"),
+            "id": str(lead_doc.get("_id", "")),
+            "lead_id": lead_doc.get("lead_id", ""),
+            "name": lead_doc.get("name", ""),
+            "email": lead_doc.get("email", ""),
+            "contact_number": lead_doc.get("contact_number", ""),
+            "phone_number": lead_doc.get("phone_number", ""),
+            "source": lead_doc.get("source", "website"),
+            "category": lead_doc.get("category", ""),
+            
+            # 🆕 NEW: Include new fields in response
+            "age": lead_doc.get("age"),
+            "experience": lead_doc.get("experience"),
+            "nationality": lead_doc.get("nationality"),
+            
+            "status": lead_doc.get("status", "Initial"),
+            "stage": lead_doc.get("stage", "Initial"),
             "lead_score": lead_doc.get("lead_score", 0),
             "priority": lead_doc.get("priority", "medium"),
             "tags": lead_doc.get("tags", []),
-            "status": lead_doc["status"],
             "assigned_to": lead_doc.get("assigned_to"),
             "assigned_to_name": lead_doc.get("assigned_to_name"),
             "assignment_method": lead_doc.get("assignment_method"),
             "assignment_history": lead_doc.get("assignment_history", []),
             "notes": lead_doc.get("notes"),
-            "created_by": lead_doc["created_by"],
-            "created_by_name": lead_doc.get("created_by_name", "Unknown"),
-            "created_at": lead_doc["created_at"],
-            "updated_at": lead_doc["updated_at"]
+            "created_by": lead_doc.get("created_by", ""),
+            "created_at": lead_doc.get("created_at"),
+            "updated_at": lead_doc.get("updated_at"),
+            "last_contacted": lead_doc.get("last_contacted"),
+            
+            # Legacy fields
+            "country_of_interest": lead_doc.get("country_of_interest", ""),
+            "course_level": lead_doc.get("course_level")
         }
-    
-    async def log_activity(
-        self,
-        lead_id: str,
-        activity_type: str,
-        description: str,
-        performed_by: str,
-        additional_data: Optional[Dict[str, Any]] = None
-    ):
-        """Log activity to lead_activities collection"""
-        db = self.get_db()
-        
-        try:
-            # Get lead object ID
-            lead = await db.leads.find_one({"lead_id": lead_id})
-            if not lead:
-                logger.error(f"Lead {lead_id} not found for activity logging")
-                return
-            
-            activity_doc = {
-                "lead_object_id": lead["_id"],
-                "lead_id": lead_id,
-                "activity_type": activity_type,
-                "description": description,
-                "created_by": ObjectId(performed_by) if ObjectId.is_valid(performed_by) else performed_by,
-                "created_at": datetime.utcnow(),
-                "metadata": additional_data or {}
-            }
-            
-            await db.lead_activities.insert_one(activity_doc)
-            logger.info(f"Activity logged for lead {lead_id}: {activity_type}")
-            
-        except Exception as e:
-            logger.error(f"Failed to log activity for lead {lead_id}: {str(e)}")
-    
-    # Delegate assignment operations to assignment service
-    async def reassign_lead_manual(self, lead_id: str, new_assignee: str, reassigned_by: str, reason: Optional[str] = None) -> bool:
-        """Delegate to assignment service"""
-        return await lead_assignment_service.reassign_lead(lead_id, new_assignee, reassigned_by, reason)
-    
-    async def get_round_robin_stats(self) -> Dict[str, Any]:
-        """Delegate to assignment service"""
-        return await lead_assignment_service.get_round_robin_stats()
-    
-    async def get_user_leads_fast(self, user_email: str) -> Dict[str, Any]:
-        """Delegate to user array service"""
-        return await user_lead_array_service.get_user_leads_fast(user_email)
-    
-    async def get_lead_by_id(self, lead_id: str, current_user: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Get lead by ID with permission checking"""
-        db = self.get_db()
-        
-        try:
-            # Build query based on user role
-            query = {"lead_id": lead_id}
-            if current_user["role"] != "admin":
-                query["assigned_to"] = current_user["email"]
-            
-            lead = await db.leads.find_one(query)
-            
-            if not lead:
-                return None
-            
-            return self._format_lead_response(lead)
-            
-        except Exception as e:
-            logger.error(f"Error getting lead {lead_id}: {str(e)}")
-            return None
-    
-    async def update_lead(self, lead_id: str, update_data: Dict[str, Any], updated_by: str) -> Dict[str, Any]:
-        """Update lead with activity logging"""
-        db = self.get_db()
-        
-        try:
-            # Update the lead
-            update_data["updated_at"] = datetime.utcnow()
-            
-            result = await db.leads.update_one(
-                {"lead_id": lead_id},
-                {"$set": update_data}
-            )
-            
-            if result.matched_count == 0:
-                raise HTTPException(status_code=404, detail="Lead not found")
-            
-            # Log activity
-            await self.log_activity(
-                lead_id=lead_id,
-                activity_type="lead_updated",
-                description=f"Lead updated: {', '.join(update_data.keys())}",
-                performed_by=updated_by,
-                additional_data={"updated_fields": list(update_data.keys())}
-            )
-            
-            # Get updated lead
-            updated_lead = await db.leads.find_one({"lead_id": lead_id})
-            return self._format_lead_response(updated_lead)
-            
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Error updating lead {lead_id}: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Failed to update lead: {str(e)}")
-    
-    async def delete_lead(self, lead_id: str, deleted_by: str) -> bool:
-        """Delete lead with activity logging"""
-        db = self.get_db()
-        
-        try:
-            # Get lead info before deletion
-            lead = await db.leads.find_one({"lead_id": lead_id})
-            if not lead:
-                raise HTTPException(status_code=404, detail="Lead not found")
-            
-            # Remove from user arrays
-            if lead.get("assigned_to"):
-                await user_lead_array_service.remove_lead_from_user_array(lead["assigned_to"], lead_id)
-            
-            # Delete lead
-            result = await db.leads.delete_one({"lead_id": lead_id})
-            
-            if result.deleted_count == 0:
-                raise HTTPException(status_code=404, detail="Lead not found")
-            
-            # Log activity (to activities collection, not tied to lead anymore)
-            await self.log_activity(
-                lead_id=lead_id,
-                activity_type="lead_deleted",
-                description=f"Lead {lead_id} deleted",
-                performed_by=deleted_by,
-                additional_data={"lead_name": lead["name"], "lead_email": lead["email"]}
-            )
-            
-            logger.info(f"Lead {lead_id} deleted successfully")
-            return True
-            
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Error deleting lead {lead_id}: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Failed to delete lead: {str(e)}")
 
 # Global service instance
 lead_service = LeadService()
