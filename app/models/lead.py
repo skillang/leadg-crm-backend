@@ -24,24 +24,7 @@ class LeadStatus(str, Enum):
     RINGING = "Ringing"
     WRONG_NUMBER = "Wrong Number"
 
-# Lead Stage Enumeration
-class LeadStage(str, Enum):
-    """Lead stage enumeration"""
-    INITIAL = "Initial"
-    FOLLOWUP = "Followup"
-    WARM = "Warm"
-    PROSPECT = "Prospect"
-    JUNK = "Junk"
-    ENROLLED = "Enrolled"
-    YET_TO_CALL = "Yet to call"
-    COUNSELED = "Counseled"
-    DNP = "DNP"
-    INVALID = "INVALID"
-    CALL_BACK = "Call Back"
-    BUSY = "Busy"
-    NI = "NI"
-    RINGING = "Ringing"
-    WRONG_NUMBER = "Wrong Number"
+
 
 # Course Level Enumeration
 class CourseLevel(str, Enum):
@@ -131,7 +114,7 @@ class LeadBasicInfo(BaseModel):
 # Status & Tags Section (Tab 2) 
 class LeadStatusAndTags(BaseModel):
     """Status and tags section"""
-    stage: LeadStage = Field(default=LeadStage.INITIAL, description="Current lead stage")
+    stage: str = Field(default="Initial", description="Current lead stage")
     lead_score: int = Field(default=0, ge=0, le=100, description="Lead score (0-100)")
     tags: List[str] = Field(default_factory=list, description="Lead tags (e.g., IELTS Ready, Engineering)")
     
@@ -227,7 +210,7 @@ class LeadResponseComprehensive(BaseModel):
     nationality: Optional[str] = None  # 🆕 NEW
     
     # Status & Tags
-    stage: LeadStage
+    stage: str  # ✅ FIXED - was LeadStage
     lead_score: int
     priority: str = "medium"
     tags: List[str] = Field(default_factory=list)

@@ -1,4 +1,4 @@
-# app/main.py - Cleaned version without Smartflo/TATA integration
+# app/main.py - Updated with stages router
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -7,8 +7,7 @@ import time
 
 from .config.settings import settings
 from .config.database import connect_to_mongo, close_mongo_connection
-from .routers import auth, leads, tasks, notes, documents, timeline, contacts ,lead_categories
-
+from .routers import auth, leads, tasks, notes, documents, timeline, contacts, lead_categories, stages  # Added stages
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -23,7 +22,9 @@ async def lifespan(app: FastAPI):
     logger.info("🚀 Starting LeadG CRM API...")
     await connect_to_mongo()
     
-    # ✅ Indexes are already created in database.py connection
+    # Setup default stages if none exist
+    await setup_default_stages()
+    logger.info("✅ Default stages setup completed")
     
     logger.info("✅ Application startup complete")
     
@@ -34,13 +35,25 @@ async def lifespan(app: FastAPI):
     await close_mongo_connection()
     logger.info("✅ Application shutdown complete")
 
-# Note: Database indexes are created automatically in app/config/database.py
+async def setup_default_stages():
+    """Setup default stages on startup"""
+    try:
+        from .models.lead_stage import StageHelper
+        
+        created_count = await StageHelper.create_default_stages()
+        if created_count:
+            logger.info(f"Created {created_count} default stages")
+        else:
+            logger.info("Default stages already exist")
+            
+    except Exception as e:
+        logger.warning(f"Error setting up default stages: {e}")
 
 # Create FastAPI application
 app = FastAPI(
     title=settings.app_name,
     version=settings.version,
-    description="LeadG CRM - Customer Relationship Management API",
+    description="LeadG CRM - Customer Relationship Management API with Dynamic Stages",
     lifespan=lifespan,
     docs_url="/docs" if settings.debug else None,
     redoc_url="/redoc" if settings.debug else None,
@@ -77,7 +90,7 @@ async def health_check():
         "status": "healthy",
         "message": "LeadG CRM API is running",
         "version": settings.version,
-        "modules": ["auth", "leads", "tasks", "notes", "documents", "timeline", "contacts"]
+        "modules": ["auth", "leads", "tasks", "notes", "documents", "timeline", "contacts", "stages"]  # Added stages
     }
 
 @app.get("/")
@@ -95,11 +108,13 @@ async def root():
             "documents": "/documents",
             "timeline": "",
             "contacts": "/contacts",
+            "stages": "/stages",  # Added stages
+            "lead-categories": "/lead-categories",
             "health": "/health"
         }
     }
 
-# Include routers with /v1 prefix
+# Include routers with specific prefixes
 app.include_router(
     auth.router,
     prefix="/auth",
@@ -141,11 +156,19 @@ app.include_router(
     prefix="/contacts",
     tags=["Contacts"]
 )
+
 app.include_router(
     lead_categories.router,
     prefix="/lead-categories",
     tags=["Lead Categories"]
-    )
+)
+
+# NEW: Add stages router
+app.include_router(
+    stages.router,
+    prefix="/stages",
+    tags=["Stages"]
+)
 
 if __name__ == "__main__":
     import uvicorn

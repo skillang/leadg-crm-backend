@@ -1,209 +1,199 @@
-from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo import IndexModel, ASCENDING
-from .settings import settings
+# app/config/database.py - UPDATED TO INCLUDE STAGE COLLECTION INDEXES
+
+import motor.motor_asyncio
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 import logging
-import ssl
+from .settings import settings
 
 logger = logging.getLogger(__name__)
 
-class Database:
-    def __init__(self):
-        self.client = None
-        self.database = None
-
-# Global database instance
-db = Database()
+# Global database client
+_client: AsyncIOMotorClient = None
+_database: AsyncIOMotorDatabase = None
 
 async def connect_to_mongo():
-    """Create database connection with Atlas support"""
+    """Create database connection"""
+    global _client, _database
+    
     try:
-        # 🔥 UPDATED: MongoDB Atlas connection with proper options
-        if settings.is_atlas_connection():
-            logger.info("🌐 Connecting to MongoDB Atlas...")
-            
-            # Atlas-specific connection options
-            connection_options = {
-                **settings.get_mongodb_connection_options(),
-                "tls": True,  # Enable TLS for Atlas
-                "tlsAllowInvalidCertificates": False,  # Ensure certificate validation
-                "authSource": "admin",  # Atlas uses admin as auth source
-                "appName": "LeadG-CRM"  # Application name for Atlas monitoring
-            }
-            
-            # Create client with Atlas options
-            db.client = AsyncIOMotorClient(
-                settings.mongodb_url,
-                **connection_options
-            )
-            
-        else:
-            logger.info("🏠 Connecting to local MongoDB...")
-            # Local MongoDB connection (fallback)
-            db.client = AsyncIOMotorClient(settings.mongodb_url)
+        logger.info("🔌 Connecting to MongoDB...")
         
-        # Set database
-        db.database = db.client[settings.database_name]
+        _client = AsyncIOMotorClient(
+            settings.mongodb_url,  # ✅ FIXED: was settings.MONGODB_URL
+            maxPoolSize=settings.mongodb_max_pool_size,  # ✅ FIXED: was settings.MONGODB_MAX_POOL_SIZE
+            minPoolSize=settings.mongodb_min_pool_size,  # ✅ FIXED: was settings.MONGODB_MIN_POOL_SIZE
+            maxIdleTimeMS=settings.mongodb_max_idle_time_ms,  # ✅ FIXED: was settings.MONGODB_MAX_IDLE_TIME_MS
+            serverSelectionTimeoutMS=settings.mongodb_server_selection_timeout_ms  # ✅ FIXED: was settings.MONGODB_SERVER_SELECTION_TIMEOUT_MS
+        )
         
-        # Test the connection with timeout
-        logger.info("🔍 Testing database connection...")
-        await db.client.admin.command('ping')
+        _database = _client[settings.database_name]  # ✅ FIXED: was settings.DATABASE_NAME
         
-        # Get server info for logging
-        server_info = await db.client.server_info()
-        logger.info(f"✅ Successfully connected to MongoDB {server_info.get('version')}")
-        
-        if settings.is_atlas_connection():
-            # Log Atlas-specific connection info
-            cluster_info = await db.client.admin.command('buildInfo')
-            logger.info(f"🌐 Connected to Atlas cluster - MongoDB {cluster_info.get('version')}")
-            logger.info(f"📊 Database: {settings.database_name}")
-        
-        # Create indexes for better performance
-        await create_indexes()
+        # Test connection
+        await _database.command("ping")
+        logger.info("✅ Connected to MongoDB successfully")
         
     except Exception as e:
-        error_msg = f"❌ Failed to connect to MongoDB: {e}"
-        logger.error(error_msg)
-        
-        # Provide specific Atlas troubleshooting
-        if settings.is_atlas_connection():
-            logger.error("🌐 Atlas Connection Troubleshooting:")
-            logger.error("   1. Check your connection string format")
-            logger.error("   2. Verify username and password are correct")
-            logger.error("   3. Ensure your IP is whitelisted in Atlas")
-            logger.error("   4. Check database name exists in Atlas")
-            logger.error("   5. Verify network access rules")
-        
-        raise Exception(error_msg)
+        logger.error(f"❌ Failed to connect to MongoDB: {e}")
+        raise
+
+def get_database() -> AsyncIOMotorDatabase:
+    """Get database instance"""
+    global _database
+    if _database is None:
+        raise RuntimeError("Database not initialized. Call connect_to_mongo() first.")
+    return _database
 
 async def close_mongo_connection():
     """Close database connection"""
-    if db.client:
-        db.client.close()
-        logger.info("🔌 Disconnected from MongoDB")
+    global _client
+    if _client:
+        _client.close()
+        logger.info("🔌 MongoDB connection closed")
 
 async def create_indexes():
-    """Create database indexes for optimization"""
+    """Create database indexes for optimal performance"""
     try:
-        logger.info("📑 Creating database indexes...")
+        db = get_database()
+        logger.info("📊 Creating database indexes...")
         
-        # Users collection indexes
-        users_collection = db.database.users
-        await users_collection.create_indexes([
-            IndexModel([("email", ASCENDING)], unique=True),
-            IndexModel([("username", ASCENDING)], unique=True),
-            IndexModel([("is_active", ASCENDING)]),
-            IndexModel([("role", ASCENDING)]),
-            # 🚀 NEW: Department indexes for multi-department support
-            IndexModel([("departments", ASCENDING)]),  # Works for both string and array
-            IndexModel([("departments", ASCENDING), ("is_active", ASCENDING)]),  # Compound index
-            IndexModel([("departments", ASCENDING), ("role", ASCENDING)]),  # Role-based department queries
-        ])
+        # ============================================================================
+        # USERS COLLECTION INDEXES
+        # ============================================================================
+        await db.users.create_index("email", unique=True)
+        await db.users.create_index("username", unique=True)
+        await db.users.create_index([("role", 1), ("is_active", 1)])
+        await db.users.create_index("created_at")
+        logger.info("✅ Users indexes created")
         
-        # Leads collection indexes
-        leads_collection = db.database.leads
-        await leads_collection.create_indexes([
-            IndexModel([("lead_id", ASCENDING)], unique=True),
-            IndexModel([("email", ASCENDING)]),
-            IndexModel([("assigned_to", ASCENDING)]),
-            IndexModel([("status", ASCENDING)]),
-            IndexModel([("created_at", ASCENDING)]),
-            IndexModel([("source", ASCENDING)]),
-        ])
+        # ============================================================================
+        # LEADS COLLECTION INDEXES
+        # ============================================================================
+        await db.leads.create_index("lead_id", unique=True)
+        await db.leads.create_index("email")
+        await db.leads.create_index("contact_number")
+        await db.leads.create_index([("assigned_to", 1), ("stage", 1)])
+        await db.leads.create_index([("created_by", 1), ("created_at", -1)])
+        await db.leads.create_index([("stage", 1), ("created_at", -1)])
+        await db.leads.create_index([("category", 1), ("stage", 1)])
+        await db.leads.create_index("tags")
+        await db.leads.create_index("source")
+        await db.leads.create_index("status")
+        await db.leads.create_index("created_at")
+        await db.leads.create_index("updated_at")
+        logger.info("✅ Leads indexes created")
         
-        # Tasks collection indexes
-        tasks_collection = db.database.lead_tasks
-        await tasks_collection.create_indexes([
-            IndexModel([("lead_id", ASCENDING)]),
-            IndexModel([("lead_object_id", ASCENDING)]),
-            IndexModel([("assigned_to", ASCENDING)]),
-            IndexModel([("status", ASCENDING)]),
-            IndexModel([("due_datetime", ASCENDING)]),
-            IndexModel([("created_by", ASCENDING)]),
-        ])
+        # ============================================================================
+        # LEAD_STAGES COLLECTION INDEXES (NEW)
+        # ============================================================================
+        await db.lead_stages.create_index("name", unique=True)
+        await db.lead_stages.create_index([("is_active", 1), ("sort_order", 1)])
+        await db.lead_stages.create_index("is_default")
+        await db.lead_stages.create_index("created_by")
+        await db.lead_stages.create_index("created_at")
+        logger.info("✅ Lead Stages indexes created")
         
-        # Notes collection indexes (if exists)
-        notes_collection = db.database.lead_notes
-        await notes_collection.create_indexes([
-            IndexModel([("lead_id", ASCENDING)]),
-            IndexModel([("lead_object_id", ASCENDING)]),
-            IndexModel([("created_by", ASCENDING)]),
-            IndexModel([("note_type", ASCENDING)]),
-            IndexModel([("tags", ASCENDING)]),
-            IndexModel([("created_at", ASCENDING)]),
-        ])
+        # ============================================================================
+        # TASKS COLLECTION INDEXES
+        # ============================================================================
+        await db.lead_tasks.create_index([("lead_id", 1), ("created_at", -1)])
+        await db.lead_tasks.create_index([("assigned_to", 1), ("due_date", 1)])
+        await db.lead_tasks.create_index([("created_by", 1), ("created_at", -1)])
+        await db.lead_tasks.create_index([("priority", 1), ("status", 1)])
+        await db.lead_tasks.create_index("due_date")
+        await db.lead_tasks.create_index("status")
+        await db.lead_tasks.create_index("task_type")
+        logger.info("✅ Tasks indexes created")
         
-        # Activities collection indexes
-        activities_collection = db.database.lead_activities
-        await activities_collection.create_indexes([
-            IndexModel([("lead_id", ASCENDING)]),
-            IndexModel([("activity_type", ASCENDING)]),
-            IndexModel([("created_by", ASCENDING)]),
-            IndexModel([("created_at", ASCENDING)]),
-        ])
+        # ============================================================================
+        # ACTIVITIES COLLECTION INDEXES
+        # ============================================================================
+        await db.lead_activities.create_index([("lead_id", 1), ("created_at", -1)])
+        await db.lead_activities.create_index([("created_by", 1), ("created_at", -1)])
+        await db.lead_activities.create_index("activity_type")
+        await db.lead_activities.create_index("created_at")
+        logger.info("✅ Activities indexes created")
         
-        # 🔗 NEW: Contacts collection indexes
-        contacts_collection = db.database.lead_contacts
-        await contacts_collection.create_indexes([
-            IndexModel([("lead_id", ASCENDING)]),
-            IndexModel([("created_by", ASCENDING)]),
-            IndexModel([("is_primary", ASCENDING)]),
-            IndexModel([("email", ASCENDING)]),
-            IndexModel([("role", ASCENDING)]),
-            IndexModel([("relationship", ASCENDING)]),
-            IndexModel([("created_at", ASCENDING)]),
-            IndexModel([("linked_leads", ASCENDING)]),  # For linked leads functionality
-            # Compound indexes for better query performance
-            IndexModel([("lead_id", ASCENDING), ("is_primary", ASCENDING)]),
-            IndexModel([("lead_id", ASCENDING), ("role", ASCENDING)]),
-            IndexModel([("lead_id", ASCENDING), ("created_at", ASCENDING)]),
-        ])
+        # ============================================================================
+        # AUTHENTICATION INDEXES
+        # ============================================================================
+        await db.token_blacklist.create_index("token", unique=True)
+        await db.token_blacklist.create_index("expires_at", expireAfterSeconds=0)
         
-        # 🚀 NEW: Departments collection indexes
-        departments_collection = db.database.departments
-        await departments_collection.create_indexes([
-            IndexModel([("name", ASCENDING)], unique=True),  # Unique department names
-            IndexModel([("is_active", ASCENDING)]),  # Filter active departments
-            IndexModel([("name", ASCENDING), ("is_active", ASCENDING)]),  # Compound for fast lookups
-            IndexModel([("created_at", ASCENDING)]),  # For sorting by creation date
-            IndexModel([("created_by", ASCENDING)]),  # Track who created departments
-        ])
+        await db.user_sessions.create_index([("user_id", 1), ("created_at", -1)])
+        await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)
+        logger.info("✅ Authentication indexes created")
         
-        # Token blacklist for logout functionality
-        token_blacklist = db.database.token_blacklist
-        await token_blacklist.create_indexes([
-            IndexModel([("token_jti", ASCENDING)], unique=True),
-            IndexModel([("expires_at", ASCENDING)], expireAfterSeconds=0),
-        ])
+        # ============================================================================
+        # FUTURE COLLECTIONS (PLANNED)
+        # ============================================================================
         
-        logger.info("📑 Database indexes created successfully")
+        # Lead Notes Collection (TO BE CREATED)
+        # await db.lead_notes.create_index([("lead_id", 1), ("created_at", -1)])
+        # await db.lead_notes.create_index([("created_by", 1), ("created_at", -1)])
+        # await db.lead_notes.create_index("tags")
+        # logger.info("✅ Notes indexes created")
+        
+        # Lead Documents Collection (TO BE CREATED)
+        # await db.lead_documents.create_index([("lead_id", 1), ("created_at", -1)])
+        # await db.lead_documents.create_index([("created_by", 1), ("status", 1)])
+        # await db.lead_documents.create_index("document_type")
+        # await db.lead_documents.create_index("status")
+        # logger.info("✅ Documents indexes created")
+        
+        # Lead Contacts Collection (TO BE CREATED)
+        # await db.lead_contacts.create_index([("lead_id", 1), ("is_primary", -1)])
+        # await db.lead_contacts.create_index("email")
+        # await db.lead_contacts.create_index("contact_number")
+        # await db.lead_contacts.create_index("role")
+        # logger.info("✅ Contacts indexes created")
+        
+        logger.info("🎯 All database indexes created successfully!")
         
     except Exception as e:
-        logger.error(f"❌ Failed to create indexes: {e}")
-        # Don't fail the connection if index creation fails
-        logger.warning("⚠️ Continuing without optimal indexes")
+        logger.error(f"❌ Error creating indexes: {e}")
+        raise
 
-def get_database():
-    """Get database instance - FIXED for Motor compatibility"""
-    if db.database is None:  # 🔧 FIXED: Use 'is None' instead of boolean check
-        raise Exception("Database not connected. Call connect_to_mongo() first.")
-    return db.database
-
-async def test_database_connection():
-    """Test database operations - FIXED for Motor compatibility"""
+async def get_collection_stats():
+    """Get database collection statistics"""
     try:
-        database = get_database()
+        db = get_database()
         
-        # Test basic operations
-        test_result = await database.command("ping")
-        logger.info(f"✅ Database ping successful: {test_result}")
+        collections = [
+            "users",
+            "leads", 
+            "lead_stages",  # NEW
+            "lead_tasks",
+            "lead_activities",
+            "token_blacklist",
+            "user_sessions"
+        ]
         
-        # Test collections access
-        collections = await database.list_collection_names()
-        logger.info(f"📂 Available collections: {collections}")
+        stats = {}
+        for collection_name in collections:
+            try:
+                count = await db[collection_name].count_documents({})
+                stats[collection_name] = count
+            except:
+                stats[collection_name] = 0
         
-        return True
+        return stats
         
     except Exception as e:
-        logger.error(f"❌ Database test failed: {e}")
-        return False
+        logger.error(f"Error getting collection stats: {e}")
+        return {}
+
+# Database lifecycle management
+async def init_database():
+    """Initialize database connection and indexes"""
+    await connect_to_mongo()
+    await create_indexes()
+
+# Export functions
+__all__ = [
+    "get_database",
+    "connect_to_mongo", 
+    "close_mongo_connection",
+    "create_indexes",
+    "get_collection_stats",
+    "init_database"
+]
