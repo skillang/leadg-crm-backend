@@ -1,4 +1,4 @@
-# app/routers/leads.py - Complete Updated with ObjectId Fix and Status Migration Support
+# app/routers/leads.py - Complete Updated with ObjectId Fix and Enhanced User Array Sync
 
 from fastapi import APIRouter, HTTPException, status, Depends, Query
 from typing import Dict, Any, List, Optional
@@ -1217,13 +1217,8 @@ async def assign_lead(
         )
 
 # ============================================================================
-# UPDATE ENDPOINT - FIXED FOR OBJECTID
+# UPDATE ENDPOINT - ENHANCED WITH BETTER USER ARRAY SYNC
 # ============================================================================
-
-# COMPREHENSIVE ACTIVITY LOGGING for app/routers/leads.py
-# Replace your current /leads/update endpoint with this enhanced version
-
-# Replace your update_lead_universal function in app/routers/leads.py with this complete implementation:
 
 @router.put("/update")
 async def update_lead_universal(
@@ -1231,7 +1226,7 @@ async def update_lead_universal(
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):
     """
-    Universal lead update endpoint with COMPREHENSIVE ACTIVITY LOGGING
+    Universal lead update endpoint with ENHANCED USER ARRAY SYNC
     """
     try:
         logger.info(f"🔄 Update by {current_user.get('email')} with data: {update_request}")
@@ -1254,6 +1249,8 @@ async def update_lead_universal(
                 detail="Lead not found"
             )
         
+        logger.info(f"📋 Found lead {lead_id}, currently assigned to: {lead.get('assigned_to')}")
+        
         # Check permissions
         user_role = current_user.get("role", "user")
         if user_role != "admin" and lead.get("assigned_to") != current_user.get("email"):
@@ -1263,27 +1260,38 @@ async def update_lead_universal(
             )
         
         # Handle assignment change validation
+        assignment_changed = False
+        old_assignee = lead.get("assigned_to")
+        new_assignee = None
+        
         if "assigned_to" in update_request:
-            new_assigned_to = update_request.get("assigned_to")
-            current_assigned_to = lead.get("assigned_to")
+            new_assignee = update_request.get("assigned_to")
+            assignment_changed = (old_assignee != new_assignee)
             
-            if current_assigned_to != new_assigned_to and user_role != "admin":
+            logger.info(f"🔄 Assignment change detected: '{old_assignee}' → '{new_assignee}' (Changed: {assignment_changed})")
+            
+            if assignment_changed and user_role != "admin":
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Only admins can reassign leads"
                 )
             
-            # Validate new assignee exists
-            if new_assigned_to:
-                assignee = await db.users.find_one({"email": new_assigned_to})
+            # Validate new assignee exists (if not None)
+            if new_assignee:
+                assignee = await db.users.find_one({"email": new_assignee, "is_active": True})
                 if not assignee:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"User {new_assigned_to} not found"
+                        detail=f"User {new_assignee} not found or inactive"
                     )
                 
                 # Add assignee name for update
                 update_request["assigned_to_name"] = f"{assignee.get('first_name', '')} {assignee.get('last_name', '')}".strip()
+                logger.info(f"✅ New assignee validated: {new_assignee}")
+            else:
+                # Unassignment case
+                update_request["assigned_to_name"] = None
+                logger.info(f"🔄 Unassigning lead from {old_assignee}")
         
         # Remove lead_id from update data
         update_data = {k: v for k, v in update_request.items() if k != "lead_id"}
@@ -1316,7 +1324,7 @@ async def update_lead_universal(
         # Add timestamp
         update_data["updated_at"] = datetime.utcnow()
         
-        # 🔥 PERFORM THE ACTUAL DATABASE UPDATE (This was missing!)
+        # 🔥 PERFORM THE ACTUAL DATABASE UPDATE
         result = await db.leads.update_one(
             {"lead_id": lead_id},
             {"$set": update_data}
@@ -1328,7 +1336,57 @@ async def update_lead_universal(
                 detail="Lead not found for update"
             )
         
-        # 🔥 LOG ALL ACTIVITIES (This was missing!)
+        logger.info(f"✅ Lead {lead_id} updated in database successfully")
+        
+        # 🔥 ENHANCED USER ARRAY UPDATES - Only if assignment changed
+        assignment_sync_error = None
+        if assignment_changed:
+            logger.info(f"🔄 Processing user array updates for assignment change")
+            
+            try:
+                # Remove from old assignee's array
+                if old_assignee:
+                    logger.info(f"📤 Removing lead {lead_id} from {old_assignee}")
+                    await update_user_lead_array(old_assignee, lead_id, "remove")
+                    logger.info(f"✅ Successfully removed lead {lead_id} from {old_assignee}")
+                
+                # Add to new assignee's array
+                if new_assignee:
+                    logger.info(f"📥 Adding lead {lead_id} to {new_assignee}")
+                    await update_user_lead_array(new_assignee, lead_id, "add")
+                    logger.info(f"✅ Successfully added lead {lead_id} to {new_assignee}")
+                
+                # Log assignment activity
+                if old_assignee != new_assignee:
+                    assignment_activity = {
+                        "activity_type": "lead_reassigned",
+                        "description": f"Lead reassigned from '{old_assignee or 'Unassigned'}' to '{new_assignee or 'Unassigned'}'",
+                        "metadata": {
+                            "old_assignee": old_assignee,
+                            "new_assignee": new_assignee,
+                            "reassigned_by": current_user.get("email")
+                        }
+                    }
+                    activities_to_log.append(assignment_activity)
+                    
+            except Exception as array_error:
+                logger.error(f"❌ CRITICAL: User array update failed: {str(array_error)}")
+                logger.error(f"❌ Assignment details: {old_assignee} → {new_assignee}")
+                
+                # 🚨 IMPORTANT: Don't fail the lead update, but log prominently
+                logger.error(f"❌ USER ARRAYS ARE NOW OUT OF SYNC FOR LEAD {lead_id}")
+                logger.error(f"❌ MANUAL SYNC REQUIRED: Run /admin/sync-user-arrays")
+                
+                # Add error to response so admin knows
+                assignment_sync_error = {
+                    "error": "User array sync failed",
+                    "details": str(array_error),
+                    "recommendation": "Run /admin/sync-user-arrays endpoint"
+                }
+        else:
+            logger.info(f"ℹ️ No assignment change, skipping user array updates")
+        
+        # 🔥 LOG ALL ACTIVITIES
         user_id = current_user.get("_id") or current_user.get("id")
         user_name = f"{current_user.get('first_name', '')} {current_user.get('last_name', '')}".strip()
         if not user_name:
@@ -1355,43 +1413,32 @@ async def update_lead_universal(
                 logger.error(f"❌ Failed to log activity for lead {lead_id}: {str(activity_error)}")
                 # Don't fail the update if activity logging fails
         
-        # Handle user array updates for assignment changes
-        if "assigned_to" in update_data:
-            try:
-                old_assignee = lead.get("assigned_to")
-                new_assignee = update_data.get("assigned_to")
-                
-                # Remove from old assignee's array
-                if old_assignee and old_assignee != new_assignee:
-                    await update_user_lead_array(old_assignee, lead_id, "remove")
-                
-                # Add to new assignee's array
-                if new_assignee and new_assignee != old_assignee:
-                    await update_user_lead_array(new_assignee, lead_id, "add")
-                    
-            except Exception as array_error:
-                logger.error(f"User array update error: {str(array_error)}")
-                # Don't fail the update if array sync fails
-        
         # Get updated lead for response
         updated_lead = await db.leads.find_one({"lead_id": lead_id})
         formatted_lead = format_lead_response(updated_lead) if updated_lead else None
         
-        logger.info(f"✅ Lead {lead_id} updated successfully with {len(activities_to_log)} activities logged")
+        logger.info(f"✅ Lead {lead_id} update completed successfully with {len(activities_to_log)} activities logged")
         
-        return {
+        response = {
             "success": True,
             "message": "Lead updated successfully",
             "lead": formatted_lead,
-            "activities_logged": len(activities_to_log)
+            "activities_logged": len(activities_to_log),
+            "assignment_changed": assignment_changed
         }
+        
+        # Add sync error info if it occurred
+        if assignment_changed and assignment_sync_error:
+            response["warning"] = assignment_sync_error
+        
+        return response
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Update lead error: {e}")
+        logger.error(f"❌ Update lead error: {e}")
         import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
+        logger.error(f"❌ Traceback: {traceback.format_exc()}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to update lead"
@@ -1432,22 +1479,40 @@ def format_lead_response(lead_doc: dict) -> dict:
     }
 
 
-# Helper function for user array updates (add this if it doesn't exist)
+# ENHANCED Helper function for user array updates
 async def update_user_lead_array(user_email: str, lead_id: str, action: str):
-    """Update user's assigned_leads array"""
+    """Update user's assigned_leads array with enhanced validation and logging"""
     try:
         db = get_database()
         
+        logger.info(f"🔄 User array update: {action} lead {lead_id} for {user_email}")
+        
         if action == "add":
-            await db.users.update_one(
-                {"email": user_email},
+            # Verify user exists and is active before adding
+            user = await db.users.find_one({"email": user_email, "is_active": True})
+            if not user:
+                raise Exception(f"User {user_email} not found or inactive")
+            
+            result = await db.users.update_one(
+                {"email": user_email, "is_active": True},
                 {
                     "$addToSet": {"assigned_leads": lead_id},
                     "$inc": {"total_assigned_leads": 1}
                 }
             )
+            
+            if result.modified_count == 0:
+                # Check if lead was already in array
+                user_after = await db.users.find_one({"email": user_email})
+                if user_after and lead_id in user_after.get("assigned_leads", []):
+                    logger.info(f"ℹ️ Lead {lead_id} already in {user_email}'s array")
+                else:
+                    logger.warning(f"⚠️ Failed to add lead {lead_id} to {user_email} - no documents modified")
+            else:
+                logger.info(f"✅ Added lead {lead_id} to {user_email}'s array")
+            
         elif action == "remove":
-            await db.users.update_one(
+            result = await db.users.update_one(
                 {"email": user_email},
                 {
                     "$pull": {"assigned_leads": lead_id},
@@ -1455,9 +1520,22 @@ async def update_user_lead_array(user_email: str, lead_id: str, action: str):
                 }
             )
             
+            # Ensure count doesn't go below 0
+            await db.users.update_one(
+                {"email": user_email, "total_assigned_leads": {"$lt": 0}},
+                {"$set": {"total_assigned_leads": 0}}
+            )
+            
+            if result.modified_count == 0:
+                logger.warning(f"⚠️ No documents modified when removing lead {lead_id} from {user_email}")
+            else:
+                logger.info(f"✅ Removed lead {lead_id} from {user_email}'s array")
+        else:
+            raise Exception(f"Invalid action: {action}. Must be 'add' or 'remove'")
+            
     except Exception as e:
-        logger.error(f"User array update error for {user_email}: {str(e)}")
-        raise
+        logger.error(f"❌ User array update error for {user_email}: {str(e)}")
+        raise  # Re-raise so calling function knows it failed
     
 
 def get_activity_type_for_field(field_key: str) -> str:
@@ -1504,8 +1582,6 @@ def format_tag_changes(added_tags: set, removed_tags: set) -> str:
     if removed_tags:
         parts.append(f"Removed: {', '.join(removed_tags)}")
     return " | ".join(parts)
-
-# Keep your existing update_user_lead_array helper function
 
 # ============================================================================
 # DELETE ENDPOINT
