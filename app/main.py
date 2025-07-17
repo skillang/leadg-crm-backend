@@ -7,7 +7,7 @@ import time
 
 from .config.settings import settings
 from .config.database import connect_to_mongo, close_mongo_connection
-from .routers import auth, leads, tasks, notes, documents, timeline, contacts, lead_categories, stages  # Added stages
+from .routers import auth, leads, tasks, notes, documents, timeline, contacts, lead_categories, stages, statuses  # Added statuses
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -25,6 +25,10 @@ async def lifespan(app: FastAPI):
     # Setup default stages if none exist
     await setup_default_stages()
     logger.info("✅ Default stages setup completed")
+    
+    # Setup default statuses if none exist
+    await setup_default_statuses()
+    logger.info("✅ Default statuses setup completed")
     
     logger.info("✅ Application startup complete")
     
@@ -48,6 +52,20 @@ async def setup_default_stages():
             
     except Exception as e:
         logger.warning(f"Error setting up default stages: {e}")
+
+async def setup_default_statuses():
+    """Setup default statuses on startup"""
+    try:
+        from .models.lead_status import StatusHelper
+        
+        created_count = await StatusHelper.create_default_statuses()
+        if created_count:
+            logger.info(f"Created {created_count} default statuses")
+        else:
+            logger.info("Default statuses already exist")
+            
+    except Exception as e:
+        logger.warning(f"Error setting up default statuses: {e}")
 
 # Create FastAPI application
 app = FastAPI(
@@ -90,7 +108,7 @@ async def health_check():
         "status": "healthy",
         "message": "LeadG CRM API is running",
         "version": settings.version,
-        "modules": ["auth", "leads", "tasks", "notes", "documents", "timeline", "contacts", "stages"]  # Added stages
+        "modules": ["auth", "leads", "tasks", "notes", "documents", "timeline", "contacts", "stages", "statuses"]  # Added statuses
     }
 
 @app.get("/")
@@ -109,6 +127,7 @@ async def root():
             "timeline": "",
             "contacts": "/contacts",
             "stages": "/stages",  # Added stages
+            "statuses": "/statuses",  # Added statuses
             "lead-categories": "/lead-categories",
             "health": "/health"
         }
@@ -168,6 +187,13 @@ app.include_router(
     stages.router,
     prefix="/stages",
     tags=["Stages"]
+)
+
+# NEW: Add statuses router
+app.include_router(
+    statuses.router,
+    prefix="/statuses",
+    tags=["Statuses"]
 )
 
 if __name__ == "__main__":

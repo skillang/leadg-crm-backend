@@ -1,28 +1,89 @@
-# app/models/lead.py - Updated with AGE, EXPERIENCE, and Nationality fields
+# app/models/lead.py - Updated with dynamic stages and statuses
 
 from pydantic import BaseModel, Field, validator, EmailStr
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from enum import Enum
 
-# Lead Status Enumeration
-class LeadStatus(str, Enum):
-    """Lead status enumeration"""
-    INITIAL = "Initial"
-    FOLLOWUP = "Followup"
-    WARM = "Warm"
-    PROSPECT = "Prospect"
-    JUNK = "Junk"
-    ENROLLED = "Enrolled"
-    YET_TO_CALL = "Yet to call"
-    COUNSELED = "Counseled"
-    DNP = "DNP"
-    INVALID = "INVALID"
-    CALL_BACK = "Call Back"
-    BUSY = "Busy"
-    NI = "NI"
-    RINGING = "Ringing"
-    WRONG_NUMBER = "Wrong Number"
+# ============================================================================
+# DYNAMIC VALIDATION HELPERS (For stages and statuses)
+# ============================================================================
+
+async def validate_stage_exists(stage_name: str) -> bool:
+    """Validate that a stage exists and is active"""
+    try:
+        from ..config.database import get_database
+        
+        db = get_database()
+        stage = await db.lead_stages.find_one({
+            "name": stage_name,
+            "is_active": True
+        })
+        return stage is not None
+    except:
+        return True  # Fallback - if validation fails, allow the stage
+
+async def validate_status_exists(status_name: str) -> bool:
+    """Validate that a status exists and is active"""
+    try:
+        from ..config.database import get_database
+        
+        db = get_database()
+        status = await db.lead_statuses.find_one({
+            "name": status_name,
+            "is_active": True
+        })
+        return status is not None
+    except:
+        return True  # Fallback - if validation fails, allow the status
+
+async def get_default_stage() -> str:
+    """Get the default stage for new leads"""
+    try:
+        from ..config.database import get_database
+        
+        db = get_database()
+        default_stage = await db.lead_stages.find_one({
+            "is_default": True,
+            "is_active": True
+        })
+        
+        if default_stage:
+            return default_stage["name"]
+        
+        # Fallback to first active stage
+        first_stage = await db.lead_stages.find_one(
+            {"is_active": True},
+            sort=[("sort_order", 1)]
+        )
+        
+        return first_stage["name"] if first_stage else "Pending"
+    except:
+        return "Pending"
+
+async def get_default_status() -> str:
+    """Get the default status for new leads"""
+    try:
+        from ..config.database import get_database
+        
+        db = get_database()
+        default_status = await db.lead_statuses.find_one({
+            "is_default": True,
+            "is_active": True
+        })
+        
+        if default_status:
+            return default_status["name"]
+        
+        # Fallback to first active status
+        first_status = await db.lead_statuses.find_one(
+            {"is_active": True},
+            sort=[("sort_order", 1)]
+        )
+        
+        return first_status["name"] if first_status else "New"
+    except:
+        return "New"
 
 
 
@@ -113,10 +174,25 @@ class LeadBasicInfo(BaseModel):
 
 # Status & Tags Section (Tab 2) 
 class LeadStatusAndTags(BaseModel):
-    """Status and tags section"""
-    stage: str = Field(default="Initial", description="Current lead stage")
+    """Status and tags section with dynamic stage and status"""
+    stage: str = Field(default="Pending", description="Current lead stage (dynamic)")
+    status: str = Field(default="New", description="Current lead status (dynamic)")
     lead_score: int = Field(default=0, ge=0, le=100, description="Lead score (0-100)")
     tags: List[str] = Field(default_factory=list, description="Lead tags (e.g., IELTS Ready, Engineering)")
+    
+    @validator('stage')
+    def validate_stage(cls, v):
+        """Basic stage validation - more validation done at service level"""
+        if not v or not v.strip():
+            return "Pending"  # Default fallback
+        return v.strip()
+    
+    @validator('status')
+    def validate_status(cls, v):
+        """Basic status validation - more validation done at service level"""
+        if not v or not v.strip():
+            return "New"  # Default fallback
+        return v.strip()
     
     @validator('tags')
     def validate_tags(cls, v):
@@ -192,7 +268,7 @@ class LeadResponseComprehensive(BaseModel):
     # System Info
     id: str
     lead_id: str
-    status: LeadStatus
+    status: str  # ✅ FIXED - now uses dynamic status instead of enum
     created_by: str
     created_by_name: str
     created_at: datetime
@@ -252,7 +328,7 @@ class LeadUpdate(BaseModel):
     country_of_interest: Optional[str] = Field(None, max_length=200)
     course_level: Optional[CourseLevel] = None
     source: Optional[LeadSource] = None
-    status: Optional[LeadStatus] = None
+    status: Optional[str] = None  # ✅ FIXED: was Optional[LeadStatus]
     tags: Optional[List[str]] = None
     notes: Optional[str] = Field(None, max_length=1000)
     category: Optional[str] = Field(None, min_length=1)
@@ -274,7 +350,7 @@ class LeadResponse(BaseModel):
     email: str
     phone_number: str
     contact_number: str
-    status: LeadStatus
+    status: str  # ✅ FIXED: was LeadStatus
     assigned_to: Optional[str] = None
     assigned_to_name: Optional[str] = None
     created_by: str
@@ -299,7 +375,7 @@ class LeadListResponse(BaseModel):
 
 class LeadStatusUpdate(BaseModel):
     """Lead status update model"""
-    status: LeadStatus
+    status: str  # ✅ FIXED: was LeadStatus
     notes: Optional[str] = Field(None, max_length=500)
 
 class LeadBulkCreate(BaseModel):

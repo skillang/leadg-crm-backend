@@ -93,6 +93,16 @@ async def create_indexes():
         logger.info("✅ Lead Stages indexes created")
         
         # ============================================================================
+        # LEAD_STATUSES COLLECTION INDEXES (NEW)
+        # ============================================================================
+        await db.lead_statuses.create_index("name", unique=True)
+        await db.lead_statuses.create_index([("is_active", 1), ("sort_order", 1)])
+        await db.lead_statuses.create_index("is_default")
+        await db.lead_statuses.create_index("created_by")
+        await db.lead_statuses.create_index("created_at")
+        logger.info("✅ Lead Statuses indexes created")
+        
+        # ============================================================================
         # TASKS COLLECTION INDEXES
         # ============================================================================
         await db.lead_tasks.create_index([("lead_id", 1), ("created_at", -1)])
@@ -162,6 +172,7 @@ async def get_collection_stats():
             "users",
             "leads", 
             "lead_stages",  # NEW
+            "lead_statuses",  # NEW
             "lead_tasks",
             "lead_activities",
             "token_blacklist",

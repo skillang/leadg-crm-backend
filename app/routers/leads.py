@@ -1,4 +1,4 @@
-# app/routers/leads.py - Complete Updated with ObjectId Fix and Enhanced User Array Sync
+# app/routers/leads.py - CORRECTED IMPORTS
 
 from fastapi import APIRouter, HTTPException, status, Depends, Query
 from typing import Dict, Any, List, Optional
@@ -11,19 +11,43 @@ from app.services import lead_category_service
 from ..services.lead_category_service import lead_category_service
 from ..config.database import get_database
 from ..utils.dependencies import get_current_active_user, get_admin_user
+
+# ✅ CORRECTED IMPORTS - Removed LeadStatus, added missing ones
 from ..models.lead import (
-    LeadCreate, LeadUpdate, LeadResponse, LeadListResponse, 
-    LeadAssign, LeadStatusUpdate, LeadStatus, LeadSource, CourseLevel,
-    LeadBulkCreate, LeadBulkCreateResponse  
+    LeadCreate, 
+    LeadUpdate, 
+    LeadResponse, 
+    LeadListResponse, 
+    LeadAssign, 
+    CourseLevel,
+    LeadBulkCreate, 
+    LeadBulkCreateResponse,
+    # ✅ ADDED MISSING IMPORTS
+    LeadCreateComprehensive,
+    LeadResponseComprehensive, 
+    LeadStatusUpdate,
+    LeadSource,
+    ExperienceLevel,
+    # ❌ REMOVED: LeadStatus - now using dynamic statuses
 )
+
+# ✅ CHECK IF THESE EXIST - if not, comment them out
 from ..schemas.lead import (
-    LeadCreateResponse, LeadAssignResponse, LeadBulkAssign, 
-    LeadBulkAssignResponse, LeadStatsResponse, LeadFilterParams
+    LeadCreateResponse, 
+    LeadAssignResponse, 
+    LeadBulkAssign, 
+    LeadBulkAssignResponse, 
+    LeadStatsResponse, 
+    LeadFilterParams
 )
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+
+# lead_status: Optional[LeadStatus] = Query(None)
+# TO:
+# lead_status: Optional[str] = Query(None)
 # ============================================================================
 # OBJECTID CONVERSION UTILITY - CRITICAL FIX
 # ============================================================================
@@ -1145,7 +1169,7 @@ async def create_lead(
 async def get_leads(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
-    lead_status: Optional[LeadStatus] = Query(None),
+    lead_status: Optional[str] = Query(None),
     assigned_to: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     current_user: Dict[str, Any] = Depends(get_current_active_user)
@@ -1234,7 +1258,7 @@ async def get_leads(
 async def get_my_leads(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
-    lead_status: Optional[LeadStatus] = Query(None),
+    lead_status: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):

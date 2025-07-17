@@ -1,10 +1,13 @@
+# app/schemas/lead.py - CORRECTED TO REMOVE LeadStatus
+
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
-from ..models.lead import LeadStatus, LeadSource, CourseLevel
+# ✅ FIXED: Removed LeadStatus from import
+from ..models.lead import LeadSource, CourseLevel
 
 class LeadFilterParams(BaseModel):
     """Lead filter parameters"""
-    status: Optional[LeadStatus] = None
+    status: Optional[str] = None  # ✅ FIXED: was Optional[LeadStatus]
     assigned_to: Optional[str] = None
     source: Optional[LeadSource] = None
     course_level: Optional[CourseLevel] = None
@@ -44,21 +47,12 @@ class LeadBulkAssignResponse(BaseModel):
     failed_leads: List[str] = []
 
 class LeadStatsResponse(BaseModel):
-    """Lead statistics response with custom statuses"""
+    """Lead statistics response with dynamic statuses"""
     total_leads: int
-    followup: int
-    warm: int 
-    prospect: int 
-    junk: int 
-    enrolled: int 
-    yet_to_call: int 
-    counseled: int 
-    dnp: int 
-    invalid: int 
-    call_back: int 
-    busy: int 
-    ni: int 
-    ringing: int
-    wrong_number: int 
+    # ✅ UPDATED: These fields should be dynamic based on actual statuses in DB
+    # Remove hardcoded status fields since we now have dynamic statuses
     my_leads: int
     unassigned_leads: int
+    
+    # ✅ ADDED: Dynamic status counts
+    status_breakdown: Optional[Dict[str, int]] = None  # Dynamic status counts

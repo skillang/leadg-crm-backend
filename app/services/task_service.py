@@ -6,7 +6,7 @@ import logging
 
 from ..config.database import get_database
 from ..models.task import TaskCreate, TaskUpdate, TaskStatus, TaskPriority
-from ..models.lead import LeadStatus
+# from ..models.lead import LeadStatus
 
 logger = logging.getLogger(__name__)
 

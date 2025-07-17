@@ -7,7 +7,7 @@ from collections import Counter
 
 from ..config.database import get_database
 from ..models.note import NoteCreate, NoteUpdate, NoteType, NoteSearchRequest
-from ..models.lead import LeadStatus
+# from ..models.lead import LeadStatus
 
 logger = logging.getLogger(__name__)
 
