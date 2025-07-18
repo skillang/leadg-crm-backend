@@ -1,4 +1,4 @@
-# app/models/lead.py - Updated with dynamic stages and statuses
+# app/models/lead.py - Updated with dynamic stages, statuses, and new assignment features
 
 from pydantic import BaseModel, Field, validator, EmailStr
 from typing import Optional, List, Dict, Any
@@ -85,7 +85,9 @@ async def get_default_status() -> str:
     except:
         return "New"
 
-
+# ============================================================================
+# ENUMERATION CLASSES
+# ============================================================================
 
 # Course Level Enumeration
 class CourseLevel(str, Enum):
@@ -123,7 +125,7 @@ class LeadSource(str, Enum):
     BULK_UPLOAD = "bulk upload"
     NAUKRI = "naukri"
 
-# 🆕 NEW: Experience Level Enumeration
+# Experience Level Enumeration
 class ExperienceLevel(str, Enum):
     """Experience level enumeration"""
     FRESHER = "fresher"
@@ -133,6 +135,10 @@ class ExperienceLevel(str, Enum):
     FIVE_TO_TEN_YEARS = "5_to_10_years"
     MORE_THAN_TEN_YEARS = "more_than_10_years"
 
+# ============================================================================
+# BASIC LEAD MODELS (EXISTING)
+# ============================================================================
+
 # Basic Info Section (Tab 1) - UPDATED with new fields
 class LeadBasicInfo(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
@@ -141,7 +147,7 @@ class LeadBasicInfo(BaseModel):
     source: LeadSource = Field(default=LeadSource.WEBSITE)
     category: str = Field(..., min_length=1, description="Lead category (required)")
     
-    # 🆕 NEW: Optional additional fields
+    # Optional additional fields
     age: Optional[int] = Field(None, ge=16, le=100, description="Age of the lead (16-100)")
     experience: Optional[ExperienceLevel] = Field(None, description="Work experience level")
     nationality: Optional[str] = Field(None, max_length=100, description="Nationality of the lead")
@@ -262,13 +268,335 @@ class LeadCreateComprehensive(BaseModel):
             }
         }
 
+# ============================================================================
+# 🆕 NEW: SELECTIVE ROUND ROBIN & MULTI-ASSIGNMENT MODELS
+# ============================================================================
+
+class SelectiveRoundRobinRequest(BaseModel):
+    """Request model for selective round robin assignment"""
+    selected_user_emails: List[str] = Field(..., description="List of user emails to include in round robin")
+    
+    @validator('selected_user_emails')
+    def validate_selected_users(cls, v):
+        if not v:
+            raise ValueError("At least one user must be selected for round robin")
+        
+        # Remove duplicates and empty emails
+        unique_emails = list(set([email.strip().lower() for email in v if email.strip()]))
+        
+        if not unique_emails:
+            raise ValueError("No valid email addresses provided")
+        
+        return unique_emails
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "selected_user_emails": [
+                    "john.doe@leadg.com",
+                    "jane.smith@leadg.com",
+                    "mike.johnson@leadg.com"
+                ]
+            }
+        }
+
+class MultiUserAssignmentRequest(BaseModel):
+    """Request model for assigning lead to multiple users"""
+    user_emails: List[str] = Field(..., description="List of user emails to assign the lead to")
+    reason: Optional[str] = Field("Multi-user assignment", description="Reason for assignment")
+    
+    @validator('user_emails')
+    def validate_user_emails(cls, v):
+        if not v:
+            raise ValueError("At least one user must be provided for assignment")
+        
+        # Remove duplicates and empty emails
+        unique_emails = list(set([email.strip().lower() for email in v if email.strip()]))
+        
+        if not unique_emails:
+            raise ValueError("No valid email addresses provided")
+        
+        if len(unique_emails) > 10:  # Reasonable limit
+            raise ValueError("Cannot assign to more than 10 users at once")
+        
+        return unique_emails
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "user_emails": [
+                    "john.doe@leadg.com",
+                    "jane.smith@leadg.com"
+                ],
+                "reason": "Team collaboration required"
+            }
+        }
+
+class RemoveFromAssignmentRequest(BaseModel):
+    """Request model for removing user from multi-assignment"""
+    user_email: str = Field(..., description="Email of user to remove from assignment")
+    reason: Optional[str] = Field("Removed from assignment", description="Reason for removal")
+    
+    @validator('user_email')
+    def validate_user_email(cls, v):
+        if not v or not v.strip():
+            raise ValueError("User email is required")
+        return v.strip().lower()
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "user_email": "john.doe@leadg.com",
+                "reason": "User no longer available"
+            }
+        }
+
+class BulkAssignmentRequest(BaseModel):
+    """Request model for bulk lead assignment with selective round robin"""
+    lead_ids: List[str] = Field(..., description="List of lead IDs to assign")
+    assignment_method: str = Field(..., description="Assignment method: 'all_users' or 'selected_users'")
+    selected_user_emails: Optional[List[str]] = Field(None, description="Required if assignment_method is 'selected_users'")
+    
+    @validator('assignment_method')
+    def validate_assignment_method(cls, v):
+        if v not in ['all_users', 'selected_users']:
+            raise ValueError("Assignment method must be 'all_users' or 'selected_users'")
+        return v
+    
+    @validator('selected_user_emails')
+    def validate_selected_users_conditional(cls, v, values):
+        assignment_method = values.get('assignment_method')
+        
+        if assignment_method == 'selected_users':
+            if not v:
+                raise ValueError("selected_user_emails is required when assignment_method is 'selected_users'")
+            
+            # Remove duplicates and empty emails
+            unique_emails = list(set([email.strip().lower() for email in v if email.strip()]))
+            
+            if not unique_emails:
+                raise ValueError("No valid email addresses provided")
+            
+            return unique_emails
+        
+        return v
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "lead_ids": ["LD-1001", "LD-1002", "LD-1003"],
+                "assignment_method": "selected_users",
+                "selected_user_emails": [
+                    "john.doe@leadg.com",
+                    "jane.smith@leadg.com"
+                ]
+            }
+        }
+
+# ============================================================================
+# 🆕 NEW: RESPONSE MODELS
+# ============================================================================
+
+class MultiUserAssignmentResponse(BaseModel):
+    """Response model for multi-user assignment"""
+    success: bool
+    message: str
+    assigned_users: List[str]
+    invalid_users: List[str]
+    primary_assignee: Optional[str]
+    co_assignees: List[str]
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "message": "Lead assigned to 2 users successfully",
+                "assigned_users": ["john.doe@leadg.com", "jane.smith@leadg.com"],
+                "invalid_users": [],
+                "primary_assignee": "john.doe@leadg.com",
+                "co_assignees": ["jane.smith@leadg.com"]
+            }
+        }
+
+class BulkAssignmentResponse(BaseModel):
+    """Response model for bulk assignment with selective round robin"""
+    success: bool
+    message: str
+    total_leads: int
+    successfully_assigned: int
+    failed_assignments: List[Dict[str, str]]
+    assignment_method: str
+    selected_users: Optional[List[str]]
+    assignment_summary: List[Dict[str, Any]]
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "message": "Bulk assignment completed",
+                "total_leads": 3,
+                "successfully_assigned": 3,
+                "failed_assignments": [],
+                "assignment_method": "selected_users",
+                "selected_users": ["john.doe@leadg.com", "jane.smith@leadg.com"],
+                "assignment_summary": [
+                    {"lead_id": "LD-1001", "assigned_to": "john.doe@leadg.com", "status": "success"},
+                    {"lead_id": "LD-1002", "assigned_to": "jane.smith@leadg.com", "status": "success"},
+                    {"lead_id": "LD-1003", "assigned_to": "john.doe@leadg.com", "status": "success"}
+                ]
+            }
+        }
+
+class SelectiveRoundRobinResponse(BaseModel):
+    """Response model for selective round robin assignment"""
+    success: bool
+    message: str
+    selected_user: Optional[str]
+    available_users: List[str]
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "message": "User selected for assignment",
+                "selected_user": "john.doe@leadg.com",
+                "available_users": ["john.doe@leadg.com", "jane.smith@leadg.com"]
+            }
+        }
+
+# ============================================================================
+# 🆕 NEW: EXTENDED LEAD RESPONSE WITH MULTI-ASSIGNMENT INFO
+# ============================================================================
+
+class LeadResponseExtended(BaseModel):
+    """Extended lead response with multi-assignment information"""
+    lead_id: str
+    status: str
+    name: str
+    email: str
+    contact_number: Optional[str]
+    source: Optional[str]
+    category: Optional[str]
+    
+    # Single assignment fields (backward compatibility)
+    assigned_to: Optional[str]
+    assigned_to_name: Optional[str]
+    
+    # Multi-assignment fields
+    co_assignees: List[str] = Field(default_factory=list, description="Additional users assigned to this lead")
+    co_assignees_names: List[str] = Field(default_factory=list, description="Names of co-assignees")
+    is_multi_assigned: bool = Field(default=False, description="Whether lead is assigned to multiple users")
+    
+    # Assignment metadata
+    assignment_method: Optional[str]
+    created_at: datetime
+    updated_at: Optional[datetime]
+    
+    # All assignees (computed field)
+    all_assignees: List[str] = Field(default_factory=list, description="All users assigned to this lead")
+    all_assignees_names: List[str] = Field(default_factory=list, description="Names of all assignees")
+    
+    def __init__(self, **data):
+        super().__init__(**data)
+        
+        # Compute all_assignees and all_assignees_names
+        all_assignees = []
+        all_assignees_names = []
+        
+        if self.assigned_to:
+            all_assignees.append(self.assigned_to)
+            all_assignees_names.append(self.assigned_to_name or self.assigned_to)
+        
+        if self.co_assignees:
+            all_assignees.extend(self.co_assignees)
+            all_assignees_names.extend(self.co_assignees_names or self.co_assignees)
+        
+        self.all_assignees = all_assignees
+        self.all_assignees_names = all_assignees_names
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "lead_id": "LD-1001",
+                "status": "New",
+                "name": "John Smith",
+                "email": "john.smith@example.com",
+                "contact_number": "+1-555-0123",
+                "source": "website",
+                "category": "Technology",
+                "assigned_to": "john.doe@leadg.com",
+                "assigned_to_name": "John Doe",
+                "co_assignees": ["jane.smith@leadg.com"],
+                "co_assignees_names": ["Jane Smith"],
+                "is_multi_assigned": True,
+                "assignment_method": "multi_user_manual",
+                "all_assignees": ["john.doe@leadg.com", "jane.smith@leadg.com"],
+                "all_assignees_names": ["John Doe", "Jane Smith"]
+            }
+        }
+
+# ============================================================================
+# 🆕 NEW: USER SELECTION MODELS
+# ============================================================================
+
+class UserSelectionOption(BaseModel):
+    """Model for user selection in assignment interfaces"""
+    email: str
+    name: str
+    current_lead_count: int
+    is_active: bool
+    departments: List[str] = Field(default_factory=list)
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "email": "john.doe@leadg.com",
+                "name": "John Doe",
+                "current_lead_count": 15,
+                "is_active": True,
+                "departments": ["sales"]
+            }
+        }
+
+class UserSelectionResponse(BaseModel):
+    """Response model for getting assignable users"""
+    total_users: int
+    users: List[UserSelectionOption]
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "total_users": 3,
+                "users": [
+                    {
+                        "email": "john.doe@leadg.com",
+                        "name": "John Doe",
+                        "current_lead_count": 15,
+                        "is_active": True,
+                        "departments": ["sales"]
+                    },
+                    {
+                        "email": "jane.smith@leadg.com",
+                        "name": "Jane Smith",
+                        "current_lead_count": 12,
+                        "is_active": True,
+                        "departments": ["sales"]
+                    }
+                ]
+            }
+        }
+
+# ============================================================================
+# LEGACY MODELS FOR BACKWARD COMPATIBILITY (UPDATED)
+# ============================================================================
+
 # Lead Response Model - UPDATED
 class LeadResponseComprehensive(BaseModel):
     """Comprehensive lead response model"""
     # System Info
     id: str
     lead_id: str
-    status: str  # ✅ FIXED - now uses dynamic status instead of enum
+    status: str  # Uses dynamic status instead of enum
     created_by: str
     created_by_name: str
     created_at: datetime
@@ -281,19 +609,22 @@ class LeadResponseComprehensive(BaseModel):
     contact_number: str
     source: LeadSource
     category: str
-    age: Optional[int] = None  # 🆕 NEW
-    experience: Optional[ExperienceLevel] = None  # 🆕 NEW
-    nationality: Optional[str] = None  # 🆕 NEW
+    age: Optional[int] = None
+    experience: Optional[ExperienceLevel] = None
+    nationality: Optional[str] = None
     
     # Status & Tags
-    stage: str  # ✅ FIXED - was LeadStage
+    stage: str
     lead_score: int
     priority: str = "medium"
     tags: List[str] = Field(default_factory=list)
     
-    # Assignment
+    # Assignment (enhanced for multi-assignment)
     assigned_to: Optional[str] = None
     assigned_to_name: Optional[str] = None
+    co_assignees: List[str] = Field(default_factory=list)
+    co_assignees_names: List[str] = Field(default_factory=list)
+    is_multi_assigned: bool = Field(default=False)
     assignment_method: Optional[str] = None
     assignment_history: Optional[List[Dict[str, Any]]] = None
     
@@ -314,7 +645,7 @@ class LeadCreate(LeadBasicInfo):
     source: Optional[LeadSource] = LeadSource.WEBSITE
     tags: Optional[List[str]] = Field(default_factory=list)
     notes: Optional[str] = None
-    # 🆕 NEW: Include the new fields in legacy model too
+    # Include the new fields in legacy model too
     age: Optional[int] = Field(None, ge=16, le=100)
     experience: Optional[ExperienceLevel] = None
     nationality: Optional[str] = Field(None, max_length=100)
@@ -328,11 +659,11 @@ class LeadUpdate(BaseModel):
     country_of_interest: Optional[str] = Field(None, max_length=200)
     course_level: Optional[CourseLevel] = None
     source: Optional[LeadSource] = None
-    status: Optional[str] = None  # ✅ FIXED: was Optional[LeadStatus]
+    status: Optional[str] = None
     tags: Optional[List[str]] = None
     notes: Optional[str] = Field(None, max_length=1000)
     category: Optional[str] = Field(None, min_length=1)
-    # 🆕 NEW: Add new fields to update model
+    # Add new fields to update model
     age: Optional[int] = Field(None, ge=16, le=100)
     experience: Optional[ExperienceLevel] = None
     nationality: Optional[str] = Field(None, max_length=100)
@@ -350,7 +681,7 @@ class LeadResponse(BaseModel):
     email: str
     phone_number: str
     contact_number: str
-    status: str  # ✅ FIXED: was LeadStatus
+    status: str
     assigned_to: Optional[str] = None
     assigned_to_name: Optional[str] = None
     created_by: str
@@ -359,7 +690,7 @@ class LeadResponse(BaseModel):
     updated_at: datetime
     source: LeadSource
     category: str
-    # 🆕 NEW: Add new fields to response
+    # Add new fields to response
     age: Optional[int] = None
     experience: Optional[ExperienceLevel] = None
     nationality: Optional[str] = None
@@ -375,7 +706,7 @@ class LeadListResponse(BaseModel):
 
 class LeadStatusUpdate(BaseModel):
     """Lead status update model"""
-    status: str  # ✅ FIXED: was LeadStatus
+    status: str
     notes: Optional[str] = Field(None, max_length=500)
 
 class LeadBulkCreate(BaseModel):

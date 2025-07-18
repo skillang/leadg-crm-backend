@@ -1,4 +1,4 @@
-# app/routers/leads.py - CORRECTED IMPORTS
+# app/routers/leads.py - Complete Updated with Selective Round Robin & Multi-Assignment (CORRECTED)
 
 from fastapi import APIRouter, HTTPException, status, Depends, Query
 from typing import Dict, Any, List, Optional
@@ -7,12 +7,13 @@ import logging
 from bson import ObjectId
 
 from ..services.user_lead_array_service import user_lead_array_service
+from ..services.lead_assignment_service import lead_assignment_service
 from app.services import lead_category_service
 from ..services.lead_category_service import lead_category_service
 from ..config.database import get_database
 from ..utils.dependencies import get_current_active_user, get_admin_user
 
-# ✅ CORRECTED IMPORTS - Removed LeadStatus, added missing ones
+# Updated imports with new models
 from ..models.lead import (
     LeadCreate, 
     LeadUpdate, 
@@ -22,16 +23,25 @@ from ..models.lead import (
     CourseLevel,
     LeadBulkCreate, 
     LeadBulkCreateResponse,
-    # ✅ ADDED MISSING IMPORTS
     LeadCreateComprehensive,
     LeadResponseComprehensive, 
     LeadStatusUpdate,
     LeadSource,
     ExperienceLevel,
-    # ❌ REMOVED: LeadStatus - now using dynamic statuses
+    # New models for selective round robin and multi-assignment
+    SelectiveRoundRobinRequest,
+    MultiUserAssignmentRequest,
+    RemoveFromAssignmentRequest,
+    BulkAssignmentRequest,
+    MultiUserAssignmentResponse,
+    BulkAssignmentResponse,
+    SelectiveRoundRobinResponse,
+    LeadResponseExtended,
+    UserSelectionResponse,
+    UserSelectionOption,
 )
 
-# ✅ CHECK IF THESE EXIST - if not, comment them out
+# Check if these exist - if not, comment them out
 from ..schemas.lead import (
     LeadCreateResponse, 
     LeadAssignResponse, 
@@ -44,19 +54,12 @@ from ..schemas.lead import (
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-
-# lead_status: Optional[LeadStatus] = Query(None)
-# TO:
-# lead_status: Optional[str] = Query(None)
 # ============================================================================
-# OBJECTID CONVERSION UTILITY - CRITICAL FIX
+# OBJECTID CONVERSION UTILITY
 # ============================================================================
 
 def convert_objectid_to_str(obj):
-    """
-    Recursively convert ObjectId to string in any data structure
-    This function fixes the JSON serialization error
-    """
+    """Recursively convert ObjectId to string in any data structure"""
     if isinstance(obj, ObjectId):
         return str(obj)
     elif isinstance(obj, dict):
@@ -70,13 +73,12 @@ def convert_objectid_to_str(obj):
 # STATUS MIGRATION UTILITIES
 # ============================================================================
 
-# Complete mapping from old status values to new ones
 OLD_TO_NEW_STATUS_MAPPING = {
-    "open": "Initial",           # 🆕 Changed from "Yet to call"
-    "new": "Initial",            # 🆕 Changed from "Yet to call"  
-    "pending": "Initial",        # 🆕 Changed from "Yet to call"
-    "cold": "Initial",           # 🆕 Changed from "Yet to call"
-    "initial": "Initial",  # 🔥 NEW: Open leads become "Yet to call"
+    "open": "Initial",
+    "new": "Initial",
+    "pending": "Initial",
+    "cold": "Initial",
+    "initial": "Initial",
     "in_progress": "Warm", 
     "contacted": "Prospect",
     "qualified": "Prospect",
@@ -87,7 +89,6 @@ OLD_TO_NEW_STATUS_MAPPING = {
     "follow_up": "Followup",
     "followup": "Followup",
     "hot": "Warm",
-    
     "converted": "Enrolled",
     "rejected": "Junk",
     "invalid": "INVALID",
@@ -100,34 +101,23 @@ OLD_TO_NEW_STATUS_MAPPING = {
     "wrong_number": "Wrong Number",
     "dnp": "DNP",
     "enrolled": "Enrolled",
-    # If status accidentally set to 'initial'
 }
 
-# Valid new status values
 VALID_NEW_STATUSES = [
     "Initial", "Followup", "Warm", "Prospect", "Junk", "Enrolled", "Yet to call",
     "Counseled", "DNP", "INVALID", "Call Back", "Busy", "NI", "Ringing", "Wrong Number"
 ]
 
-# Valid stage values
-VALID_STAGES = ["Initial", "Followup", "Warm", "Prospect", "Junk", "Enrolled", "Yet to call",
-    "Counseled", "DNP", "INVALID", "Call Back", "Busy", "NI", "Ringing", "Wrong Number"]
-
-# 🎯 NEW LEAD DEFAULT STATUS
 DEFAULT_NEW_LEAD_STATUS = "Initial"
 
 def migrate_status_value(status: str) -> str:
-    """
-    Migrate old status values to new ones during transition period
-    """
+    """Migrate old status values to new ones during transition period"""
     if not status:
-        return DEFAULT_NEW_LEAD_STATUS  # Default for empty/null status
+        return DEFAULT_NEW_LEAD_STATUS
     
-    # If already valid, return as-is
     if status in VALID_NEW_STATUSES:
         return status
     
-    # Map old status to new status
     mapped_status = OLD_TO_NEW_STATUS_MAPPING.get(status, DEFAULT_NEW_LEAD_STATUS)
     
     if status != mapped_status:
@@ -135,58 +125,494 @@ def migrate_status_value(status: str) -> str:
     
     return mapped_status
 
-# def migrate_stage_value(stage: str) -> str:
-#     """
-#     Migrate old stage values to new ones during transition period
-#     """
-#     if not stage:
-#         return "initial"  # Default
-    
-#     # If already valid, return as-is
-#     if stage in VALID_STAGES:
-#         return stage
-    
-#     # Map common invalid stages
-#     stage_mapping = {
-#         "open": "initial",
-#         "closed_won": "closed",
-#         "closed_lost": "lost",
-#         "new": "initial",
-#         "pending": "initial"
-#     }
-    
-#     mapped_stage = stage_mapping.get(stage, "initial")
-    
-#     if stage != mapped_stage:
-#         logger.debug(f"Stage migration: '{stage}' → '{mapped_stage}'")
-    
-#     return mapped_stage
+# ============================================================================
+# 🆕 NEW: SELECTIVE ROUND ROBIN ENDPOINTS
+# ============================================================================
 
-# UPDATED FUNCTIONS FOR app/routers/leads.py - Add these updates to your existing file
+@router.post("/assignment/selective-round-robin/test", response_model=SelectiveRoundRobinResponse)
+async def test_selective_round_robin(
+    request: SelectiveRoundRobinRequest,
+    current_user: dict = Depends(get_admin_user)
+):
+    """Test selective round robin assignment (Admin only)"""
+    try:
+        selected_user = await lead_assignment_service.get_next_assignee_selective_round_robin(
+            request.selected_user_emails
+        )
+        
+        if selected_user:
+            return SelectiveRoundRobinResponse(
+                success=True,
+                message=f"User {selected_user} would be selected for assignment",
+                selected_user=selected_user,
+                available_users=request.selected_user_emails
+            )
+        else:
+            return SelectiveRoundRobinResponse(
+                success=False,
+                message="No valid users available for assignment",
+                selected_user=None,
+                available_users=request.selected_user_emails
+            )
+    
+    except Exception as e:
+        logger.error(f"Error in selective round robin test: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to test selective round robin: {str(e)}"
+        )
 
-# 1. UPDATE the process_lead_for_response function to handle new fields
+@router.post("/assignment/bulk-assign-selective", response_model=BulkAssignmentResponse)
+async def bulk_assign_leads_selective(
+    request: BulkAssignmentRequest,
+    current_user: dict = Depends(get_admin_user)
+):
+    """Bulk assign leads using selective round robin or all users (Admin only)"""
+    try:
+        db = get_database()
+        admin_email = current_user.get("email")
+        
+        # Validate lead IDs exist
+        existing_leads = await db.leads.find(
+            {"lead_id": {"$in": request.lead_ids}},
+            {"lead_id": 1}
+        ).to_list(None)
+        
+        existing_lead_ids = [lead["lead_id"] for lead in existing_leads]
+        invalid_lead_ids = set(request.lead_ids) - set(existing_lead_ids)
+        
+        if invalid_lead_ids:
+            logger.warning(f"Invalid lead IDs: {invalid_lead_ids}")
+        
+        assignment_summary = []
+        failed_assignments = []
+        successfully_assigned = 0
+        
+        # Process each valid lead
+        for lead_id in existing_lead_ids:
+            try:
+                # Get next assignee based on method
+                if request.assignment_method == "selected_users":
+                    assignee = await lead_assignment_service.get_next_assignee_selective_round_robin(
+                        request.selected_user_emails
+                    )
+                else:  # all_users
+                    assignee = await lead_assignment_service.get_next_assignee_round_robin()
+                
+                if assignee:
+                    # Assign the lead
+                    success = await lead_assignment_service.assign_lead_to_user(
+                        lead_id=lead_id,
+                        user_email=assignee,
+                        assigned_by=admin_email,
+                        reason=f"Bulk assignment ({request.assignment_method})"
+                    )
+                    
+                    if success:
+                        assignment_summary.append({
+                            "lead_id": lead_id,
+                            "assigned_to": assignee,
+                            "status": "success"
+                        })
+                        successfully_assigned += 1
+                    else:
+                        failed_assignments.append({
+                            "lead_id": lead_id,
+                            "error": "Failed to update lead assignment"
+                        })
+                        assignment_summary.append({
+                            "lead_id": lead_id,
+                            "assigned_to": None,
+                            "status": "failed",
+                            "error": "Assignment update failed"
+                        })
+                else:
+                    failed_assignments.append({
+                        "lead_id": lead_id,
+                        "error": "No assignee available"
+                    })
+                    assignment_summary.append({
+                        "lead_id": lead_id,
+                        "assigned_to": None,
+                        "status": "failed",
+                        "error": "No assignee available"
+                    })
+            
+            except Exception as e:
+                logger.error(f"Error assigning lead {lead_id}: {str(e)}")
+                failed_assignments.append({
+                    "lead_id": lead_id,
+                    "error": str(e)
+                })
+                assignment_summary.append({
+                    "lead_id": lead_id,
+                    "assigned_to": None,
+                    "status": "failed",
+                    "error": str(e)
+                })
+        
+        # Add failed assignments for invalid lead IDs
+        for invalid_id in invalid_lead_ids:
+            failed_assignments.append({
+                "lead_id": invalid_id,
+                "error": "Lead ID not found"
+            })
+        
+        return BulkAssignmentResponse(
+            success=len(failed_assignments) == 0,
+            message=f"Bulk assignment completed: {successfully_assigned}/{len(request.lead_ids)} successful",
+            total_leads=len(request.lead_ids),
+            successfully_assigned=successfully_assigned,
+            failed_assignments=failed_assignments,
+            assignment_method=request.assignment_method,
+            selected_users=request.selected_user_emails if request.assignment_method == "selected_users" else None,
+            assignment_summary=assignment_summary
+        )
+    
+    except Exception as e:
+        logger.error(f"Error in bulk selective assignment: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to perform bulk assignment: {str(e)}"
+        )
+
+# ============================================================================
+# 🆕 NEW: MULTI-USER ASSIGNMENT ENDPOINTS
+# ============================================================================
+
+@router.post("/leads/{lead_id}/assign-multiple", response_model=MultiUserAssignmentResponse)
+async def assign_lead_to_multiple_users(
+    lead_id: str,
+    request: MultiUserAssignmentRequest,
+    current_user: dict = Depends(get_admin_user)
+):
+    """Assign a lead to multiple users (Admin only)"""
+    try:
+        db = get_database()
+        
+        # Validate lead exists
+        lead = await db.leads.find_one({"lead_id": lead_id})
+        if not lead:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Lead {lead_id} not found"
+            )
+        
+        admin_email = current_user.get("email")
+        
+        # Perform multi-user assignment
+        result = await lead_assignment_service.assign_lead_to_multiple_users(
+            lead_id=lead_id,
+            user_emails=request.user_emails,
+            assigned_by=admin_email,
+            reason=request.reason
+        )
+        
+        if result["success"]:
+            return MultiUserAssignmentResponse(**result)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=result["message"]
+            )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in multi-user assignment: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to assign lead to multiple users: {str(e)}"
+        )
+
+@router.delete("/leads/{lead_id}/remove-user")
+async def remove_user_from_assignment(
+    lead_id: str,
+    request: RemoveFromAssignmentRequest,
+    current_user: dict = Depends(get_admin_user)
+):
+    """Remove a user from a multi-user assignment (Admin only)"""
+    try:
+        db = get_database()
+        
+        # Validate lead exists
+        lead = await db.leads.find_one({"lead_id": lead_id})
+        if not lead:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Lead {lead_id} not found"
+            )
+        
+        admin_email = current_user.get("email")
+        
+        # Remove user from assignment
+        success = await lead_assignment_service.remove_user_from_multi_assignment(
+            lead_id=lead_id,
+            user_email=request.user_email,
+            removed_by=admin_email,
+            reason=request.reason
+        )
+        
+        if success:
+            return {
+                "success": True,
+                "message": f"User {request.user_email} removed from lead {lead_id}"
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Failed to remove user from assignment"
+            )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error removing user from assignment: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to remove user from assignment: {str(e)}"
+        )
+
+@router.get("/leads/{lead_id}/assignments")
+async def get_lead_assignment_details(
+    lead_id: str,
+    current_user: dict = Depends(get_current_active_user)
+):
+    """Get detailed assignment information for a lead"""
+    try:
+        db = get_database()
+        
+        # Get lead with assignment details
+        lead = await db.leads.find_one({"lead_id": lead_id})
+        if not lead:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Lead {lead_id} not found"
+            )
+        
+        # Check permissions
+        user_role = current_user.get("role", "user")
+        user_email = current_user.get("email")
+        
+        if user_role != "admin":
+            # Check if user is assigned to this lead
+            assigned_to = lead.get("assigned_to")
+            co_assignees = lead.get("co_assignees", [])
+            
+            if user_email not in [assigned_to] + co_assignees:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not authorized to view this lead's assignment details"
+                )
+        
+        # Prepare assignment details
+        assignment_details = {
+            "lead_id": lead_id,
+            "assigned_to": lead.get("assigned_to"),
+            "assigned_to_name": lead.get("assigned_to_name"),
+            "co_assignees": lead.get("co_assignees", []),
+            "co_assignees_names": lead.get("co_assignees_names", []),
+            "is_multi_assigned": lead.get("is_multi_assigned", False),
+            "assignment_method": lead.get("assignment_method"),
+            "assignment_history": lead.get("assignment_history", []),
+            "total_assignees": (1 if lead.get("assigned_to") else 0) + len(lead.get("co_assignees", []))
+        }
+        
+        return convert_objectid_to_str(assignment_details)
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting assignment details: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get assignment details: {str(e)}"
+        )
+
+# ============================================================================
+# 🆕 NEW: USER SELECTION ENDPOINTS
+# ============================================================================
+
+@router.get("/users/assignable-with-details", response_model=UserSelectionResponse)
+async def get_assignable_users_with_details(
+    current_user: dict = Depends(get_admin_user)
+):
+    """Get all assignable users with their current lead counts and details (Admin only)"""
+    try:
+        db = get_database()
+        
+        # Get all active users with user role
+        users = await db.users.find(
+            {"role": "user", "is_active": True},
+            {
+                "email": 1,
+                "first_name": 1,
+                "last_name": 1,
+                "total_assigned_leads": 1,
+                "departments": 1,
+                "is_active": 1
+            }
+        ).to_list(None)
+        
+        user_options = []
+        for user in users:
+            user_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip()
+            if not user_name:
+                user_name = user.get('email', 'Unknown')
+            
+            user_options.append(UserSelectionOption(
+                email=user["email"],
+                name=user_name,
+                current_lead_count=user.get("total_assigned_leads", 0),
+                is_active=user.get("is_active", True),
+                departments=user.get("departments", [])
+            ))
+        
+        # Sort by lead count (ascending) for better load balancing
+        user_options.sort(key=lambda x: x.current_lead_count)
+        
+        return UserSelectionResponse(
+            total_users=len(user_options),
+            users=user_options
+        )
+    
+    except Exception as e:
+        logger.error(f"Error getting assignable users: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get assignable users: {str(e)}"
+        )
+
+@router.get("/assignment/round-robin-preview")
+async def preview_round_robin_assignment(
+    selected_users: Optional[str] = Query(None, description="Comma-separated list of user emails for selective round robin"),
+    current_user: dict = Depends(get_admin_user)
+):
+    """Preview next assignments in round robin without actually assigning (Admin only)"""
+    try:
+        selected_user_emails = None
+        if selected_users:
+            selected_user_emails = [email.strip() for email in selected_users.split(",") if email.strip()]
+        
+        # Get next few assignments
+        preview_assignments = []
+        for i in range(5):  # Preview next 5 assignments
+            if selected_user_emails:
+                next_user = await lead_assignment_service.get_next_assignee_selective_round_robin(
+                    selected_user_emails
+                )
+            else:
+                next_user = await lead_assignment_service.get_next_assignee_round_robin()
+            
+            preview_assignments.append({
+                "position": i + 1,
+                "would_assign_to": next_user
+            })
+        
+        return {
+            "assignment_method": "selected_users" if selected_user_emails else "all_users",
+            "selected_users": selected_user_emails,
+            "preview_assignments": preview_assignments,
+            "note": "This is a preview - no actual assignments were made"
+        }
+    
+    except Exception as e:
+        logger.error(f"Error in round robin preview: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to preview round robin: {str(e)}"
+        )
+
+# ============================================================================
+# 🆕 NEW: ENHANCED LEAD LISTING WITH MULTI-ASSIGNMENT INFO
+# ============================================================================
+
+@router.get("/leads-extended/", response_model=List[LeadResponseExtended])
+async def get_leads_with_multi_assignment_info(
+    page: int = Query(1, ge=1, description="Page number"),
+    limit: int = Query(20, ge=1, le=100, description="Items per page"),
+    include_multi_assigned: bool = Query(False, description="Filter for multi-assigned leads only"),
+    assigned_to_user: Optional[str] = Query(None, description="Filter by user email (includes co-assignments)"),
+    current_user: dict = Depends(get_current_active_user)
+):
+    """Get leads with extended multi-assignment information"""
+    try:
+        db = get_database()
+        user_role = current_user.get("role", "user")
+        user_email = current_user.get("email")
+        
+        # Build query filters
+        query_filters = {}
+        
+        if user_role != "admin":
+            # Regular users see leads where they are assigned (primary or co-assignee)
+            query_filters["$or"] = [
+                {"assigned_to": user_email},
+                {"co_assignees": user_email}
+            ]
+        
+        if include_multi_assigned:
+            query_filters["is_multi_assigned"] = True
+        
+        if assigned_to_user:
+            if user_role == "admin":  # Only admins can filter by other users
+                query_filters["$or"] = [
+                    {"assigned_to": assigned_to_user},
+                    {"co_assignees": assigned_to_user}
+                ]
+        
+        # Get total count
+        total_count = await db.leads.count_documents(query_filters)
+        
+        # Get leads with pagination
+        skip = (page - 1) * limit
+        leads = await db.leads.find(query_filters).skip(skip).limit(limit).to_list(None)
+        
+        # Convert to extended response format
+        extended_leads = []
+        for lead in leads:
+            extended_lead = LeadResponseExtended(
+                lead_id=lead["lead_id"],
+                status=lead.get("status", "Unknown"),
+                name=lead.get("name", ""),
+                email=lead.get("email", ""),
+                contact_number=lead.get("contact_number"),
+                source=lead.get("source"),
+                category=lead.get("category"),
+                assigned_to=lead.get("assigned_to"),
+                assigned_to_name=lead.get("assigned_to_name"),
+                co_assignees=lead.get("co_assignees", []),
+                co_assignees_names=lead.get("co_assignees_names", []),
+                is_multi_assigned=lead.get("is_multi_assigned", False),
+                assignment_method=lead.get("assignment_method"),
+                created_at=lead.get("created_at", datetime.utcnow()),
+                updated_at=lead.get("updated_at")
+            )
+            extended_leads.append(extended_lead)
+        
+        return extended_leads
+    
+    except Exception as e:
+        logger.error(f"Error getting extended leads: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get leads: {str(e)}"
+        )
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
 async def process_lead_for_response(lead: Dict[str, Any], db, current_user: Dict[str, Any] = None) -> Dict[str, Any]:
-    """
-    Process a lead document for API response with complete data transformation
-    This function ensures all leads are properly formatted for Pydantic validation
-    """
+    """Process a lead document for API response with complete data transformation"""
     try:
         # Basic field transformations
         lead["id"] = str(lead["_id"])
         lead["created_by"] = str(lead.get("created_by", ""))
         
-        # 🔧 CRITICAL: Migrate status and stage values
+        # Migrate status values
         original_status = lead.get("status")
         lead["status"] = migrate_status_value(original_status)
-        
-        original_stage = lead.get("stage")
-        # lead["stage"] = migrate_stage_value(original_stage)
-        
-        # Log migrations for monitoring
-        if original_status != lead["status"]:
-            logger.info(f"Migrated status for lead {lead.get('lead_id', 'unknown')}: '{original_status}' → '{lead['status']}'")
-        if original_stage != lead["stage"]:
-            logger.info(f"Migrated stage for lead {lead.get('lead_id', 'unknown')}: '{original_stage}' → '{lead['stage']}'")
         
         # Ensure lead_score exists and is valid
         if "lead_score" not in lead or lead["lead_score"] is None:
@@ -194,18 +620,23 @@ async def process_lead_for_response(lead: Dict[str, Any], db, current_user: Dict
         elif not isinstance(lead["lead_score"], (int, float)):
             lead["lead_score"] = 0
         
-        # 🆕 NEW: Handle new optional fields with proper defaults
-        lead["age"] = lead.get("age")  # Keep None if not set
-        lead["experience"] = lead.get("experience")  # Keep None if not set
-        lead["nationality"] = lead.get("nationality")  # Keep None if not set
+        # Handle new optional fields with proper defaults
+        lead["age"] = lead.get("age")
+        lead["experience"] = lead.get("experience")
+        lead["nationality"] = lead.get("nationality")
+        
+        # Handle multi-assignment fields
+        lead["co_assignees"] = lead.get("co_assignees", [])
+        lead["co_assignees_names"] = lead.get("co_assignees_names", [])
+        lead["is_multi_assigned"] = lead.get("is_multi_assigned", False)
         
         # Ensure all required fields have proper defaults
         required_defaults = {
             "tags": [],
             "contact_number": lead.get("phone_number", ""),
-            "phone_number": lead.get("contact_number", ""),  # Ensure both exist
+            "phone_number": lead.get("contact_number", ""),
             "source": "website",
-            "category": lead.get("category", ""),  # Ensure category exists
+            "category": lead.get("category", ""),
             "notes": None,
             "last_contacted": None,
             "assignment_method": None,
@@ -268,7 +699,6 @@ async def process_lead_for_response(lead: Dict[str, Any], db, current_user: Dict
         # Return lead with minimal processing to avoid complete failure
         lead["id"] = str(lead["_id"])
         lead["status"] = migrate_status_value(lead.get("status", DEFAULT_NEW_LEAD_STATUS))
-        lead["stage"] = migrate_stage_value(lead.get("stage", "initial"))
         lead["lead_score"] = 0
         lead["created_by_name"] = "Unknown User"
         lead["assigned_to_name"] = "Unknown"
@@ -276,18 +706,18 @@ async def process_lead_for_response(lead: Dict[str, Any], db, current_user: Dict
         lead["contact_number"] = lead.get("phone_number", "")
         lead["source"] = "website"
         lead["category"] = lead.get("category", "")
-        # 🆕 NEW: Set defaults for new fields
+        # Set defaults for new fields
         lead["age"] = lead.get("age")
         lead["experience"] = lead.get("experience")
         lead["nationality"] = lead.get("nationality")
+        # Set defaults for multi-assignment fields
+        lead["co_assignees"] = lead.get("co_assignees", [])
+        lead["co_assignees_names"] = lead.get("co_assignees_names", [])
+        lead["is_multi_assigned"] = lead.get("is_multi_assigned", False)
         return lead
 
-
-# 2. UPDATE the transform_lead_to_structured_format function to handle new fields
 def transform_lead_to_structured_format(lead: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Transform flat lead document to structured comprehensive format
-    """
+    """Transform flat lead document to structured comprehensive format"""
     # Clean ObjectIds first using our utility function
     clean_lead = convert_objectid_to_str(lead)
     
@@ -301,7 +731,7 @@ def transform_lead_to_structured_format(lead: Dict[str, Any]) -> Dict[str, Any]:
             "country_of_interest": clean_lead.get("country_of_interest", ""),
             "course_level": clean_lead.get("course_level", ""),
             "category": clean_lead.get("category", ""),
-            # 🆕 NEW: Add new fields to structured format
+            # Add new fields to structured format
             "age": clean_lead.get("age"),
             "experience": clean_lead.get("experience"),
             "nationality": clean_lead.get("nationality"),
@@ -315,6 +745,9 @@ def transform_lead_to_structured_format(lead: Dict[str, Any]) -> Dict[str, Any]:
         "assignment": {
             "assigned_to": clean_lead.get("assigned_to"),
             "assigned_to_name": clean_lead.get("assigned_to_name"),
+            "co_assignees": clean_lead.get("co_assignees", []),
+            "co_assignees_names": clean_lead.get("co_assignees_names", []),
+            "is_multi_assigned": clean_lead.get("is_multi_assigned", False),
             "assignment_method": clean_lead.get("assignment_method"),
             "assignment_history": clean_lead.get("assignment_history", [])
         },
@@ -334,8 +767,6 @@ def transform_lead_to_structured_format(lead: Dict[str, Any]) -> Dict[str, Any]:
     
     return structured_lead
 
-
-# 3. UPDATE the format_lead_response function to handle new fields
 def format_lead_response(lead_doc: dict) -> dict:
     """Format lead document for API response with new fields"""
     if not lead_doc:
@@ -353,10 +784,15 @@ def format_lead_response(lead_doc: dict) -> dict:
         "source": lead_doc["source"],
         "category": lead_doc.get("category", ""),
         
-        # 🆕 NEW: Include new fields in response
+        # Include new fields in response
         "age": lead_doc.get("age"),
         "experience": lead_doc.get("experience"),
         "nationality": lead_doc.get("nationality"),
+        
+        # Multi-assignment fields
+        "co_assignees": lead_doc.get("co_assignees", []),
+        "co_assignees_names": lead_doc.get("co_assignees_names", []),
+        "is_multi_assigned": lead_doc.get("is_multi_assigned", False),
         
         "stage": lead_doc.get("stage", "initial"),
         "lead_score": lead_doc.get("lead_score", 0),
@@ -374,46 +810,92 @@ def format_lead_response(lead_doc: dict) -> dict:
         "updated_at": lead_doc["updated_at"]
     }
 
+def get_activity_type_for_field(field_key: str) -> str:
+    """Get specific activity type based on field"""
+    activity_mapping = {
+        "status": "status_changed",
+        "stage": "stage_changed", 
+        "assigned_to": "lead_reassigned",
+        "name": "contact_info_updated",
+        "email": "contact_info_updated",
+        "phone_number": "contact_info_updated",
+        "contact_number": "contact_info_updated",
+        "source": "source_updated",
+        "category": "category_updated",
+        "priority": "priority_updated",
+        "lead_score": "lead_score_updated",
+        "notes": "notes_updated",
+        "country_of_interest": "preferences_updated",
+        "course_level": "preferences_updated",
+        # Activity types for new fields
+        "age": "personal_info_updated",
+        "experience": "personal_info_updated",
+        "nationality": "personal_info_updated"
+    }
+    return activity_mapping.get(field_key, "field_updated")
 
-# 4. UPDATE the create_lead function to handle legacy format with new fields
+def get_field_change_description(field_name: str, old_value: any, new_value: any) -> str:
+    """Generate human-readable description for field changes"""
+    # Handle None values
+    old_display = old_value if old_value is not None else "None"
+    new_display = new_value if new_value is not None else "None"
+    
+    # Special cases for different field types
+    if field_name == "Assigned To":
+        old_display = old_display or "Unassigned"
+        new_display = new_display or "Unassigned"
+        return f"Lead reassigned from '{old_display}' to '{new_display}'"
+    elif field_name in ["Lead Score"]:
+        return f"{field_name} updated from {old_display} to {new_display}"
+    else:
+        return f"{field_name} changed from '{old_display}' to '{new_display}'"
+
+# ============================================================================
+# CORE ENDPOINTS (UPDATED WITH NEW FEATURES)
+# ============================================================================
+
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_lead(
-    lead_data: dict,  # Accept any JSON structure
+    lead_data: dict,
     force_create: bool = Query(False, description="Create lead even if duplicates exist"),
+    # 🆕 NEW: Support for selective round robin
+    selected_user_emails: Optional[str] = Query(None, description="Comma-separated list of user emails for selective round robin"),
     current_user: Dict[str, Any] = Depends(get_admin_user)
 ):
     """
-    Create a new lead with category-based ID generation and new optional fields:
+    Create a new lead with enhanced assignment options:
     - Category-based lead IDs (NS-1, SA-1, WA-1, etc.)
-    - NEW: AGE, EXPERIENCE, Nationality fields (optional)
+    - 🆕 NEW: Selective round robin assignment
+    - 🆕 NEW: AGE, EXPERIENCE, Nationality fields (optional)
     - Duplicate detection and prevention
-    - Round-robin auto-assignment
-    - Activity logging
-    - User array updates
+    - Activity logging and user array updates
     """
     try:
         logger.info(f"Creating lead by admin: {current_user['email']}")
         
+        # Parse selective round robin parameter
+        selected_users = None
+        if selected_user_emails:
+            selected_users = [email.strip() for email in selected_user_emails.split(",") if email.strip()]
+        
         # Step 1: Parse and validate incoming data
         if "basic_info" in lead_data:
-            # Comprehensive format - convert to LeadCreateComprehensive
+            # Comprehensive format
             try:
-                from ..models.lead import LeadCreateComprehensive, LeadBasicInfo, LeadStatusAndTags, LeadAssignmentInfo, LeadAdditionalInfo
-                
-                # Extract sections
                 basic_info_data = lead_data.get("basic_info", {})
                 status_and_tags_data = lead_data.get("status_and_tags", {})
                 assignment_data = lead_data.get("assignment", {})
                 additional_info_data = lead_data.get("additional_info", {})
                 
-                # Validate category is provided
                 if not basic_info_data.get("category"):
                     raise HTTPException(
                         status_code=400,
                         detail="Category is required. Please select a valid lead category."
                     )
                 
-                # Create structured data with new fields
+                # Create structured data using the classes
+                from ..models.lead import LeadCreateComprehensive, LeadBasicInfo, LeadStatusAndTags, LeadAssignmentInfo, LeadAdditionalInfo
+                
                 structured_lead_data = LeadCreateComprehensive(
                     basic_info=LeadBasicInfo(
                         name=basic_info_data.get("name", ""),
@@ -421,7 +903,7 @@ async def create_lead(
                         contact_number=basic_info_data.get("contact_number", ""),
                         source=basic_info_data.get("source", "website"),
                         category=basic_info_data.get("category"),
-                        # 🆕 NEW: Handle new optional fields
+                        # Handle new optional fields
                         age=basic_info_data.get("age"),
                         experience=basic_info_data.get("experience"),
                         nationality=basic_info_data.get("nationality")
@@ -446,16 +928,15 @@ async def create_lead(
                     detail=f"Invalid lead data format: {str(e)}"
                 )
         else:
-            # Legacy flat format - convert to comprehensive
+            # Legacy flat format
             try:
-                from ..models.lead import LeadCreateComprehensive, LeadBasicInfo, LeadStatusAndTags, LeadAdditionalInfo
-                
-                # Validate category for legacy format too
                 if not lead_data.get("category"):
                     raise HTTPException(
                         status_code=400,
                         detail="Category is required. Please select a valid lead category."
                     )
+                
+                from ..models.lead import LeadCreateComprehensive, LeadBasicInfo, LeadStatusAndTags, LeadAdditionalInfo
                 
                 structured_lead_data = LeadCreateComprehensive(
                     basic_info=LeadBasicInfo(
@@ -464,7 +945,7 @@ async def create_lead(
                         contact_number=lead_data.get("contact_number", ""),
                         source=lead_data.get("source", "website"),
                         category=lead_data.get("category"),
-                        # 🆕 NEW: Handle new optional fields in legacy format
+                        # Handle new optional fields in legacy format
                         age=lead_data.get("age"),
                         experience=lead_data.get("experience"),
                         nationality=lead_data.get("nationality")
@@ -486,648 +967,35 @@ async def create_lead(
                     detail=f"Invalid lead data format: {str(e)}"
                 )
         
-        # Step 2: Use the lead service to create lead with category support
+        # Step 2: Use the enhanced lead service with selective assignment
         from ..services.lead_service import lead_service
         
-        result = await lead_service.create_lead_comprehensive(
-            lead_data=structured_lead_data,
-            created_by=str(current_user["_id"]),
-            force_create=force_create
-        )
-        
-        if not result["success"]:
-            # Handle duplicate case
-            if result.get("duplicate_check", {}).get("is_duplicate"):
-                logger.warning(f"Duplicate lead detected: {structured_lead_data.basic_info.email}")
-                raise HTTPException(
-                    status_code=400,
-                    detail=result["message"]
-                )
-            else:
-                raise HTTPException(
-                    status_code=400,
-                    detail=result["message"]
-                )
-        
-        logger.info(f"✅ Lead created successfully: {result['lead']['lead_id']} in category {structured_lead_data.basic_info.category}")
-        
-        # Step 3: Return successful response
-        return convert_objectid_to_str({
-            "success": True,
-            "message": result["message"],
-            "lead": result["lead"],
-            "assignment_info": result.get("assignment_info"),
-            "duplicate_check": result.get("duplicate_check", {
-                "is_duplicate": False,
-                "checked": True
-            })
-        })
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Lead creation error: {e}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create lead: {str(e)}"
-        )
-
-
-# 5. UPDATE the get_activity_type_for_field function to handle new fields
-def get_activity_type_for_field(field_key: str) -> str:
-    """Get specific activity type based on field"""
-    activity_mapping = {
-        "status": "status_changed",
-        "stage": "stage_changed", 
-        "assigned_to": "lead_reassigned",
-        "name": "contact_info_updated",
-        "email": "contact_info_updated",
-        "phone_number": "contact_info_updated",
-        "contact_number": "contact_info_updated",
-        "source": "source_updated",
-        "category": "category_updated",
-        "priority": "priority_updated",
-        "lead_score": "lead_score_updated",
-        "notes": "notes_updated",
-        "country_of_interest": "preferences_updated",
-        "course_level": "preferences_updated",
-        # 🆕 NEW: Activity types for new fields
-        "age": "personal_info_updated",
-        "experience": "personal_info_updated",
-        "nationality": "personal_info_updated"
-    }
-    return activity_mapping.get(field_key, "field_updated")
-
-# ============================================================================
-# HELPER FUNCTIONS
-# ============================================================================
-
-def transform_lead_to_structured_format(lead: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Transform flat lead document to structured comprehensive format
-    """
-    # Clean ObjectIds first using our utility function
-    clean_lead = convert_objectid_to_str(lead)
-    
-    # Transform to structured format
-    structured_lead = {
-        "basic_info": {
-            "name": clean_lead.get("name", ""),
-            "email": clean_lead.get("email", ""),
-            "contact_number": clean_lead.get("contact_number", ""),
-            "source": clean_lead.get("source", "website"),
-            "country_of_interest": clean_lead.get("country_of_interest", ""),
-            "course_level": clean_lead.get("course_level", ""),
-            "category": clean_lead.get("category", ""),  # 🔥 ADD THIS LINE
-        },
-        "status_and_tags": {
-            "stage": clean_lead.get("stage", "initial"),
-            "lead_score": clean_lead.get("lead_score", 0),
-            "priority": clean_lead.get("priority", "medium"),
-            "tags": clean_lead.get("tags", [])
-        },
-        "assignment": {
-            "assigned_to": clean_lead.get("assigned_to"),
-            "assigned_to_name": clean_lead.get("assigned_to_name"),
-            "assignment_method": clean_lead.get("assignment_method"),
-            "assignment_history": clean_lead.get("assignment_history", [])
-        },
-        "additional_info": {
-            "notes": clean_lead.get("notes", "")
-        },
-        "system_info": {
-            "id": str(clean_lead["_id"]) if "_id" in clean_lead else clean_lead.get("id"),
-            "lead_id": clean_lead.get("lead_id", ""),
-            "status": migrate_status_value(clean_lead.get("status", DEFAULT_NEW_LEAD_STATUS)),  # 🔥 Updated default
-            "created_by": clean_lead.get("created_by", ""),
-            "created_at": clean_lead.get("created_at"),
-            "updated_at": clean_lead.get("updated_at"),
-            "last_contacted": clean_lead.get("last_contacted")
-        }
-    }
-    
-    return structured_lead
-
-# ============================================================================
-# ADMIN MIGRATION ENDPOINTS
-# ============================================================================
-
-@router.post("/admin/migrate-all-statuses")
-async def migrate_all_lead_statuses(
-    current_user: Dict[str, Any] = Depends(get_admin_user)
-):
-    """
-    Admin endpoint to migrate all lead statuses from old to new values
-    This updates the database records permanently
-    """
-    try:
-        logger.info(f"Admin migration requested by: {current_user.get('email')}")
-        db = get_database()
-        
-        total_updated = 0
-        migration_details = []
-        
-        # Migrate each old status to new status
-        for old_status, new_status in OLD_TO_NEW_STATUS_MAPPING.items():
-            count = await db.leads.count_documents({"status": old_status})
-            
-            if count > 0:
-                result = await db.leads.update_many(
-                    {"status": old_status},
-                    {
-                        "$set": {
-                            "status": new_status,
-                            "status_migration_date": datetime.utcnow(),
-                            "previous_status": old_status
-                        }
-                    }
-                )
-                
-                updated_count = result.modified_count
-                total_updated += updated_count
-                
-                migration_details.append({
-                    "old_status": old_status,
-                    "new_status": new_status,
-                    "leads_found": count,
-                    "leads_updated": updated_count
-                })
-                
-                logger.info(f"Migrated {updated_count} leads: '{old_status}' → '{new_status}'")
-        
-        # Fix invalid stages
-        stage_fixes = 0
-        invalid_stages = await db.leads.find({
-            "stage": {"$nin": VALID_STAGES}
-        }).to_list(None)
-        
-        for lead in invalid_stages:
-            old_stage = lead.get("stage")
-            new_stage = migrate_stage_value(old_stage)
-            
-            await db.leads.update_one(
-                {"_id": lead["_id"]},
-                {
-                    "$set": {
-                        "stage": new_stage,
-                        "stage_migration_date": datetime.utcnow(),
-                        "previous_stage": old_stage
-                    }
-                }
+        # Use selective assignment if users are specified
+        if selected_users and hasattr(lead_service, 'create_lead_with_selective_assignment'):
+            result = await lead_service.create_lead_with_selective_assignment(
+                basic_info=structured_lead_data.basic_info,
+                status_and_tags=structured_lead_data.status_and_tags,
+                assignment_info=structured_lead_data.assignment,
+                additional_info=structured_lead_data.additional_info,
+                created_by=str(current_user["_id"]),
+                selected_user_emails=selected_users
             )
-            stage_fixes += 1
-        
-        # Ensure required fields
-        field_fixes = 0
-        
-        # Add missing lead_score
-        missing_score = await db.leads.count_documents({"lead_score": {"$exists": False}})
-        if missing_score > 0:
-            await db.leads.update_many(
-                {"lead_score": {"$exists": False}},
-                {"$set": {"lead_score": 0}}
-            )
-            field_fixes += missing_score
-        
-        # Add missing tags
-        missing_tags = await db.leads.count_documents({"tags": {"$exists": False}})
-        if missing_tags > 0:
-            await db.leads.update_many(
-                {"tags": {"$exists": False}},
-                {"$set": {"tags": []}}
-            )
-            field_fixes += missing_tags
-        
-        return {
-            "success": True,
-            "message": f"Migration completed successfully",
-            "summary": {
-                "status_migrations": total_updated,
-                "stage_fixes": stage_fixes,
-                "field_fixes": field_fixes,
-                "total_changes": total_updated + stage_fixes + field_fixes
-            },
-            "migration_details": migration_details
-        }
-        
-    except Exception as e:
-        logger.error(f"Admin migration error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to migrate lead statuses: {str(e)}"
-        )
-
-@router.get("/admin/status-analysis")
-async def analyze_lead_statuses(
-    current_user: Dict[str, Any] = Depends(get_admin_user)
-):
-    """
-    Analyze current status values in the database
-    """
-    try:
-        db = get_database()
-        
-        # Get status distribution
-        status_pipeline = [
-            {"$group": {"_id": "$status", "count": {"$sum": 1}}},
-            {"$sort": {"count": -1}}
-        ]
-        
-        status_results = await db.leads.aggregate(status_pipeline).to_list(None)
-        
-        valid_statuses = []
-        invalid_statuses = []
-        
-        for item in status_results:
-            status_value = item["_id"]
-            count = item["count"]
-            
-            if status_value in VALID_NEW_STATUSES:
-                valid_statuses.append({"status": status_value, "count": count, "valid": True})
-            else:
-                mapped_to = OLD_TO_NEW_STATUS_MAPPING.get(status_value, DEFAULT_NEW_LEAD_STATUS)
-                invalid_statuses.append({
-                    "status": status_value, 
-                    "count": count, 
-                    "valid": False,
-                    "will_migrate_to": mapped_to
-                })
-        
-        return {
-            "success": True,
-            "analysis": {
-                "statuses": {
-                    "valid": valid_statuses,
-                    "invalid": invalid_statuses,
-                    "needs_migration": len(invalid_statuses) > 0
-                },
-                "default_new_lead_status": DEFAULT_NEW_LEAD_STATUS,
-                "total_valid_statuses": len(VALID_NEW_STATUSES)
-            }
-        }
-        
-    except Exception as e:
-        logger.error(f"Status analysis error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to analyze statuses: {str(e)}"
-        )
-
-# ============================================================================
-# SUPER FAST ENDPOINTS (Using User Arrays) - FIXED FOR OBJECTID
-# ============================================================================
-
-@router.get("/my-leads-fast")
-async def get_my_leads_fast(
-    current_user: Dict[str, Any] = Depends(get_current_active_user)
-):
-    """
-    SUPER FAST user leads using user array lookup - FIXED ObjectId serialization
-    Performance: 5-50x faster than traditional query
-    """
-    try:
-        logger.info(f"Fast leads requested by user: {current_user.get('email')}")
-        
-        db = get_database()
-        user_data = await db.users.find_one({"email": current_user["email"]})
-        
-        if not user_data:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        lead_ids = user_data.get("assigned_leads", [])
-        total_count = len(lead_ids)
-        
-        logger.info(f"User has {total_count} leads in array: {lead_ids}")
-        
-        if not lead_ids:
-            return {
-                "success": True,
-                "leads": [],
-                "total": 0,
-                "message": "No leads assigned",
-                "performance": "ultra_fast_array_lookup"
-            }
-        
-        # Fetch lead details
-        leads_cursor = db.leads.find({"lead_id": {"$in": lead_ids}})
-        leads = await leads_cursor.to_list(None)
-        
-        # Process leads with migration support
-        clean_leads = []
-        for lead in leads:
-            try:
-                processed_lead = await process_lead_for_response(lead, db, current_user)
-                clean_leads.append(processed_lead)
-            except Exception as e:
-                logger.error(f"Error processing lead {lead.get('lead_id', 'unknown')}: {e}")
-                continue
-        
-        # 🔥 CRITICAL FIX: Convert all ObjectIds to strings before returning
-        final_leads = convert_objectid_to_str(clean_leads)
-        
-        logger.info(f"✅ Fast lookup returned {len(final_leads)} leads")
-        
-        return {
-            "success": True,
-            "leads": final_leads,
-            "total": total_count,
-            "performance": "ultra_fast_array_lookup"
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Fast leads error: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve fast leads: {str(e)}"
-        )
-
-@router.get("/admin/user-lead-stats")
-async def get_admin_user_lead_stats(
-    current_user: Dict[str, Any] = Depends(get_admin_user)
-):
-    """
-    SUPER FAST admin stats using user arrays - FIXED ObjectId serialization
-    """
-    try:
-        logger.info(f"Admin user stats requested by: {current_user.get('email')}")
-        
-        db = get_database()
-        
-        users_cursor = db.users.find(
-            {"role": {"$in": ["user", "admin"]}, "is_active": True},
-            {"first_name": 1, "last_name": 1, "email": 1, "role": 1, "assigned_leads": 1, "total_assigned_leads": 1}
-        )
-        users = await users_cursor.to_list(None)
-        
-        user_stats = []
-        total_assigned_leads = 0
-        
-        for user in users:
-            lead_count = user.get("total_assigned_leads", len(user.get("assigned_leads", [])))
-            total_assigned_leads += lead_count
-            
-            user_stats.append({
-                "user_id": str(user["_id"]),
-                "name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
-                "email": user["email"],
-                "role": user["role"],
-                "assigned_leads_count": lead_count
-            })
-        
-        user_stats.sort(key=lambda x: x["assigned_leads_count"], reverse=True)
-        
-        total_leads = await db.leads.count_documents({})
-        unassigned_leads = await db.leads.count_documents({"assigned_to": None})
-        
-        # 🔥 CRITICAL FIX: Ensure ObjectIds are converted
-        final_response = convert_objectid_to_str({
-            "success": True,
-            "user_stats": user_stats,
-            "summary": {
-                "total_users": len(user_stats),
-                "total_leads": total_leads,
-                "assigned_leads": total_assigned_leads,
-                "unassigned_leads": unassigned_leads
-            },
-            "performance": "ultra_fast_array_lookup"
-        })
-        
-        return final_response
-        
-    except Exception as e:
-        logger.error(f"Admin stats error: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get admin stats: {str(e)}"
-        )
-
-@router.post("/admin/sync-user-arrays")
-async def sync_user_arrays(
-    current_user: Dict[str, Any] = Depends(get_admin_user)
-):
-    """
-    Sync user arrays with actual lead assignments (Maintenance)
-    """
-    try:
-        logger.info(f"Array sync requested by admin: {current_user.get('email')}")
-        
-        db = get_database()
-        sync_count = 0
-        
-        users = await db.users.find({}).to_list(None)
-        
-        for user in users:
-            user_email = user["email"]
-            actual_leads = await db.leads.find({"assigned_to": user_email}, {"lead_id": 1}).to_list(None)
-            actual_lead_ids = [lead["lead_id"] for lead in actual_leads]
-            
-            await db.users.update_one(
-                {"_id": user["_id"]},
-                {
-                    "$set": {
-                        "assigned_leads": actual_lead_ids,
-                        "total_assigned_leads": len(actual_lead_ids),
-                        "array_last_synced": datetime.utcnow()
-                    }
-                }
-            )
-            sync_count += 1
-        
-        logger.info(f"✅ Synced arrays for {sync_count} users")
-        
-        return {
-            "success": True,
-            "message": f"Synced lead arrays for {sync_count} users",
-            "synced_users": sync_count
-        }
-        
-    except Exception as e:
-        logger.error(f"Array sync error: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to sync arrays: {str(e)}"
-        )
-
-@router.post("/fix-arrays-now")
-async def fix_user_arrays_now(
-    current_user: Dict[str, Any] = Depends(get_admin_user)
-):
-    """
-    One-time fix for current wrong user arrays
-    """
-    try:
-        db = get_database()
-        
-        print("🔧 Fixing user arrays...")
-        
-        # Get all active users
-        users = await db.users.find(
-            {"is_active": True}, 
-            {"email": 1, "assigned_leads": 1, "total_assigned_leads": 1}
-        ).to_list(length=None)
-        
-        fixed_count = 0
-        
-        for user in users:
-            user_email = user["email"]
-            
-            # Get actual assigned leads from leads collection
-            actual_leads = await db.leads.find(
-                {"assigned_to": user_email},
-                {"lead_id": 1}
-            ).to_list(length=None)
-            
-            actual_lead_ids = [lead["lead_id"] for lead in actual_leads]
-            current_array = user.get("assigned_leads", [])
-            
-            # Fix if different
-            if set(actual_lead_ids) != set(current_array):
-                await db.users.update_one(
-                    {"email": user_email},
-                    {
-                        "$set": {
-                            "assigned_leads": actual_lead_ids,
-                            "total_assigned_leads": len(actual_lead_ids)
-                        }
-                    }
-                )
-                
-                print(f"✅ Fixed {user_email}: {len(current_array)} -> {len(actual_lead_ids)} leads")
-                fixed_count += 1
-            else:
-                print(f"✅ {user_email} already correct ({len(actual_lead_ids)} leads)")
-        
-        return {
-            "success": True,
-            "message": f"Fixed {fixed_count} users",
-            "total_users_checked": len(users)
-        }
-        
-    except Exception as e:
-        print(f"Error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ============================================================================
-# CORE LEAD ENDPOINTS - FIXED FOR OBJECTID
-# ============================================================================
-# Replace the create_lead endpoint in app/routers/leads.py with this:
-
-@router.post("/", status_code=status.HTTP_201_CREATED)
-async def create_lead(
-    lead_data: dict,  # Accept any JSON structure
-    force_create: bool = Query(False, description="Create lead even if duplicates exist"),
-    current_user: Dict[str, Any] = Depends(get_admin_user)
-):
-    """
-    Create a new lead with category-based ID generation:
-    - Category-based lead IDs (NS-1, SA-1, WA-1, etc.)
-    - Duplicate detection and prevention
-    - Round-robin auto-assignment
-    - Activity logging
-    - User array updates
-    """
-    try:
-        logger.info(f"Creating lead by admin: {current_user['email']}")
-        
-        # Step 1: Parse and validate incoming data
-        if "basic_info" in lead_data:
-            # Comprehensive format - convert to LeadCreateComprehensive
-            try:
-                from ..models.lead import LeadCreateComprehensive, LeadBasicInfo, LeadStatusAndTags, LeadAssignmentInfo, LeadAdditionalInfo
-                
-                # Extract sections
-                basic_info_data = lead_data.get("basic_info", {})
-                status_and_tags_data = lead_data.get("status_and_tags", {})
-                assignment_data = lead_data.get("assignment", {})
-                additional_info_data = lead_data.get("additional_info", {})
-                
-                # Validate category is provided
-                if not basic_info_data.get("category"):
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Category is required. Please select a valid lead category."
-                    )
-                
-                # Create structured data
-                structured_lead_data = LeadCreateComprehensive(
-                    basic_info=LeadBasicInfo(
-                        name=basic_info_data.get("name", ""),
-                        email=basic_info_data.get("email", ""),
-                        contact_number=basic_info_data.get("contact_number", ""),
-                        source=basic_info_data.get("source", "website"),
-                        category=basic_info_data.get("category")  # 🆕 Required category
-                    ),
-                    status_and_tags=LeadStatusAndTags(
-                        stage=status_and_tags_data.get("stage", "initial"),
-                        lead_score=status_and_tags_data.get("lead_score", 0),
-                        tags=status_and_tags_data.get("tags", [])
-                    ) if status_and_tags_data else None,
-                    assignment=LeadAssignmentInfo(
-                        assigned_to=assignment_data.get("assigned_to")
-                    ) if assignment_data else None,
-                    additional_info=LeadAdditionalInfo(
-                        notes=additional_info_data.get("notes")
-                    ) if additional_info_data else None
-                )
-                
-            except Exception as e:
-                logger.error(f"Error parsing comprehensive lead data: {str(e)}")
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid lead data format: {str(e)}"
-                )
         else:
-            # Legacy flat format - convert to comprehensive
-            try:
-                from ..models.lead import LeadCreateComprehensive, LeadBasicInfo, LeadStatusAndTags, LeadAdditionalInfo
-                
-                # Validate category for legacy format too
-                if not lead_data.get("category"):
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Category is required. Please select a valid lead category."
-                    )
-                
-                structured_lead_data = LeadCreateComprehensive(
-                    basic_info=LeadBasicInfo(
-                        name=lead_data.get("name", ""),
-                        email=lead_data.get("email", ""),
-                        contact_number=lead_data.get("contact_number", ""),
-                        source=lead_data.get("source", "website"),
-                        category=lead_data.get("category")  # 🆕 Required category
-                    ),
-                    status_and_tags=LeadStatusAndTags(
-                        stage=lead_data.get("stage", "initial"),
-                        lead_score=lead_data.get("lead_score", 0),
-                        tags=lead_data.get("tags", [])
-                    ),
-                    additional_info=LeadAdditionalInfo(
-                        notes=lead_data.get("notes")
-                    )
+            # Use regular creation method or fallback
+            if hasattr(lead_service, 'create_lead_comprehensive'):
+                result = await lead_service.create_lead_comprehensive(
+                    lead_data=structured_lead_data,
+                    created_by=str(current_user["_id"]),
+                    force_create=force_create
                 )
-                
-            except Exception as e:
-                logger.error(f"Error parsing legacy lead data: {str(e)}")
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid lead data format: {str(e)}"
-                )
-        
-        # Step 2: Use the lead service to create lead with category support
-        from ..services.lead_service import lead_service
-        
-        result = await lead_service.create_lead_comprehensive(
-            lead_data=structured_lead_data,
-            created_by=str(current_user["_id"]),
-            force_create=force_create
-        )
+            else:
+                # Fallback to basic creation
+                result = {
+                    "success": False,
+                    "message": "Lead service method not available"
+                }
         
         if not result["success"]:
-            # Handle duplicate case
             if result.get("duplicate_check", {}).get("is_duplicate"):
                 logger.warning(f"Duplicate lead detected: {structured_lead_data.basic_info.email}")
                 raise HTTPException(
@@ -1140,14 +1008,16 @@ async def create_lead(
                     detail=result["message"]
                 )
         
-        logger.info(f"✅ Lead created successfully: {result['lead']['lead_id']} in category {structured_lead_data.basic_info.category}")
+        logger.info(f"✅ Lead created successfully: {result.get('lead_id', 'unknown')} in category {structured_lead_data.basic_info.category}")
         
         # Step 3: Return successful response
         return convert_objectid_to_str({
             "success": True,
-            "message": result["message"],
-            "lead": result["lead"],
-            "assignment_info": result.get("assignment_info"),
+            "message": result.get("message", "Lead created successfully"),
+            "lead_id": result.get("lead_id"),
+            "assigned_to": result.get("assigned_to"),
+            "assignment_method": result.get("assignment_method"),
+            "selected_users_pool": selected_users,
             "duplicate_check": result.get("duplicate_check", {
                 "is_duplicate": False,
                 "checked": True
@@ -1172,36 +1042,62 @@ async def get_leads(
     lead_status: Optional[str] = Query(None),
     assigned_to: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
+    # 🆕 NEW: Multi-assignment filters
+    include_multi_assigned: bool = Query(False, description="Include multi-assigned leads"),
+    assigned_to_me: bool = Query(False, description="Include leads where I'm primary or co-assignee"),
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):
-    """
-    Get leads with complete status migration support - FIXED ObjectId serialization
-    This endpoint handles both old and new status values seamlessly
-    """
+    """Get leads with enhanced multi-assignment support"""
     try:
         logger.info(f"Get leads requested by: {current_user.get('email')}")
         db = get_database()
         
         # Build query
         query = {}
-        if current_user["role"] != "admin":
-            query["assigned_to"] = current_user["email"]
+        user_role = current_user.get("role", "user")
+        user_email = current_user.get("email")
         
-        # Handle status filtering (support both old and new values)
+        if user_role != "admin":
+            # Enhanced query for multi-assignment
+            if assigned_to_me:
+                query["$or"] = [
+                    {"assigned_to": user_email},
+                    {"co_assignees": user_email}
+                ]
+            else:
+                query["assigned_to"] = user_email
+        
+        # Handle status filtering with migration support
         if lead_status:
-            # Create OR query to match both old and new status values
-            possible_old_statuses = [k for k, v in OLD_TO_NEW_STATUS_MAPPING.items() if v == lead_status.value]
-            status_conditions = [{"status": lead_status.value}]
+            possible_old_statuses = [k for k, v in OLD_TO_NEW_STATUS_MAPPING.items() if v == lead_status]
+            status_conditions = [{"status": lead_status}]
             if possible_old_statuses:
                 status_conditions.extend([{"status": old_status} for old_status in possible_old_statuses])
-            query["$or"] = status_conditions
-        
-        if assigned_to and current_user["role"] == "admin":
+            
             if "$or" in query:
-                # Combine with existing OR condition
-                query = {"$and": [{"assigned_to": assigned_to}, {"$or": query["$or"]}]}
+                query = {"$and": [query, {"$or": status_conditions}]}
             else:
-                query["assigned_to"] = assigned_to
+                query["$or"] = status_conditions
+        
+        # Multi-assignment filter
+        if include_multi_assigned:
+            multi_condition = {"is_multi_assigned": True}
+            if "$and" in query:
+                query["$and"].append(multi_condition)
+            else:
+                query.update(multi_condition)
+        
+        if assigned_to and user_role == "admin":
+            assigned_condition = {
+                "$or": [
+                    {"assigned_to": assigned_to},
+                    {"co_assignees": assigned_to}
+                ]
+            }
+            if "$and" in query:
+                query["$and"].append(assigned_condition)
+            else:
+                query.update(assigned_condition)
         
         if search:
             search_condition = {
@@ -1213,8 +1109,6 @@ async def get_leads(
             }
             if "$and" in query:
                 query["$and"].append(search_condition)
-            elif "$or" in query:
-                query = {"$and": [{"$or": query["$or"]}, search_condition]}
             else:
                 query.update(search_condition)
         
@@ -1233,7 +1127,7 @@ async def get_leads(
                 logger.error(f"Failed to process lead {lead.get('lead_id', 'unknown')}: {e}")
                 continue
         
-        # 🔥 CRITICAL FIX: Convert ObjectIds before creating response model
+        # Convert ObjectIds before creating response model
         final_leads = convert_objectid_to_str(processed_leads)
         
         logger.info(f"Successfully processed {len(final_leads)} leads out of {len(leads)} total")
@@ -1260,22 +1154,39 @@ async def get_my_leads(
     limit: int = Query(20, ge=1, le=100),
     lead_status: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
+    # 🆕 NEW: Include co-assignments
+    include_co_assignments: bool = Query(True, description="Include leads where I'm a co-assignee"),
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):
-    """
-    Get leads assigned to current user with complete migration support - FIXED ObjectId
-    """
+    """Get leads assigned to current user with enhanced multi-assignment support"""
     try:
         db = get_database()
-        query = {"assigned_to": current_user["email"]}
+        user_email = current_user["email"]
+        
+        # Enhanced query for multi-assignment
+        if include_co_assignments:
+            query = {
+                "$or": [
+                    {"assigned_to": user_email},
+                    {"co_assignees": user_email}
+                ]
+            }
+        else:
+            query = {"assigned_to": user_email}
         
         # Handle status filtering with migration support
         if lead_status:
-            possible_old_statuses = [k for k, v in OLD_TO_NEW_STATUS_MAPPING.items() if v == lead_status.value]
-            status_conditions = [{"status": lead_status.value}]
+            possible_old_statuses = [k for k, v in OLD_TO_NEW_STATUS_MAPPING.items() if v == lead_status]
+            status_conditions = [{"status": lead_status}]
             if possible_old_statuses:
                 status_conditions.extend([{"status": old_status} for old_status in possible_old_statuses])
-            query["$or"] = status_conditions
+            
+            query = {
+                "$and": [
+                    query,
+                    {"$or": status_conditions}
+                ]
+            }
         
         if search:
             search_condition = {
@@ -1285,16 +1196,12 @@ async def get_my_leads(
                     {"lead_id": {"$regex": search, "$options": "i"}}
                 ]
             }
-            if "$or" in query:
-                query = {
-                    "$and": [
-                        {"assigned_to": current_user["email"]},
-                        {"$or": query["$or"]},
-                        search_condition
-                    ]
-                }
-            else:
-                query.update(search_condition)
+            query = {
+                "$and": [
+                    query,
+                    search_condition
+                ]
+            }
         
         total = await db.leads.count_documents(query)
         skip = (page - 1) * limit
@@ -1311,7 +1218,7 @@ async def get_my_leads(
                 logger.error(f"Failed to process lead {lead.get('lead_id', 'unknown')}: {e}")
                 continue
         
-        # 🔥 CRITICAL FIX: Convert ObjectIds before response
+        # Convert ObjectIds before response
         final_leads = convert_objectid_to_str(processed_leads)
         
         return LeadListResponse(
@@ -1332,17 +1239,31 @@ async def get_my_leads(
 
 @router.get("/stats", response_model=LeadStatsResponse)
 async def get_lead_stats(
+    # 🆕 NEW: Include multi-assignment stats
+    include_multi_assignment_stats: bool = Query(True, description="Include multi-assignment statistics"),
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):
-    """
-    Get lead statistics with migration-aware status counting
-    """
+    """Get lead statistics with enhanced multi-assignment support"""
     try:
         db = get_database()
+        user_role = current_user.get("role", "user")
+        user_email = current_user.get("email")
         
+        # Base pipeline
         pipeline = []
-        if current_user["role"] != "admin":
-            pipeline.append({"$match": {"assigned_to": current_user["email"]}})
+        if user_role != "admin":
+            if include_multi_assignment_stats:
+                # Include both primary and co-assignments
+                pipeline.append({
+                    "$match": {
+                        "$or": [
+                            {"assigned_to": user_email},
+                            {"co_assignees": user_email}
+                        ]
+                    }
+                })
+            else:
+                pipeline.append({"$match": {"assigned_to": user_email}})
         
         pipeline.extend([
             {
@@ -1355,7 +1276,7 @@ async def get_lead_stats(
         
         result = await db.leads.aggregate(pipeline).to_list(None)
         
-        # Initialize stats with your new status values
+        # Initialize stats
         stats = {
             "followup": 0,
             "warm": 0,
@@ -1391,11 +1312,26 @@ async def get_lead_stats(
                 stats[key] += count
         
         # Calculate additional stats
-        if current_user["role"] != "admin":
+        if user_role != "admin":
             stats["my_leads"] = stats["total_leads"]
         else:
-            stats["my_leads"] = await db.leads.count_documents({"assigned_to": current_user["email"]})
+            if include_multi_assignment_stats:
+                my_leads_count = await db.leads.count_documents({
+                    "$or": [
+                        {"assigned_to": user_email},
+                        {"co_assignees": user_email}
+                    ]
+                })
+            else:
+                my_leads_count = await db.leads.count_documents({"assigned_to": user_email})
+            
+            stats["my_leads"] = my_leads_count
             stats["unassigned_leads"] = await db.leads.count_documents({"assigned_to": None})
+        
+        # Add multi-assignment stats if requested
+        if include_multi_assignment_stats and user_role == "admin":
+            multi_assigned_count = await db.leads.count_documents({"is_multi_assigned": True})
+            stats["multi_assigned_leads"] = multi_assigned_count
         
         return LeadStatsResponse(**stats)
     
@@ -1411,15 +1347,23 @@ async def get_lead(
     lead_id: str,
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):
-    """
-    Get a specific lead by ID in structured comprehensive format - FIXED ObjectId
-    """
+    """Get a specific lead by ID with enhanced multi-assignment support"""
     try:
         db = get_database()
         
         query = {"lead_id": lead_id}
-        if current_user["role"] != "admin":
-            query["assigned_to"] = current_user["email"]
+        user_role = current_user.get("role", "user")
+        user_email = current_user.get("email")
+        
+        if user_role != "admin":
+            # Check both primary and co-assignments
+            query = {
+                "lead_id": lead_id,
+                "$or": [
+                    {"assigned_to": user_email},
+                    {"co_assignees": user_email}
+                ]
+            }
         
         lead = await db.leads.find_one(query)
         
@@ -1432,7 +1376,6 @@ async def get_lead(
         # Transform to structured format with migration support and ObjectId conversion
         structured_lead = transform_lead_to_structured_format(lead)
         
-        # 🔥 CRITICAL FIX: Already handled in transform_lead_to_structured_format
         return {
             "success": True,
             "lead": structured_lead
@@ -1450,7 +1393,15 @@ async def get_lead(
         )
 
 # ============================================================================
-# ASSIGNMENT ENDPOINTS - FIXED FOR OBJECTID
+# EXISTING ENDPOINTS CONTINUED...
+# ============================================================================
+# Add all the remaining endpoints here (assign, update, delete, bulk operations, admin endpoints, etc.)
+# Due to length limits, I'm focusing on the core corrected structure
+
+# app/routers/leads.py - Part 2: Remaining Endpoints with Multi-Assignment Support
+
+# ============================================================================
+# ASSIGNMENT ENDPOINTS
 # ============================================================================
 
 @router.post("/{lead_id}/assign", response_model=LeadAssignResponse)
@@ -1459,9 +1410,7 @@ async def assign_lead(
     assignment: LeadAssign,
     current_user: Dict[str, Any] = Depends(get_admin_user)
 ):
-    """
-    Assign a lead to a user (Admin only) - Updates both lead and user array
-    """
+    """Assign a lead to a user (Admin only) - Enhanced with multi-assignment cleanup"""
     try:
         db = get_database()
         
@@ -1482,46 +1431,31 @@ async def assign_lead(
             )
         
         current_assignee = lead.get("assigned_to")
+        current_co_assignees = lead.get("co_assignees", [])
         
-        # Update lead assignment
-        await db.leads.update_one(
-            {"lead_id": lead_id},
-            {
-                "$set": {
-                    "assigned_to": assignment.assigned_to,
-                    "updated_at": datetime.utcnow()
-                }
-            }
-        )
-        
-        # Update user arrays
-        if current_assignee and current_assignee != assignment.assigned_to:
-            await db.users.update_one(
-                {"email": current_assignee},
-                {
-                    "$pull": {"assigned_leads": lead_id},
-                    "$inc": {"total_assigned_leads": -1}
-                }
-            )
-        
-        if assignment.assigned_to != current_assignee:
-            await db.users.update_one(
-                {"email": assignment.assigned_to},
-                {
-                    "$push": {"assigned_leads": lead_id},
-                    "$inc": {"total_assigned_leads": 1}
-                }
-            )
-        
-        logger.info(f"Lead {lead_id} assigned to {assignee['email']} by {current_user['email']}")
-        
-        return LeadAssignResponse(
-            success=True,
-            message=f"Lead assigned to {assignee['first_name']} {assignee['last_name']}",
+        # Use the assignment service for consistency
+        success = await lead_assignment_service.assign_lead_to_user(
             lead_id=lead_id,
-            assigned_to=assignment.assigned_to,
-            assigned_to_name=f"{assignee['first_name']} {assignee['last_name']}"
+            user_email=assignment.assigned_to,
+            assigned_by=current_user.get("email"),
+            reason=assignment.notes or "Manual assignment"
         )
+        
+        if success:
+            logger.info(f"Lead {lead_id} assigned to {assignee['email']} by {current_user['email']}")
+            
+            return LeadAssignResponse(
+                success=True,
+                message=f"Lead assigned to {assignee['first_name']} {assignee['last_name']}",
+                lead_id=lead_id,
+                assigned_to=assignment.assigned_to,
+                assigned_to_name=f"{assignee['first_name']} {assignee['last_name']}"
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to assign lead"
+            )
         
     except HTTPException:
         raise
@@ -1533,7 +1467,7 @@ async def assign_lead(
         )
 
 # ============================================================================
-# UPDATE ENDPOINT - ENHANCED WITH BETTER USER ARRAY SYNC
+# UPDATE ENDPOINT WITH MULTI-ASSIGNMENT SUPPORT
 # ============================================================================
 
 @router.put("/update")
@@ -1541,9 +1475,7 @@ async def update_lead_universal(
     update_request: dict,
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):
-    """
-    Universal lead update endpoint with ENHANCED USER ARRAY SYNC
-    """
+    """Universal lead update endpoint with enhanced multi-assignment support"""
     try:
         logger.info(f"🔄 Update by {current_user.get('email')} with data: {update_request}")
         
@@ -1567,17 +1499,25 @@ async def update_lead_universal(
         
         logger.info(f"📋 Found lead {lead_id}, currently assigned to: {lead.get('assigned_to')}")
         
-        # Check permissions
+        # Enhanced permission checking for multi-assignment
         user_role = current_user.get("role", "user")
-        if user_role != "admin" and lead.get("assigned_to") != current_user.get("email"):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You can only update leads assigned to you"
-            )
+        user_email = current_user.get("email")
+        
+        if user_role != "admin":
+            # Check if user has access (primary or co-assignee)
+            assigned_to = lead.get("assigned_to")
+            co_assignees = lead.get("co_assignees", [])
+            
+            if user_email not in [assigned_to] + co_assignees:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You can only update leads assigned to you"
+                )
         
         # Handle assignment change validation
         assignment_changed = False
         old_assignee = lead.get("assigned_to")
+        old_co_assignees = lead.get("co_assignees", [])
         new_assignee = None
         
         if "assigned_to" in update_request:
@@ -1640,7 +1580,7 @@ async def update_lead_universal(
         # Add timestamp
         update_data["updated_at"] = datetime.utcnow()
         
-        # 🔥 PERFORM THE ACTUAL DATABASE UPDATE
+        # Perform the actual database update
         result = await db.leads.update_one(
             {"lead_id": lead_id},
             {"$set": update_data}
@@ -1654,22 +1594,28 @@ async def update_lead_universal(
         
         logger.info(f"✅ Lead {lead_id} updated in database successfully")
         
-        # 🔥 ENHANCED USER ARRAY UPDATES - Only if assignment changed
+        # Enhanced user array updates for multi-assignment
         assignment_sync_error = None
         if assignment_changed:
-            logger.info(f"🔄 Processing user array updates for assignment change")
+            logger.info(f"🔄 Processing enhanced user array updates for assignment change")
             
             try:
                 # Remove from old assignee's array
                 if old_assignee:
                     logger.info(f"📤 Removing lead {lead_id} from {old_assignee}")
-                    await update_user_lead_array(old_assignee, lead_id, "remove")
+                    await user_lead_array_service.remove_lead_from_user_array(old_assignee, lead_id)
                     logger.info(f"✅ Successfully removed lead {lead_id} from {old_assignee}")
+                
+                # Remove from all co-assignees' arrays
+                for co_assignee in old_co_assignees:
+                    logger.info(f"📤 Removing lead {lead_id} from co-assignee {co_assignee}")
+                    await user_lead_array_service.remove_lead_from_user_array(co_assignee, lead_id)
+                    logger.info(f"✅ Successfully removed lead {lead_id} from co-assignee {co_assignee}")
                 
                 # Add to new assignee's array
                 if new_assignee:
                     logger.info(f"📥 Adding lead {lead_id} to {new_assignee}")
-                    await update_user_lead_array(new_assignee, lead_id, "add")
+                    await user_lead_array_service.add_lead_to_user_array(new_assignee, lead_id)
                     logger.info(f"✅ Successfully added lead {lead_id} to {new_assignee}")
                 
                 # Log assignment activity
@@ -1680,20 +1626,16 @@ async def update_lead_universal(
                         "metadata": {
                             "old_assignee": old_assignee,
                             "new_assignee": new_assignee,
-                            "reassigned_by": current_user.get("email")
+                            "reassigned_by": current_user.get("email"),
+                            "previous_co_assignees": old_co_assignees
                         }
                     }
                     activities_to_log.append(assignment_activity)
                     
             except Exception as array_error:
-                logger.error(f"❌ CRITICAL: User array update failed: {str(array_error)}")
+                logger.error(f"❌ CRITICAL: Enhanced user array update failed: {str(array_error)}")
                 logger.error(f"❌ Assignment details: {old_assignee} → {new_assignee}")
                 
-                # 🚨 IMPORTANT: Don't fail the lead update, but log prominently
-                logger.error(f"❌ USER ARRAYS ARE NOW OUT OF SYNC FOR LEAD {lead_id}")
-                logger.error(f"❌ MANUAL SYNC REQUIRED: Run /admin/sync-user-arrays")
-                
-                # Add error to response so admin knows
                 assignment_sync_error = {
                     "error": "User array sync failed",
                     "details": str(array_error),
@@ -1702,7 +1644,7 @@ async def update_lead_universal(
         else:
             logger.info(f"ℹ️ No assignment change, skipping user array updates")
         
-        # 🔥 LOG ALL ACTIVITIES
+        # Log all activities
         user_id = current_user.get("_id") or current_user.get("id")
         user_name = f"{current_user.get('first_name', '')} {current_user.get('last_name', '')}".strip()
         if not user_name:
@@ -1727,7 +1669,6 @@ async def update_lead_universal(
                 
             except Exception as activity_error:
                 logger.error(f"❌ Failed to log activity for lead {lead_id}: {str(activity_error)}")
-                # Don't fail the update if activity logging fails
         
         # Get updated lead for response
         updated_lead = await db.leads.find_one({"lead_id": lead_id})
@@ -1760,147 +1701,8 @@ async def update_lead_universal(
             detail="Failed to update lead"
         )
 
-
-# Helper function to format lead response (add this if it doesn't exist)
-def format_lead_response(lead_doc: dict) -> dict:
-    """Format lead document for API response"""
-    if not lead_doc:
-        return None
-        
-    return {
-        "id": str(lead_doc["_id"]),
-        "lead_id": lead_doc["lead_id"],
-        "name": lead_doc["name"],
-        "email": lead_doc["email"],
-        "phone_number": lead_doc.get("phone_number", ""),
-        "contact_number": lead_doc.get("contact_number", ""),
-        "country_of_interest": lead_doc.get("country_of_interest", ""),
-        "course_level": lead_doc.get("course_level", ""),
-        "source": lead_doc["source"],
-        "category": lead_doc.get("category", ""),
-        "stage": lead_doc.get("stage", "initial"),
-        "lead_score": lead_doc.get("lead_score", 0),
-        "priority": lead_doc.get("priority", "medium"),
-        "tags": lead_doc.get("tags", []),
-        "status": lead_doc["status"],
-        "assigned_to": lead_doc.get("assigned_to"),
-        "assigned_to_name": lead_doc.get("assigned_to_name"),
-        "assignment_method": lead_doc.get("assignment_method"),
-        "assignment_history": lead_doc.get("assignment_history", []),
-        "notes": lead_doc.get("notes"),
-        "created_by": lead_doc["created_by"],
-        "created_by_name": lead_doc.get("created_by_name", "Unknown"),
-        "created_at": lead_doc["created_at"],
-        "updated_at": lead_doc["updated_at"]
-    }
-
-
-# ENHANCED Helper function for user array updates
-async def update_user_lead_array(user_email: str, lead_id: str, action: str):
-    """Update user's assigned_leads array with enhanced validation and logging"""
-    try:
-        db = get_database()
-        
-        logger.info(f"🔄 User array update: {action} lead {lead_id} for {user_email}")
-        
-        if action == "add":
-            # Verify user exists and is active before adding
-            user = await db.users.find_one({"email": user_email, "is_active": True})
-            if not user:
-                raise Exception(f"User {user_email} not found or inactive")
-            
-            result = await db.users.update_one(
-                {"email": user_email, "is_active": True},
-                {
-                    "$addToSet": {"assigned_leads": lead_id},
-                    "$inc": {"total_assigned_leads": 1}
-                }
-            )
-            
-            if result.modified_count == 0:
-                # Check if lead was already in array
-                user_after = await db.users.find_one({"email": user_email})
-                if user_after and lead_id in user_after.get("assigned_leads", []):
-                    logger.info(f"ℹ️ Lead {lead_id} already in {user_email}'s array")
-                else:
-                    logger.warning(f"⚠️ Failed to add lead {lead_id} to {user_email} - no documents modified")
-            else:
-                logger.info(f"✅ Added lead {lead_id} to {user_email}'s array")
-            
-        elif action == "remove":
-            result = await db.users.update_one(
-                {"email": user_email},
-                {
-                    "$pull": {"assigned_leads": lead_id},
-                    "$inc": {"total_assigned_leads": -1}
-                }
-            )
-            
-            # Ensure count doesn't go below 0
-            await db.users.update_one(
-                {"email": user_email, "total_assigned_leads": {"$lt": 0}},
-                {"$set": {"total_assigned_leads": 0}}
-            )
-            
-            if result.modified_count == 0:
-                logger.warning(f"⚠️ No documents modified when removing lead {lead_id} from {user_email}")
-            else:
-                logger.info(f"✅ Removed lead {lead_id} from {user_email}'s array")
-        else:
-            raise Exception(f"Invalid action: {action}. Must be 'add' or 'remove'")
-            
-    except Exception as e:
-        logger.error(f"❌ User array update error for {user_email}: {str(e)}")
-        raise  # Re-raise so calling function knows it failed
-    
-
-def get_activity_type_for_field(field_key: str) -> str:
-    """Get specific activity type based on field"""
-    activity_mapping = {
-        "status": "status_changed",
-        "stage": "stage_changed", 
-        "assigned_to": "lead_reassigned",
-        "name": "contact_info_updated",
-        "email": "contact_info_updated",
-        "phone_number": "contact_info_updated",
-        "contact_number": "contact_info_updated",
-        "source": "source_updated",
-        "category": "category_updated",
-        "priority": "priority_updated",
-        "lead_score": "lead_score_updated",
-        "notes": "notes_updated",
-        "country_of_interest": "preferences_updated",
-        "course_level": "preferences_updated"
-    }
-    return activity_mapping.get(field_key, "field_updated")
-
-def get_field_change_description(field_name: str, old_value: any, new_value: any) -> str:
-    """Generate human-readable description for field changes"""
-    # Handle None values
-    old_display = old_value if old_value is not None else "None"
-    new_display = new_value if new_value is not None else "None"
-    
-    # Special cases for different field types
-    if field_name == "Assigned To":
-        old_display = old_display or "Unassigned"
-        new_display = new_display or "Unassigned"
-        return f"Lead reassigned from '{old_display}' to '{new_display}'"
-    elif field_name in ["Lead Score"]:
-        return f"{field_name} updated from {old_display} to {new_display}"
-    else:
-        return f"{field_name} changed from '{old_display}' to '{new_display}'"
-
-def format_tag_changes(added_tags: set, removed_tags: set) -> str:
-    """Format tag changes for description"""
-    parts = []
-    if added_tags:
-        parts.append(f"Added: {', '.join(added_tags)}")
-    if removed_tags:
-        parts.append(f"Removed: {', '.join(removed_tags)}")
-    return " | ".join(parts)
-
 # ============================================================================
-# DELETE ENDPOINT
+# DELETE ENDPOINT WITH MULTI-ASSIGNMENT CLEANUP
 # ============================================================================
 
 @router.delete("/{lead_id}")
@@ -1908,9 +1710,7 @@ async def delete_lead(
     lead_id: str,
     current_user: Dict[str, Any] = Depends(get_admin_user)
 ):
-    """
-    Delete a lead (Admin only) - Also removes from user arrays
-    """
+    """Delete a lead (Admin only) - Enhanced with multi-assignment cleanup"""
     try:
         db = get_database()
         
@@ -1923,6 +1723,7 @@ async def delete_lead(
             )
         
         assigned_to = lead.get("assigned_to")
+        co_assignees = lead.get("co_assignees", [])
         
         # Delete the lead
         result = await db.leads.delete_one({"lead_id": lead_id})
@@ -1933,22 +1734,27 @@ async def delete_lead(
                 detail="Lead not found"
             )
         
-        # Remove from user's array if assigned
-        if assigned_to:
-            await db.users.update_one(
-                {"email": assigned_to},
-                {
-                    "$pull": {"assigned_leads": lead_id},
-                    "$inc": {"total_assigned_leads": -1}
-                }
-            )
+        # Remove from all assignees' arrays
+        try:
+            # Remove from primary assignee's array
+            if assigned_to:
+                await user_lead_array_service.remove_lead_from_user_array(assigned_to, lead_id)
+            
+            # Remove from all co-assignees' arrays
+            for co_assignee in co_assignees:
+                await user_lead_array_service.remove_lead_from_user_array(co_assignee, lead_id)
+                
+        except Exception as array_error:
+            logger.error(f"Error updating user arrays after lead deletion: {str(array_error)}")
+            # Don't fail the deletion if array update fails
         
         logger.info(f"Lead {lead_id} deleted by {current_user['email']}")
         
         return {
             "success": True,
             "message": "Lead deleted successfully",
-            "lead_id": lead_id
+            "lead_id": lead_id,
+            "removed_from_users": [assigned_to] + co_assignees if assigned_to else co_assignees
         }
         
     except HTTPException:
@@ -1961,89 +1767,844 @@ async def delete_lead(
         )
 
 # ============================================================================
-# BULK OPERATIONS - FIXED FOR OBJECTID
+# BULK OPERATIONS WITH ENHANCED ASSIGNMENT SUPPORT
 # ============================================================================
 
 @router.post("/bulk-create", status_code=status.HTTP_201_CREATED)
 async def bulk_create_leads(
     leads_data: List[dict],  
     force_create: bool = Query(False, description="Create leads even if duplicates exist"),
+    # 🆕 NEW: Bulk creation with selective round robin
+    assignment_method: str = Query("all_users", description="Assignment method: 'all_users' or 'selected_users'"),
+    selected_user_emails: Optional[str] = Query(None, description="Comma-separated user emails for selective round robin"),
     current_user: Dict[str, Any] = Depends(get_admin_user)
 ):
-    """
-    ✅ SIMPLEST FIX: Just call the single lead endpoint multiple times
-    """
+    """Bulk create leads with enhanced assignment options"""
     try:
-        logger.info(f"Bulk creating {len(leads_data)} leads")
+        logger.info(f"Bulk creating {len(leads_data)} leads with assignment method: {assignment_method}")
         
-        results = []
-        successful_creates = 0
-        failed_creates = 0
-        duplicates_skipped = 0
-        
-        for index, lead_data in enumerate(leads_data):
-            try:
-                # ✅ Call the working single lead endpoint
-                result = await create_lead(
-                    lead_data=lead_data,
-                    force_create=force_create,
-                    current_user=current_user
+        # Parse selective round robin parameter
+        selected_users = None
+        if assignment_method == "selected_users" and selected_user_emails:
+            selected_users = [email.strip() for email in selected_user_emails.split(",") if email.strip()]
+            
+            if not selected_users:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="selected_user_emails is required when assignment_method is 'selected_users'"
                 )
-                
-                if result.get("success"):
-                    lead_info = result.get("lead", {})
-                    results.append({
-                        "index": index,
-                        "status": "created",
-                        "lead_id": lead_info.get("lead_id"),
-                        "assigned_to": lead_info.get("assigned_to"),
-                        "assigned_to_name": lead_info.get("assigned_to_name")
-                    })
-                    successful_creates += 1
-                else:
+        
+        # Use enhanced bulk creation service if available
+        from ..services.lead_service import lead_service
+        
+        # Check if enhanced bulk creation method exists
+        if hasattr(lead_service, 'bulk_create_leads_with_selective_assignment'):
+            result = await lead_service.bulk_create_leads_with_selective_assignment(
+                leads_data=leads_data,
+                created_by=str(current_user["_id"]),
+                assignment_method=assignment_method,
+                selected_user_emails=selected_users
+            )
+            
+            return convert_objectid_to_str(result)
+        else:
+            # Fallback to individual creation
+            results = []
+            successful_creates = 0
+            failed_creates = 0
+            duplicates_skipped = 0
+            
+            for index, lead_data in enumerate(leads_data):
+                try:
+                    # Call the enhanced single lead endpoint
+                    result = await create_lead(
+                        lead_data=lead_data,
+                        force_create=force_create,
+                        selected_user_emails=selected_user_emails,
+                        current_user=current_user
+                    )
+                    
+                    if result.get("success"):
+                        results.append({
+                            "index": index,
+                            "status": "created",
+                            "lead_id": result.get("lead_id"),
+                            "assigned_to": result.get("assigned_to"),
+                            "assignment_method": result.get("assignment_method")
+                        })
+                        successful_creates += 1
+                    else:
+                        results.append({
+                            "index": index,
+                            "status": "failed",
+                            "error": "Single lead creation returned failure"
+                        })
+                        failed_creates += 1
+                        
+                except HTTPException as http_error:
+                    if "duplicate" in str(http_error.detail).lower():
+                        results.append({
+                            "index": index,
+                            "status": "skipped",
+                            "reason": "duplicate"
+                        })
+                        duplicates_skipped += 1
+                    else:
+                        results.append({
+                            "index": index,
+                            "status": "failed",
+                            "error": str(http_error.detail)
+                        })
+                        failed_creates += 1
+                        
+                except Exception as e:
                     results.append({
                         "index": index,
                         "status": "failed",
-                        "error": "Single lead creation returned failure"
+                        "error": str(e)
                     })
                     failed_creates += 1
-                    
-            except HTTPException as http_error:
-                if "duplicate" in str(http_error.detail).lower():
-                    results.append({
-                        "index": index,
-                        "status": "skipped",
-                        "reason": "duplicate"
-                    })
-                    duplicates_skipped += 1
-                else:
-                    results.append({
-                        "index": index,
-                        "status": "failed",
-                        "error": str(http_error.detail)
-                    })
-                    failed_creates += 1
-                    
+            
+            return {
+                "success": True,
+                "message": f"Bulk creation completed: {successful_creates} leads created, {duplicates_skipped} duplicates skipped, {failed_creates} failed",
+                "assignment_method": assignment_method,
+                "selected_users": selected_users,
+                "summary": {
+                    "total_attempted": len(leads_data),
+                    "successful_creates": successful_creates,
+                    "failed_creates": failed_creates,
+                    "duplicates_skipped": duplicates_skipped
+                },
+                "results": results
+            }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Bulk creation error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to bulk create leads: {str(e)}"
+        )
+
+# ============================================================================
+# ADMIN ENDPOINTS WITH MULTI-ASSIGNMENT ENHANCEMENTS
+# ============================================================================
+
+@router.get("/my-leads-fast")
+async def get_my_leads_fast(
+    # 🆕 NEW: Include co-assignments in fast lookup
+    include_co_assignments: bool = Query(True, description="Include leads where I'm a co-assignee"),
+    current_user: Dict[str, Any] = Depends(get_current_active_user)
+):
+    """SUPER FAST user leads using user array lookup with enhanced multi-assignment support"""
+    try:
+        logger.info(f"Fast leads requested by user: {current_user.get('email')}")
+        
+        db = get_database()
+        user_email = current_user["email"]
+        user_data = await db.users.find_one({"email": user_email})
+        
+        if not user_data:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        lead_ids = user_data.get("assigned_leads", [])
+        
+        # If including co-assignments, get those leads too
+        if include_co_assignments:
+            co_assigned_leads = await db.leads.find(
+                {"co_assignees": user_email},
+                {"lead_id": 1}
+            ).to_list(None)
+            
+            co_assigned_ids = [lead["lead_id"] for lead in co_assigned_leads]
+            
+            # Combine and deduplicate
+            all_lead_ids = list(set(lead_ids + co_assigned_ids))
+        else:
+            all_lead_ids = lead_ids
+        
+        total_count = len(all_lead_ids)
+        
+        logger.info(f"User has {total_count} leads (including co-assignments: {include_co_assignments})")
+        
+        if not all_lead_ids:
+            return {
+                "success": True,
+                "leads": [],
+                "total": 0,
+                "message": "No leads assigned",
+                "performance": "ultra_fast_array_lookup",
+                "include_co_assignments": include_co_assignments
+            }
+        
+        # Fetch lead details
+        leads_cursor = db.leads.find({"lead_id": {"$in": all_lead_ids}})
+        leads = await leads_cursor.to_list(None)
+        
+        # Process leads with migration support
+        clean_leads = []
+        for lead in leads:
+            try:
+                processed_lead = await process_lead_for_response(lead, db, current_user)
+                clean_leads.append(processed_lead)
             except Exception as e:
-                results.append({
-                    "index": index,
-                    "status": "failed",
-                    "error": str(e)
-                })
-                failed_creates += 1
+                logger.error(f"Error processing lead {lead.get('lead_id', 'unknown')}: {e}")
+                continue
+        
+        # Convert all ObjectIds to strings before returning
+        final_leads = convert_objectid_to_str(clean_leads)
+        
+        logger.info(f"✅ Fast lookup returned {len(final_leads)} leads")
         
         return {
             "success": True,
-            "message": f"Bulk creation completed: {successful_creates} leads created, {duplicates_skipped} duplicates skipped, {failed_creates} failed",
-            "summary": {
-                "total_attempted": len(leads_data),
-                "successful_creates": successful_creates,
-                "failed_creates": failed_creates,
-                "duplicates_skipped": duplicates_skipped
-            },
-            "results": results
+            "leads": final_leads,
+            "total": total_count,
+            "performance": "ultra_fast_array_lookup",
+            "include_co_assignments": include_co_assignments
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Fast leads error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve fast leads: {str(e)}"
+        )
+
+@router.get("/admin/user-lead-stats")
+async def get_admin_user_lead_stats(
+    # 🆕 NEW: Include multi-assignment stats
+    include_multi_assignment_stats: bool = Query(True, description="Include multi-assignment statistics"),
+    current_user: Dict[str, Any] = Depends(get_admin_user)
+):
+    """SUPER FAST admin stats with enhanced multi-assignment support"""
+    try:
+        logger.info(f"Admin user stats requested by: {current_user.get('email')}")
+        
+        db = get_database()
+        
+        users_cursor = db.users.find(
+            {"role": {"$in": ["user", "admin"]}, "is_active": True},
+            {"first_name": 1, "last_name": 1, "email": 1, "role": 1, "assigned_leads": 1, "total_assigned_leads": 1}
+        )
+        users = await users_cursor.to_list(None)
+        
+        user_stats = []
+        total_assigned_leads = 0
+        
+        for user in users:
+            user_email = user["email"]
+            lead_count = user.get("total_assigned_leads", len(user.get("assigned_leads", [])))
+            
+            # Get co-assignment count if requested
+            co_assignment_count = 0
+            if include_multi_assignment_stats:
+                co_assignment_count = await db.leads.count_documents({"co_assignees": user_email})
+            
+            total_assigned_leads += lead_count
+            
+            user_stat = {
+                "user_id": str(user["_id"]),
+                "name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+                "email": user_email,
+                "role": user["role"],
+                "assigned_leads_count": lead_count,
+            }
+            
+            if include_multi_assignment_stats:
+                user_stat["co_assigned_leads_count"] = co_assignment_count
+                user_stat["total_lead_access"] = lead_count + co_assignment_count
+            
+            user_stats.append(user_stat)
+        
+        user_stats.sort(key=lambda x: x.get("total_lead_access", x["assigned_leads_count"]), reverse=True)
+        
+        total_leads = await db.leads.count_documents({})
+        unassigned_leads = await db.leads.count_documents({"assigned_to": None})
+        
+        summary = {
+            "total_users": len(user_stats),
+            "total_leads": total_leads,
+            "assigned_leads": total_assigned_leads,
+            "unassigned_leads": unassigned_leads
+        }
+        
+        # Add multi-assignment summary if requested
+        if include_multi_assignment_stats:
+            multi_assigned_count = await db.leads.count_documents({"is_multi_assigned": True})
+            summary["multi_assigned_leads"] = multi_assigned_count
+        
+        final_response = convert_objectid_to_str({
+            "success": True,
+            "user_stats": user_stats,
+            "summary": summary,
+            "include_multi_assignment_stats": include_multi_assignment_stats,
+            "performance": "ultra_fast_array_lookup"
+        })
+        
+        return final_response
+        
+    except Exception as e:
+        logger.error(f"Admin stats error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get admin stats: {str(e)}"
+        )
+
+@router.post("/admin/sync-user-arrays")
+async def sync_user_arrays(
+    current_user: Dict[str, Any] = Depends(get_admin_user)
+):
+    """Sync user arrays with actual lead assignments including multi-assignments"""
+    try:
+        logger.info(f"Enhanced array sync requested by admin: {current_user.get('email')}")
+        
+        db = get_database()
+        sync_count = 0
+        
+        users = await db.users.find({}).to_list(None)
+        
+        for user in users:
+            user_email = user["email"]
+            
+            # Get all leads where user is primary assignee
+            primary_leads = await db.leads.find(
+                {"assigned_to": user_email}, 
+                {"lead_id": 1}
+            ).to_list(None)
+            
+            # Get all leads where user is co-assignee
+            co_assigned_leads = await db.leads.find(
+                {"co_assignees": user_email}, 
+                {"lead_id": 1}
+            ).to_list(None)
+            
+            # Combine primary and co-assigned leads
+            primary_lead_ids = [lead["lead_id"] for lead in primary_leads]
+            co_assigned_ids = [lead["lead_id"] for lead in co_assigned_leads]
+            
+            # For user arrays, we typically track only primary assignments
+            # But we can track total access in a separate field
+            all_accessible_leads = list(set(primary_lead_ids + co_assigned_ids))
+            
+            await db.users.update_one(
+                {"_id": user["_id"]},
+                {
+                    "$set": {
+                        "assigned_leads": primary_lead_ids,
+                        "total_assigned_leads": len(primary_lead_ids),
+                        "co_assigned_leads": co_assigned_ids,
+                        "total_accessible_leads": len(all_accessible_leads),
+                        "array_last_synced": datetime.utcnow()
+                    }
+                }
+            )
+            sync_count += 1
+        
+        logger.info(f"✅ Enhanced sync completed for {sync_count} users")
+        
+        return {
+            "success": True,
+            "message": f"Enhanced sync completed for {sync_count} users",
+            "synced_users": sync_count,
+            "includes_multi_assignment_sync": True
         }
         
     except Exception as e:
-        logger.error(f"Bulk error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Enhanced array sync error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to sync arrays: {str(e)}"
+        )
+
+# ============================================================================
+# MIGRATION AND ANALYSIS ENDPOINTS
+# ============================================================================
+
+@router.post("/admin/migrate-all-statuses")
+async def migrate_all_lead_statuses(
+    current_user: Dict[str, Any] = Depends(get_admin_user)
+):
+    """Admin endpoint to migrate all lead statuses from old to new values"""
+    try:
+        logger.info(f"Admin migration requested by: {current_user.get('email')}")
+        db = get_database()
+        
+        total_updated = 0
+        migration_details = []
+        
+        # Migrate each old status to new status
+        for old_status, new_status in OLD_TO_NEW_STATUS_MAPPING.items():
+            count = await db.leads.count_documents({"status": old_status})
+            
+            if count > 0:
+                result = await db.leads.update_many(
+                    {"status": old_status},
+                    {
+                        "$set": {
+                            "status": new_status,
+                            "status_migration_date": datetime.utcnow(),
+                            "previous_status": old_status
+                        }
+                    }
+                )
+                
+                updated_count = result.modified_count
+                total_updated += updated_count
+                
+                migration_details.append({
+                    "old_status": old_status,
+                    "new_status": new_status,
+                    "leads_found": count,
+                    "leads_updated": updated_count
+                })
+                
+                logger.info(f"Migrated {updated_count} leads: '{old_status}' → '{new_status}'")
+        
+        # Ensure required fields for multi-assignment
+        field_fixes = 0
+        
+        # Add missing multi-assignment fields
+        missing_multi_fields = await db.leads.count_documents({
+            "$or": [
+                {"co_assignees": {"$exists": False}},
+                {"is_multi_assigned": {"$exists": False}}
+            ]
+        })
+        
+        if missing_multi_fields > 0:
+            await db.leads.update_many(
+                {
+                    "$or": [
+                        {"co_assignees": {"$exists": False}},
+                        {"is_multi_assigned": {"$exists": False}}
+                    ]
+                },
+                {
+                    "$set": {
+                        "co_assignees": [],
+                        "co_assignees_names": [],
+                        "is_multi_assigned": False
+                    }
+                }
+            )
+            field_fixes += missing_multi_fields
+        
+        return {
+            "success": True,
+            "message": f"Enhanced migration completed successfully",
+            "summary": {
+                "status_migrations": total_updated,
+                "multi_assignment_field_fixes": field_fixes,
+                "total_changes": total_updated + field_fixes
+            },
+            "migration_details": migration_details
+        }
+        
+    except Exception as e:
+        logger.error(f"Admin migration error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to migrate lead statuses: {str(e)}"
+        )
+
+@router.get("/admin/status-analysis")
+async def analyze_lead_statuses(
+    current_user: Dict[str, Any] = Depends(get_admin_user)
+):
+    """Analyze current status values and multi-assignment usage in the database"""
+    try:
+        db = get_database()
+        
+        # Get status distribution
+        status_pipeline = [
+            {"$group": {"_id": "$status", "count": {"$sum": 1}}},
+            {"$sort": {"count": -1}}
+        ]
+        
+        status_results = await db.leads.aggregate(status_pipeline).to_list(None)
+        
+        valid_statuses = []
+        invalid_statuses = []
+        
+        for item in status_results:
+            status_value = item["_id"]
+            count = item["count"]
+            
+            if status_value in VALID_NEW_STATUSES:
+                valid_statuses.append({"status": status_value, "count": count, "valid": True})
+            else:
+                mapped_to = OLD_TO_NEW_STATUS_MAPPING.get(status_value, DEFAULT_NEW_LEAD_STATUS)
+                invalid_statuses.append({
+                    "status": status_value, 
+                    "count": count, 
+                    "valid": False,
+                    "will_migrate_to": mapped_to
+                })
+        
+        # Multi-assignment analysis
+        multi_assignment_stats = {
+            "total_leads": await db.leads.count_documents({}),
+            "single_assigned": await db.leads.count_documents({"assigned_to": {"$ne": None}, "is_multi_assigned": {"$ne": True}}),
+            "multi_assigned": await db.leads.count_documents({"is_multi_assigned": True}),
+            "unassigned": await db.leads.count_documents({"assigned_to": None})
+        }
+        
+        return {
+            "success": True,
+            "analysis": {
+                "statuses": {
+                    "valid": valid_statuses,
+                    "invalid": invalid_statuses,
+                    "needs_migration": len(invalid_statuses) > 0
+                },
+                "multi_assignment": multi_assignment_stats,
+                "default_new_lead_status": DEFAULT_NEW_LEAD_STATUS,
+                "total_valid_statuses": len(VALID_NEW_STATUSES)
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Status analysis error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to analyze statuses: {str(e)}"
+        )
+
+# ============================================================================
+# ADDITIONAL UTILITY ENDPOINTS
+# ============================================================================
+
+@router.get("/users/assignable")
+async def get_assignable_users(
+    current_user: Dict[str, Any] = Depends(get_admin_user)
+):
+    """Get list of users that can be assigned leads (Admin only)"""
+    try:
+        db = get_database()
+        
+        users = await db.users.find(
+            {"role": "user", "is_active": True},
+            {"email": 1, "first_name": 1, "last_name": 1}
+        ).to_list(None)
+        
+        assignable_users = []
+        for user in users:
+            full_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip()
+            assignable_users.append({
+                "email": user["email"],
+                "name": full_name if full_name else user["email"]
+            })
+        
+        return {
+            "success": True,
+            "users": assignable_users,
+            "total": len(assignable_users)
+        }
+        
+    except Exception as e:
+        logger.error(f"Get assignable users error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get assignable users"
+        )
+
+@router.post("/bulk-assign")
+async def bulk_assign_leads(
+    bulk_assign: LeadBulkAssign,
+    current_user: Dict[str, Any] = Depends(get_admin_user)
+):
+    """Bulk assign multiple leads to users (Admin only)"""
+    try:
+        db = get_database()
+        admin_email = current_user.get("email")
+        
+        results = []
+        successful_assignments = 0
+        failed_assignments = 0
+        
+        for lead_id in bulk_assign.lead_ids:
+            try:
+                # Check if lead exists
+                lead = await db.leads.find_one({"lead_id": lead_id})
+                if not lead:
+                    results.append({
+                        "lead_id": lead_id,
+                        "status": "failed",
+                        "error": "Lead not found"
+                    })
+                    failed_assignments += 1
+                    continue
+                
+                # Get next assignee using round robin
+                if bulk_assign.assignment_method == "round_robin":
+                    assignee = await lead_assignment_service.get_next_assignee_round_robin()
+                elif bulk_assign.assignment_method == "specific_user":
+                    assignee = bulk_assign.assigned_to
+                else:
+                    assignee = None
+                
+                if assignee:
+                    # Assign the lead
+                    success = await lead_assignment_service.assign_lead_to_user(
+                        lead_id=lead_id,
+                        user_email=assignee,
+                        assigned_by=admin_email,
+                        reason="Bulk assignment"
+                    )
+                    
+                    if success:
+                        results.append({
+                            "lead_id": lead_id,
+                            "status": "success",
+                            "assigned_to": assignee
+                        })
+                        successful_assignments += 1
+                    else:
+                        results.append({
+                            "lead_id": lead_id,
+                            "status": "failed",
+                            "error": "Assignment failed"
+                        })
+                        failed_assignments += 1
+                else:
+                    results.append({
+                        "lead_id": lead_id,
+                        "status": "failed",
+                        "error": "No assignee available"
+                    })
+                    failed_assignments += 1
+                    
+            except Exception as e:
+                logger.error(f"Error assigning lead {lead_id}: {str(e)}")
+                results.append({
+                    "lead_id": lead_id,
+                    "status": "failed",
+                    "error": str(e)
+                })
+                failed_assignments += 1
+        
+        return LeadBulkAssignResponse(
+            success=failed_assignments == 0,
+            message=f"Bulk assignment completed: {successful_assignments} successful, {failed_assignments} failed",
+            total_leads=len(bulk_assign.lead_ids),
+            successful_assignments=successful_assignments,
+            failed_assignments=failed_assignments,
+            results=results
+        )
+        
+    except Exception as e:
+        logger.error(f"Bulk assign error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to bulk assign leads"
+        )
+
+@router.patch("/{lead_id}/status")
+async def update_lead_status(
+    lead_id: str,
+    status_update: LeadStatusUpdate,
+    current_user: Dict[str, Any] = Depends(get_current_active_user)
+):
+    """Update lead status (Users can update leads assigned to them)"""
+    try:
+        db = get_database()
+        user_role = current_user.get("role", "user")
+        user_email = current_user.get("email")
+        
+        # Build query based on permissions
+        query = {"lead_id": lead_id}
+        if user_role != "admin":
+            # Users can only update leads assigned to them (primary or co-assignee)
+            query["$or"] = [
+                {"assigned_to": user_email},
+                {"co_assignees": user_email}
+            ]
+        
+        lead = await db.leads.find_one(query)
+        if not lead:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Lead not found or you don't have permission to update it"
+            )
+        
+        # Migrate status value if needed
+        new_status = migrate_status_value(status_update.status)
+        old_status = lead.get("status")
+        
+        # Update the lead status
+        update_data = {
+            "status": new_status,
+            "updated_at": datetime.utcnow()
+        }
+        
+        result = await db.leads.update_one(
+            {"lead_id": lead_id},
+            {"$set": update_data}
+        )
+        
+        if result.modified_count == 0:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Lead not found"
+            )
+        
+        # Log activity
+        try:
+            user_id = current_user.get("_id") or current_user.get("id")
+            user_name = f"{current_user.get('first_name', '')} {current_user.get('last_name', '')}".strip()
+            if not user_name:
+                user_name = current_user.get('email', 'Unknown User')
+            
+            activity_doc = {
+                "lead_object_id": lead["_id"],
+                "lead_id": lead_id,
+                "activity_type": "status_changed",
+                "description": f"Status changed from '{old_status}' to '{new_status}'",
+                "created_by": ObjectId(user_id) if ObjectId.is_valid(str(user_id)) else user_id,
+                "created_by_name": user_name,
+                "created_at": datetime.utcnow(),
+                "is_system_generated": True,
+                "metadata": {
+                    "field": "status",
+                    "old_value": old_status,
+                    "new_value": new_status,
+                    "notes": status_update.notes
+                }
+            }
+            
+            await db.lead_activities.insert_one(activity_doc)
+            
+        except Exception as activity_error:
+            logger.error(f"Failed to log status change activity: {str(activity_error)}")
+        
+        logger.info(f"Lead {lead_id} status updated from '{old_status}' to '{new_status}' by {user_email}")
+        
+        return {
+            "success": True,
+            "message": f"Lead status updated to {new_status}",
+            "lead_id": lead_id,
+            "old_status": old_status,
+            "new_status": new_status
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Update lead status error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update lead status"
+        )
+
+# ============================================================================
+# HEALTH CHECK AND DEBUG ENDPOINTS
+# ============================================================================
+
+@router.get("/health")
+async def health_check():
+    """Health check endpoint for the leads module"""
+    try:
+        db = get_database()
+        
+        # Test database connection
+        lead_count = await db.leads.count_documents({})
+        user_count = await db.users.count_documents({"role": "user", "is_active": True})
+        
+        return {
+            "status": "healthy",
+            "timestamp": datetime.utcnow(),
+            "version": "2.0.0",
+            "features": {
+                "selective_round_robin": True,
+                "multi_user_assignment": True,
+                "enhanced_user_arrays": True,
+                "status_migration": True,
+                "activity_logging": True
+            },
+            "database": {
+                "connected": True,
+                "total_leads": lead_count,
+                "active_users": user_count
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return {
+            "status": "unhealthy",
+            "timestamp": datetime.utcnow(),
+            "error": str(e)
+        }
+
+@router.get("/debug/assignment-info/{lead_id}")
+async def debug_assignment_info(
+    lead_id: str,
+    current_user: Dict[str, Any] = Depends(get_admin_user)
+):
+    """Debug endpoint to get detailed assignment information (Admin only)"""
+    try:
+        db = get_database()
+        
+        lead = await db.leads.find_one({"lead_id": lead_id})
+        if not lead:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Lead not found"
+            )
+        
+        # Get assignment details
+        assigned_to = lead.get("assigned_to")
+        co_assignees = lead.get("co_assignees", [])
+        
+        # Get user details for all assignees
+        all_assignees = [assigned_to] + co_assignees if assigned_to else co_assignees
+        user_details = {}
+        
+        for user_email in all_assignees:
+            if user_email:
+                user = await db.users.find_one({"email": user_email})
+                if user:
+                    user_details[user_email] = {
+                        "name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+                        "email": user_email,
+                        "role": user.get("role"),
+                        "is_active": user.get("is_active"),
+                        "total_assigned_leads": user.get("total_assigned_leads", 0),
+                        "assigned_leads_array": user.get("assigned_leads", [])
+                    }
+        
+        debug_info = {
+            "lead_id": lead_id,
+            "assignment_info": {
+                "assigned_to": assigned_to,
+                "assigned_to_name": lead.get("assigned_to_name"),
+                "co_assignees": co_assignees,
+                "co_assignees_names": lead.get("co_assignees_names", []),
+                "is_multi_assigned": lead.get("is_multi_assigned", False),
+                "assignment_method": lead.get("assignment_method"),
+                "total_assignees": len(all_assignees)
+            },
+            "user_details": user_details,
+            "assignment_history": lead.get("assignment_history", []),
+            "debug_timestamp": datetime.utcnow()
+        }
+        
+        return convert_objectid_to_str(debug_info)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Debug assignment info error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get debug assignment info"
+        )
+
+# ============================================================================
+# END OF LEADS ROUTER ENDPOINTS
+# ============================================================================
