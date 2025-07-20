@@ -73,57 +73,43 @@ def convert_objectid_to_str(obj):
 # STATUS MIGRATION UTILITIES
 # ============================================================================
 
-OLD_TO_NEW_STATUS_MAPPING = {
-    "open": "Initial",
-    "new": "Initial",
-    "pending": "Initial",
-    "cold": "Initial",
-    "initial": "Initial",
-    "in_progress": "Warm", 
-    "contacted": "Prospect",
-    "qualified": "Prospect",
-    "closed_won": "Enrolled",
-    "closed_lost": "Junk",
-    "lost": "Junk",
-    "closed": "Enrolled",
-    "follow_up": "Followup",
-    "followup": "Followup",
-    "hot": "Warm",
-    "converted": "Enrolled",
-    "rejected": "Junk",
-    "invalid": "INVALID",
-    "callback": "Call Back",
-    "call_back": "Call Back",
-    "no_response": "NI",
-    "no_interest": "NI",
-    "busy": "Busy",
-    "ringing": "Ringing",
-    "wrong_number": "Wrong Number",
-    "dnp": "DNP",
-    "enrolled": "Enrolled",
-}
+# OLD_TO_NEW_STATUS_MAPPING = {
+#     "open": "Initial",
+#     "new": "Initial",
+#     "pending": "Initial",
+#     "cold": "Initial",
+#     "initial": "Initial",
+#     "in_progress": "Warm", 
+#     "contacted": "Prospect",
+#     "qualified": "Prospect",
+#     "closed_won": "Enrolled",
+#     "closed_lost": "Junk",
+#     "lost": "Junk",
+#     "closed": "Enrolled",
+#     "follow_up": "Followup",
+#     "followup": "Followup",
+#     "hot": "Warm",
+#     "converted": "Enrolled",
+#     "rejected": "Junk",
+#     "invalid": "INVALID",
+#     "callback": "Call Back",
+#     "call_back": "Call Back",
+#     "no_response": "NI",
+#     "no_interest": "NI",
+#     "busy": "Busy",
+#     "ringing": "Ringing",
+#     "wrong_number": "Wrong Number",
+#     "dnp": "DNP",
+#     "enrolled": "Enrolled",
+# }
 
-VALID_NEW_STATUSES = [
-    "Initial", "Followup", "Warm", "Prospect", "Junk", "Enrolled", "Yet to call",
-    "Counseled", "DNP", "INVALID", "Call Back", "Busy", "NI", "Ringing", "Wrong Number"
-]
+# VALID_NEW_STATUSES = [
+#     "Initial", "Followup", "Warm", "Prospect", "Junk", "Enrolled", "Yet to call",
+#     "Counseled", "DNP", "INVALID", "Call Back", "Busy", "NI", "Ringing", "Wrong Number"
+# ]
 
 DEFAULT_NEW_LEAD_STATUS = "Initial"
 
-def migrate_status_value(status: str) -> str:
-    """Migrate old status values to new ones during transition period"""
-    if not status:
-        return DEFAULT_NEW_LEAD_STATUS
-    
-    if status in VALID_NEW_STATUSES:
-        return status
-    
-    mapped_status = OLD_TO_NEW_STATUS_MAPPING.get(status, DEFAULT_NEW_LEAD_STATUS)
-    
-    if status != mapped_status:
-        logger.debug(f"Status migration: '{status}' → '{mapped_status}'")
-    
-    return mapped_status
 
 # ============================================================================
 # 🆕 NEW: SELECTIVE ROUND ROBIN ENDPOINTS
@@ -604,89 +590,78 @@ async def get_leads_with_multi_assignment_info(
 # ============================================================================
 
 async def process_lead_for_response(lead: Dict[str, Any], db, current_user: Dict[str, Any] = None) -> Dict[str, Any]:
-    """Process a lead document for API response with complete data transformation"""
+    """
+    Process a lead document for API response with complete data transformation
+    This function ensures all leads are properly formatted for Pydantic validation
+    """
     try:
         # Basic field transformations
         lead["id"] = str(lead["_id"])
         lead["created_by"] = str(lead.get("created_by", ""))
         
-        # Migrate status values
-        original_status = lead.get("status")
-        lead["status"] = migrate_status_value(original_status)
+       
+        if not lead.get("status"):
+            lead["status"] = DEFAULT_NEW_LEAD_STATUS
         
-        # Ensure lead_score exists and is valid
+        
         if "lead_score" not in lead or lead["lead_score"] is None:
             lead["lead_score"] = 0
         elif not isinstance(lead["lead_score"], (int, float)):
             lead["lead_score"] = 0
         
-        # Handle new optional fields with proper defaults
-        lead["age"] = lead.get("age")
-        lead["experience"] = lead.get("experience")
-        lead["nationality"] = lead.get("nationality")
-        
-        # Handle multi-assignment fields
-        lead["co_assignees"] = lead.get("co_assignees", [])
-        lead["co_assignees_names"] = lead.get("co_assignees_names", [])
-        lead["is_multi_assigned"] = lead.get("is_multi_assigned", False)
+        # 🆕 NEW: Handle new optional fields with proper defaults
+        lead["age"] = lead.get("age")  # Keep None if not set
+        lead["experience"] = lead.get("experience")  # Keep None if not set
+        lead["nationality"] = lead.get("nationality")  # Keep None if not set
         
         # Ensure all required fields have proper defaults
         required_defaults = {
             "tags": [],
             "contact_number": lead.get("phone_number", ""),
-            "phone_number": lead.get("contact_number", ""),
             "source": "website",
             "category": lead.get("category", ""),
-            "notes": None,
-            "last_contacted": None,
-            "assignment_method": None,
-            "assignment_history": None,
-            "country_of_interest": "",
-            "course_level": None,
-            "priority": "medium"
         }
         
         for field, default_value in required_defaults.items():
             if field not in lead or lead[field] is None:
                 lead[field] = default_value
         
-        # Ensure contact_number and phone_number are consistent
-        if lead["contact_number"] and not lead["phone_number"]:
-            lead["phone_number"] = lead["contact_number"]
-        elif lead["phone_number"] and not lead["contact_number"]:
-            lead["contact_number"] = lead["phone_number"]
+        # Handle new multi-assignment fields
+        lead["co_assignees"] = lead.get("co_assignees", [])
+        lead["co_assignees_names"] = lead.get("co_assignees_names", [])
+        lead["is_multi_assigned"] = lead.get("is_multi_assigned", False)
         
-        # Handle created_by_name
-        created_by_id = lead.get("created_by")
-        if created_by_id and created_by_id != "":
-            try:
-                user_info = await db.users.find_one({"_id": ObjectId(created_by_id)})
-                if user_info:
-                    full_name = f"{user_info.get('first_name', '')} {user_info.get('last_name', '')}".strip()
-                    lead["created_by_name"] = full_name if full_name else user_info.get('email', 'Unknown User')
-                else:
-                    lead["created_by_name"] = "Unknown User"
-            except Exception as e:
-                logger.error(f"Error fetching created_by user info: {e}")
-                lead["created_by_name"] = "Unknown User"
+        # Fetch user info for created_by
+        user = await db.users.find_one({"_id": ObjectId(lead.get("created_by"))}) if lead.get("created_by") else None
+        if user:
+            full_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip()
+            lead["created_by_name"] = full_name if full_name else user.get('email', 'Unknown User')
         else:
             lead["created_by_name"] = "Unknown User"
         
-        # Handle assigned_to_name
+        # Fetch assigned user info
         if lead.get("assigned_to"):
-            if not lead.get("assigned_to_name"):
-                try:
-                    assigned_user = await db.users.find_one({"email": lead["assigned_to"]})
-                    if assigned_user:
-                        full_name = f"{assigned_user.get('first_name', '')} {assigned_user.get('last_name', '')}".strip()
-                        lead["assigned_to_name"] = full_name if full_name else assigned_user.get('email', 'Unknown')
-                    else:
-                        lead["assigned_to_name"] = lead["assigned_to"]
-                except Exception as e:
-                    logger.error(f"Error fetching assigned_to user info: {e}")
-                    lead["assigned_to_name"] = lead.get("assigned_to", "")
-        elif current_user:
-            # If no assigned_to but we have current_user (for my-leads endpoint)
+            assigned_user = await db.users.find_one({"email": lead["assigned_to"]})
+            if assigned_user:
+                full_name = f"{assigned_user.get('first_name', '')} {assigned_user.get('last_name', '')}".strip()
+                lead["assigned_to_name"] = full_name if full_name else assigned_user.get('email', 'Unknown')
+            else:
+                lead["assigned_to_name"] = lead["assigned_to"]
+        
+        # Fetch co-assignee names
+        if lead.get("co_assignees"):
+            co_assignee_names = []
+            for email in lead["co_assignees"]:
+                user = await db.users.find_one({"email": email})
+                if user:
+                    full_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip()
+                    co_assignee_names.append(full_name if full_name else email)
+                else:
+                    co_assignee_names.append(email)
+            lead["co_assignees_names"] = co_assignee_names
+        
+        # Handle current user name
+        if current_user:
             full_name = f"{current_user.get('first_name', '')} {current_user.get('last_name', '')}".strip()
             lead["assigned_to_name"] = full_name if full_name else current_user.get('email', 'Unknown')
         else:
@@ -698,7 +673,13 @@ async def process_lead_for_response(lead: Dict[str, Any], db, current_user: Dict
         logger.error(f"Error processing lead {lead.get('lead_id', 'unknown')}: {e}")
         # Return lead with minimal processing to avoid complete failure
         lead["id"] = str(lead["_id"])
-        lead["status"] = migrate_status_value(lead.get("status", DEFAULT_NEW_LEAD_STATUS))
+        # REMOVED: Automatic migration here too
+        # lead["status"] = migrate_status_value(lead.get("status", DEFAULT_NEW_LEAD_STATUS))
+        
+        # Just use status as-is with default if empty
+        if not lead.get("status"):
+            lead["status"] = DEFAULT_NEW_LEAD_STATUS
+            
         lead["lead_score"] = 0
         lead["created_by_name"] = "Unknown User"
         lead["assigned_to_name"] = "Unknown"
@@ -715,7 +696,6 @@ async def process_lead_for_response(lead: Dict[str, Any], db, current_user: Dict
         lead["co_assignees_names"] = lead.get("co_assignees_names", [])
         lead["is_multi_assigned"] = lead.get("is_multi_assigned", False)
         return lead
-
 def transform_lead_to_structured_format(lead: Dict[str, Any]) -> Dict[str, Any]:
     """Transform flat lead document to structured comprehensive format"""
     # Clean ObjectIds first using our utility function
@@ -757,7 +737,7 @@ def transform_lead_to_structured_format(lead: Dict[str, Any]) -> Dict[str, Any]:
         "system_info": {
             "id": str(clean_lead["_id"]) if "_id" in clean_lead else clean_lead.get("id"),
             "lead_id": clean_lead.get("lead_id", ""),
-            "status": migrate_status_value(clean_lead.get("status", DEFAULT_NEW_LEAD_STATUS)),
+            "status": clean_lead.get("status") or DEFAULT_NEW_LEAD_STATUS,
             "created_by": clean_lead.get("created_by", ""),
             "created_at": clean_lead.get("created_at"),
             "updated_at": clean_lead.get("updated_at"),
@@ -1303,14 +1283,11 @@ async def get_lead_stats(
             count = item["count"]
             stats["total_leads"] += count
             
-            # Migrate status value if needed
-            migrated_status = migrate_status_value(status_val)
-            
-            # Map to stats key
-            key = migrated_status.lower().replace(" ", "_")
+           # Just use the status as-is and map to stats key
+        if status_val:
+            key = status_val.lower().replace(" ", "_")
             if key in stats:
                 stats[key] += count
-        
         # Calculate additional stats
         if user_role != "admin":
             stats["my_leads"] = stats["total_leads"]
@@ -2125,155 +2102,6 @@ async def sync_user_arrays(
 # MIGRATION AND ANALYSIS ENDPOINTS
 # ============================================================================
 
-@router.post("/admin/migrate-all-statuses")
-async def migrate_all_lead_statuses(
-    current_user: Dict[str, Any] = Depends(get_admin_user)
-):
-    """Admin endpoint to migrate all lead statuses from old to new values"""
-    try:
-        logger.info(f"Admin migration requested by: {current_user.get('email')}")
-        db = get_database()
-        
-        total_updated = 0
-        migration_details = []
-        
-        # Migrate each old status to new status
-        for old_status, new_status in OLD_TO_NEW_STATUS_MAPPING.items():
-            count = await db.leads.count_documents({"status": old_status})
-            
-            if count > 0:
-                result = await db.leads.update_many(
-                    {"status": old_status},
-                    {
-                        "$set": {
-                            "status": new_status,
-                            "status_migration_date": datetime.utcnow(),
-                            "previous_status": old_status
-                        }
-                    }
-                )
-                
-                updated_count = result.modified_count
-                total_updated += updated_count
-                
-                migration_details.append({
-                    "old_status": old_status,
-                    "new_status": new_status,
-                    "leads_found": count,
-                    "leads_updated": updated_count
-                })
-                
-                logger.info(f"Migrated {updated_count} leads: '{old_status}' → '{new_status}'")
-        
-        # Ensure required fields for multi-assignment
-        field_fixes = 0
-        
-        # Add missing multi-assignment fields
-        missing_multi_fields = await db.leads.count_documents({
-            "$or": [
-                {"co_assignees": {"$exists": False}},
-                {"is_multi_assigned": {"$exists": False}}
-            ]
-        })
-        
-        if missing_multi_fields > 0:
-            await db.leads.update_many(
-                {
-                    "$or": [
-                        {"co_assignees": {"$exists": False}},
-                        {"is_multi_assigned": {"$exists": False}}
-                    ]
-                },
-                {
-                    "$set": {
-                        "co_assignees": [],
-                        "co_assignees_names": [],
-                        "is_multi_assigned": False
-                    }
-                }
-            )
-            field_fixes += missing_multi_fields
-        
-        return {
-            "success": True,
-            "message": f"Enhanced migration completed successfully",
-            "summary": {
-                "status_migrations": total_updated,
-                "multi_assignment_field_fixes": field_fixes,
-                "total_changes": total_updated + field_fixes
-            },
-            "migration_details": migration_details
-        }
-        
-    except Exception as e:
-        logger.error(f"Admin migration error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to migrate lead statuses: {str(e)}"
-        )
-
-@router.get("/admin/status-analysis")
-async def analyze_lead_statuses(
-    current_user: Dict[str, Any] = Depends(get_admin_user)
-):
-    """Analyze current status values and multi-assignment usage in the database"""
-    try:
-        db = get_database()
-        
-        # Get status distribution
-        status_pipeline = [
-            {"$group": {"_id": "$status", "count": {"$sum": 1}}},
-            {"$sort": {"count": -1}}
-        ]
-        
-        status_results = await db.leads.aggregate(status_pipeline).to_list(None)
-        
-        valid_statuses = []
-        invalid_statuses = []
-        
-        for item in status_results:
-            status_value = item["_id"]
-            count = item["count"]
-            
-            if status_value in VALID_NEW_STATUSES:
-                valid_statuses.append({"status": status_value, "count": count, "valid": True})
-            else:
-                mapped_to = OLD_TO_NEW_STATUS_MAPPING.get(status_value, DEFAULT_NEW_LEAD_STATUS)
-                invalid_statuses.append({
-                    "status": status_value, 
-                    "count": count, 
-                    "valid": False,
-                    "will_migrate_to": mapped_to
-                })
-        
-        # Multi-assignment analysis
-        multi_assignment_stats = {
-            "total_leads": await db.leads.count_documents({}),
-            "single_assigned": await db.leads.count_documents({"assigned_to": {"$ne": None}, "is_multi_assigned": {"$ne": True}}),
-            "multi_assigned": await db.leads.count_documents({"is_multi_assigned": True}),
-            "unassigned": await db.leads.count_documents({"assigned_to": None})
-        }
-        
-        return {
-            "success": True,
-            "analysis": {
-                "statuses": {
-                    "valid": valid_statuses,
-                    "invalid": invalid_statuses,
-                    "needs_migration": len(invalid_statuses) > 0
-                },
-                "multi_assignment": multi_assignment_stats,
-                "default_new_lead_status": DEFAULT_NEW_LEAD_STATUS,
-                "total_valid_statuses": len(VALID_NEW_STATUSES)
-            }
-        }
-        
-    except Exception as e:
-        logger.error(f"Status analysis error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to analyze statuses: {str(e)}"
-        )
 
 # ============================================================================
 # ADDITIONAL UTILITY ENDPOINTS
