@@ -1,4 +1,3 @@
-
 # app/services/lead_service.py - Complete Updated with Selective Round Robin & Multi-Assignment
 
 from typing import Dict, Any, Optional, List
@@ -48,10 +47,19 @@ class LeadService:
         db = self.get_db()
         
         try:
-            # Step 1: Generate lead ID
-            lead_id = await self._generate_lead_id()
+            # Step 1: Check for duplicates
+            duplicate_check = await self.check_duplicate_lead(basic_info.email)
+            if duplicate_check["is_duplicate"]:
+                return {
+                    "success": False,
+                    "message": "Lead with this email already exists",
+                    "duplicate_check": duplicate_check
+                }
             
-            # Step 2: Handle assignment with selective round robin
+            # Step 2: Generate category-based lead ID
+            lead_id = await self.generate_lead_id_by_category(basic_info.category)
+            
+            # Step 3: Handle assignment with selective round robin
             assigned_to = assignment_info.assigned_to if assignment_info else None
             assigned_to_name = None
             assignment_method = "manual" if assigned_to else "round_robin"
@@ -78,7 +86,7 @@ class LeadService:
                     if not assigned_to_name:
                         assigned_to_name = assignee.get('email', 'Unknown')
             
-            # Step 3: Create lead document with new multi-assignment fields
+            # Step 4: Create lead document with new multi-assignment fields
             lead_doc = {
                 "lead_id": lead_id,
                 "status": status_and_tags.status if hasattr(status_and_tags, 'status') else "New",
@@ -130,22 +138,46 @@ class LeadService:
                 "updated_at": datetime.utcnow()
             }
             
-            # Step 4: Insert lead
+            # Step 5: Insert lead
             result = await db.leads.insert_one(lead_doc)
             
             if result.inserted_id:
-                # Step 5: Update user array if assigned
+                # Step 6: Update user array if assigned
                 if assigned_to:
                     await user_lead_array_service.add_lead_to_user_array(assigned_to, lead_id)
+                
+                # Step 7: Log activity
+                await self.log_lead_activity(
+                    lead_id=lead_id,
+                    activity_type="lead_created",
+                    description=f"Lead created with ID: {lead_id}",
+                    created_by=created_by,
+                    metadata={
+                        "category": basic_info.category,
+                        "source": basic_info.source,
+                        "assigned_to": assigned_to,
+                        "assignment_method": assignment_method,
+                        "selected_users_pool": selected_user_emails,
+                        "has_age": basic_info.age is not None,
+                        "has_experience": basic_info.experience is not None,
+                        "has_nationality": basic_info.nationality is not None
+                    }
+                )
                 
                 logger.info(f"Lead {lead_id} created and assigned to {assigned_to} using {assignment_method}")
                 
                 return {
                     "success": True,
+                    "message": f"Lead created successfully with ID: {lead_id}",
+                    "lead": self.format_lead_response(lead_doc),
                     "lead_id": lead_id,
                     "assigned_to": assigned_to,
                     "assignment_method": assignment_method,
-                    "selected_users_pool": selected_user_emails
+                    "selected_users_pool": selected_user_emails,
+                    "duplicate_check": {
+                        "is_duplicate": False,
+                        "checked": True
+                    }
                 }
             else:
                 return {"success": False, "error": "Failed to create lead"}
@@ -183,8 +215,8 @@ class LeadService:
             
             for i, lead_data in enumerate(leads_data):
                 try:
-                    # Generate lead ID
-                    lead_id = await self._generate_lead_id()
+                    # Generate category-based lead ID
+                    lead_id = await self.generate_lead_id_by_category(lead_data.get("category", "General"))
                     
                     # Get next assignee based on method
                     if assignment_method == "selected_users" and selected_user_emails:
@@ -752,8 +784,276 @@ class LeadService:
         except Exception as e:
             logger.error(f"Error logging activity: {str(e)}")
     
+    # ============================================================================
+    # 🔧 ADDITIONAL UTILITY METHODS
+    # ============================================================================
+    
+    async def get_lead_by_id(self, lead_id: str) -> Optional[Dict[str, Any]]:
+        """Get a single lead by ID"""
+        try:
+            db = self.get_db()
+            lead = await db.leads.find_one({"lead_id": lead_id})
+            
+            if lead:
+                # Convert ObjectId to string
+                if "_id" in lead:
+                    lead["_id"] = str(lead["_id"])
+                return lead
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting lead {lead_id}: {str(e)}")
+            return None
+    
+    async def update_lead(
+        self,
+        lead_id: str,
+        update_data: Dict[str, Any],
+        updated_by: str
+    ) -> Dict[str, Any]:
+        """Update a lead with activity logging"""
+        try:
+            db = self.get_db()
+            
+            # Add updated timestamp
+            update_data["updated_at"] = datetime.utcnow()
+            
+            # Update the lead
+            result = await db.leads.update_one(
+                {"lead_id": lead_id},
+                {"$set": update_data}
+            )
+            
+            if result.modified_count > 0:
+                # Log activity
+                await self.log_lead_activity(
+                    lead_id=lead_id,
+                    activity_type="lead_updated",
+                    description="Lead information updated",
+                    created_by=updated_by,
+                    metadata={"updated_fields": list(update_data.keys())}
+                )
+                
+                # Get updated lead
+                updated_lead = await db.leads.find_one({"lead_id": lead_id})
+                if updated_lead and "_id" in updated_lead:
+                    updated_lead["_id"] = str(updated_lead["_id"])
+                
+                return {
+                    "success": True,
+                    "lead": updated_lead,
+                    "message": "Lead updated successfully"
+                }
+            else:
+                return {
+                    "success": False,
+                    "message": "Lead not found or no changes made"
+                }
+                
+        except Exception as e:
+            logger.error(f"Error updating lead {lead_id}: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    async def delete_lead(self, lead_id: str, deleted_by: str) -> Dict[str, Any]:
+        """Delete a lead with activity logging"""
+        try:
+            db = self.get_db()
+            
+            # Get lead first for logging
+            lead = await db.leads.find_one({"lead_id": lead_id})
+            if not lead:
+                return {
+                    "success": False,
+                    "message": "Lead not found"
+                }
+            
+            # Remove from user arrays if assigned
+            if lead.get("assigned_to"):
+                await user_lead_array_service.remove_lead_from_user_array(
+                    lead.get("assigned_to"), lead_id
+                )
+            
+            # Remove from co-assignees arrays
+            for co_assignee in lead.get("co_assignees", []):
+                await user_lead_array_service.remove_lead_from_user_array(
+                    co_assignee, lead_id
+                )
+            
+            # Log activity before deletion
+            await self.log_lead_activity(
+                lead_id=lead_id,
+                activity_type="lead_deleted",
+                description=f"Lead {lead_id} deleted",
+                created_by=deleted_by,
+                metadata={
+                    "lead_name": lead.get("name"),
+                    "lead_email": lead.get("email"),
+                    "was_assigned_to": lead.get("assigned_to"),
+                    "had_co_assignees": lead.get("co_assignees", [])
+                }
+            )
+            
+            # Delete the lead
+            result = await db.leads.delete_one({"lead_id": lead_id})
+            
+            if result.deleted_count > 0:
+                return {
+                    "success": True,
+                    "message": f"Lead {lead_id} deleted successfully"
+                }
+            else:
+                return {
+                    "success": False,
+                    "message": "Failed to delete lead"
+                }
+                
+        except Exception as e:
+            logger.error(f"Error deleting lead {lead_id}: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    async def get_leads_with_filters(
+        self,
+        user_email: str,
+        user_role: str,
+        page: int = 1,
+        limit: int = 20,
+        filters: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Get leads with filtering and pagination"""
+        try:
+            db = self.get_db()
+            
+            # Build base query based on user role
+            if user_role == "admin":
+                base_query = {}
+            else:
+                # Regular users can only see assigned leads (primary or co-assignee)
+                base_query = {
+                    "$or": [
+                        {"assigned_to": user_email},
+                        {"co_assignees": user_email}
+                    ]
+                }
+            
+            # Add filters if provided
+            if filters:
+                base_query.update(filters)
+            
+            # Get total count
+            total_count = await db.leads.count_documents(base_query)
+            
+            # Get leads with pagination
+            skip = (page - 1) * limit
+            leads = await db.leads.find(base_query).skip(skip).limit(limit).sort("created_at", -1).to_list(None)
+            
+            # Format leads for response
+            formatted_leads = []
+            for lead in leads:
+                formatted_lead = self.format_lead_response(lead)
+                formatted_leads.append(formatted_lead)
+            
+            return {
+                "success": True,
+                "leads": formatted_leads,
+                "total_count": total_count,
+                "page": page,
+                "limit": limit,
+                "total_pages": (total_count + limit - 1) // limit,
+                "filters_applied": filters or {}
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting leads with filters: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e),
+                "leads": [],
+                "total_count": 0
+            }
+    
+    async def get_lead_statistics(self, user_email: str, user_role: str) -> Dict[str, Any]:
+        """Get lead statistics based on user role"""
+        try:
+            db = self.get_db()
+            
+            # Build base query based on user role
+            if user_role == "admin":
+                base_query = {}
+            else:
+                base_query = {
+                    "$or": [
+                        {"assigned_to": user_email},
+                        {"co_assignees": user_email}
+                    ]
+                }
+            
+            # Get total leads
+            total_leads = await db.leads.count_documents(base_query)
+            
+            # Get status distribution
+            status_pipeline = [
+                {"$match": base_query},
+                {
+                    "$group": {
+                        "_id": "$status",
+                        "count": {"$sum": 1}
+                    }
+                }
+            ]
+            status_distribution = await db.leads.aggregate(status_pipeline).to_list(None)
+            
+            # Get source distribution
+            source_pipeline = [
+                {"$match": base_query},
+                {
+                    "$group": {
+                        "_id": "$source",
+                        "count": {"$sum": 1}
+                    }
+                }
+            ]
+            source_distribution = await db.leads.aggregate(source_pipeline).to_list(None)
+            
+            # Get assignment statistics (admin only)
+            assignment_stats = {}
+            if user_role == "admin":
+                # Get multi-assignment stats
+                multi_assigned_count = await db.leads.count_documents({"is_multi_assigned": True})
+                single_assigned_count = await db.leads.count_documents({
+                    "assigned_to": {"$ne": None},
+                    "is_multi_assigned": {"$ne": True}
+                })
+                unassigned_count = await db.leads.count_documents({"assigned_to": None})
+                
+                assignment_stats = {
+                    "multi_assigned": multi_assigned_count,
+                    "single_assigned": single_assigned_count,
+                    "unassigned": unassigned_count
+                }
+            
+            return {
+                "total_leads": total_leads,
+                "status_distribution": status_distribution,
+                "source_distribution": source_distribution,
+                "assignment_statistics": assignment_stats,
+                "user_role": user_role
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting lead statistics: {str(e)}")
+            return {"error": str(e)}
+    
     def format_lead_response(self, lead_doc: Dict[str, Any]) -> Dict[str, Any]:
-        """Format lead document for response with new fields"""
+        """Format lead document for response with new fields and multi-assignment support"""
+        if not lead_doc:
+            return None
+            
         return {
             "id": str(lead_doc.get("_id", "")),
             "lead_id": lead_doc.get("lead_id", ""),
@@ -764,7 +1064,7 @@ class LeadService:
             "source": lead_doc.get("source", "website"),
             "category": lead_doc.get("category", ""),
             
-            # 🆕 NEW: Include new fields in response
+            # 🆕 NEW: Include new optional fields in response
             "age": lead_doc.get("age"),
             "experience": lead_doc.get("experience"),
             "nationality": lead_doc.get("nationality"),
@@ -774,20 +1074,100 @@ class LeadService:
             "lead_score": lead_doc.get("lead_score", 0),
             "priority": lead_doc.get("priority", "medium"),
             "tags": lead_doc.get("tags", []),
+            
+            # Assignment fields (single and multi)
             "assigned_to": lead_doc.get("assigned_to"),
             "assigned_to_name": lead_doc.get("assigned_to_name"),
             "assignment_method": lead_doc.get("assignment_method"),
+            
+            # 🆕 NEW: Multi-assignment fields
+            "co_assignees": lead_doc.get("co_assignees", []),
+            "co_assignees_names": lead_doc.get("co_assignees_names", []),
+            "is_multi_assigned": lead_doc.get("is_multi_assigned", False),
+            
             "assignment_history": lead_doc.get("assignment_history", []),
-            "notes": lead_doc.get("notes"),
+            "notes": lead_doc.get("notes", ""),
             "created_by": lead_doc.get("created_by", ""),
             "created_at": lead_doc.get("created_at"),
             "updated_at": lead_doc.get("updated_at"),
             "last_contacted": lead_doc.get("last_contacted"),
             
-            # Legacy fields
+            # Legacy fields for backward compatibility
             "country_of_interest": lead_doc.get("country_of_interest", ""),
             "course_level": lead_doc.get("course_level")
         }
+    
+    # ============================================================================
+    # 🔍 SEARCH AND FILTERING METHODS
+    # ============================================================================
+    
+    async def search_leads(
+        self,
+        search_term: str,
+        user_email: str,
+        user_role: str,
+        page: int = 1,
+        limit: int = 20
+    ) -> Dict[str, Any]:
+        """Search leads by name, email, or lead ID"""
+        try:
+            db = self.get_db()
+            
+            # Build search query
+            search_query = {
+                "$or": [
+                    {"name": {"$regex": search_term, "$options": "i"}},
+                    {"email": {"$regex": search_term, "$options": "i"}},
+                    {"lead_id": {"$regex": search_term, "$options": "i"}},
+                    {"contact_number": {"$regex": search_term, "$options": "i"}}
+                ]
+            }
+            
+            # Add role-based filtering
+            if user_role != "admin":
+                search_query = {
+                    "$and": [
+                        search_query,
+                        {
+                            "$or": [
+                                {"assigned_to": user_email},
+                                {"co_assignees": user_email}
+                            ]
+                        }
+                    ]
+                }
+            
+            # Get total count
+            total_count = await db.leads.count_documents(search_query)
+            
+            # Get leads with pagination
+            skip = (page - 1) * limit
+            leads = await db.leads.find(search_query).skip(skip).limit(limit).sort("created_at", -1).to_list(None)
+            
+            # Format leads for response
+            formatted_leads = []
+            for lead in leads:
+                formatted_lead = self.format_lead_response(lead)
+                formatted_leads.append(formatted_lead)
+            
+            return {
+                "success": True,
+                "leads": formatted_leads,
+                "total_count": total_count,
+                "page": page,
+                "limit": limit,
+                "total_pages": (total_count + limit - 1) // limit,
+                "search_term": search_term
+            }
+            
+        except Exception as e:
+            logger.error(f"Error searching leads: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e),
+                "leads": [],
+                "total_count": 0
+            }
 
 # Global service instance
 lead_service = LeadService()

@@ -1,4 +1,4 @@
-# app/config/settings.py - Cleaned version without Smartflo/TATA integration
+# app/config/settings.py - Updated with WhatsApp configuration
 from pydantic_settings import BaseSettings
 from typing import List
 import secrets
@@ -32,6 +32,15 @@ class Settings(BaseSettings):
     mongodb_server_selection_timeout_ms: int = 5000
     mongodb_connect_timeout_ms: int = 10000
     mongodb_socket_timeout_ms: int = 10000
+    
+    # WhatsApp Business API Configuration
+    whatsapp_base_url: str = "https://wa.mydreamstechnology.in/api"
+    whatsapp_license_number: str = ""
+    whatsapp_api_key: str = ""
+    
+    # CMS Configuration
+    cms_base_url: str = "https://cms.skillang.com/api"
+    cms_templates_endpoint: str = "whatsapp-templates"
     
     # Rate Limiting
     rate_limit_requests: int = 100
@@ -92,6 +101,20 @@ class Settings(BaseSettings):
             self.mongodb_max_idle_time_ms = int(os.getenv("MONGODB_MAX_IDLE_TIME_MS"))
         if os.getenv("MONGODB_SERVER_SELECTION_TIMEOUT_MS"):
             self.mongodb_server_selection_timeout_ms = int(os.getenv("MONGODB_SERVER_SELECTION_TIMEOUT_MS"))
+        
+        # WhatsApp configuration
+        if os.getenv("WHATSAPP_BASE_URL"):
+            self.whatsapp_base_url = os.getenv("WHATSAPP_BASE_URL")
+        if os.getenv("WHATSAPP_LICENSE_NUMBER"):
+            self.whatsapp_license_number = os.getenv("WHATSAPP_LICENSE_NUMBER")
+        if os.getenv("WHATSAPP_API_KEY"):
+            self.whatsapp_api_key = os.getenv("WHATSAPP_API_KEY")
+        
+        # CMS configuration
+        if os.getenv("CMS_BASE_URL"):
+            self.cms_base_url = os.getenv("CMS_BASE_URL")
+        if os.getenv("CMS_TEMPLATES_ENDPOINT"):
+            self.cms_templates_endpoint = os.getenv("CMS_TEMPLATES_ENDPOINT")
         
         # Email configuration
         if os.getenv("SMTP_HOST"):
@@ -176,6 +199,25 @@ class Settings(BaseSettings):
     def is_email_configured(self) -> bool:
         """Check if email is properly configured"""
         return bool(self.smtp_username) and bool(self.smtp_password)
+    
+    def is_whatsapp_configured(self) -> bool:
+        """Check if WhatsApp is properly configured"""
+        return bool(self.whatsapp_license_number) and bool(self.whatsapp_api_key)
+    
+    def get_whatsapp_config(self) -> dict:
+        """Get WhatsApp configuration dictionary"""
+        return {
+            "base_url": self.whatsapp_base_url,
+            "license_number": self.whatsapp_license_number,
+            "api_key": self.whatsapp_api_key
+        }
+    
+    def get_cms_config(self) -> dict:
+        """Get CMS configuration dictionary"""
+        return {
+            "base_url": self.cms_base_url,
+            "templates_endpoint": self.cms_templates_endpoint
+        }
 
 # Global settings instance
 settings = Settings()

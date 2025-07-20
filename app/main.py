@@ -7,7 +7,7 @@ import time
 
 from .config.settings import settings
 from .config.database import connect_to_mongo, close_mongo_connection
-from .routers import auth, leads, tasks, notes, documents, timeline, contacts, lead_categories, stages, statuses  # Added statuses
+from .routers import auth, leads, tasks, notes, documents, timeline, contacts, lead_categories, stages, statuses ,whatsapp   # Added statuses
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -99,21 +99,19 @@ async def add_process_time_header(request: Request, call_next):
     except Exception as e:
         logger.error(f"Request failed: {request.method} {request.url} - Error: {str(e)}", exc_info=True)
         raise
-
-# Health check endpoint
+# Update health check (line ~88)
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
     return {
         "status": "healthy",
         "message": "LeadG CRM API is running",
         "version": settings.version,
-        "modules": ["auth", "leads", "tasks", "notes", "documents", "timeline", "contacts", "stages", "statuses"]  # Added statuses
+        "modules": ["auth", "leads", "tasks", "notes", "documents", "timeline", "contacts", "stages", "statuses", "whatsapp"]  # Add whatsapp
     }
 
+# Update root endpoint (line ~98)
 @app.get("/")
 async def root():
-    """Root endpoint"""
     return {
         "message": "Welcome to LeadG CRM API",
         "version": settings.version,
@@ -126,13 +124,13 @@ async def root():
             "documents": "/documents",
             "timeline": "",
             "contacts": "/contacts",
-            "stages": "/stages",  # Added stages
-            "statuses": "/statuses",  # Added statuses
+            "stages": "/stages",
+            "statuses": "/statuses",
             "lead-categories": "/lead-categories",
+            "whatsapp": "/api/v1/whatsapp",  # Add whatsapp
             "health": "/health"
         }
     }
-
 # Include routers with specific prefixes
 app.include_router(
     auth.router,
@@ -194,6 +192,12 @@ app.include_router(
     statuses.router,
     prefix="/statuses",
     tags=["Statuses"]
+)
+
+app.include_router(
+    whatsapp.router,
+    prefix="/whatsapp",  # Add prefix here like others
+    tags=["WhatsApp"]
 )
 
 if __name__ == "__main__":
