@@ -1,4 +1,4 @@
-# app/services/lead_service.py - Complete Updated with Selective Round Robin & Multi-Assignment
+# app/services/lead_service.py - UPDATED with Dynamic Course Levels & Sources Validation
 
 from typing import Dict, Any, Optional, List
 from datetime import datetime
@@ -7,15 +7,18 @@ import logging
 
 from ..config.database import get_database
 from ..models.lead import (
-    LeadCreateComprehensive, ExperienceLevel, LeadSource, CourseLevel
+    LeadCreateComprehensive, ExperienceLevel
 )
+# 🆕 NEW: Import dynamic helpers
+from ..models.course_level import CourseLevelHelper
+from ..models.source import SourceHelper
 from .lead_assignment_service import lead_assignment_service
 from .user_lead_array_service import user_lead_array_service
 
 logger = logging.getLogger(__name__)
 
 class LeadService:
-    """Service for lead-related operations with enhanced assignment features"""
+    """Service for lead-related operations with enhanced assignment features and dynamic validation"""
     
     def __init__(self):
         pass
@@ -25,7 +28,270 @@ class LeadService:
         return get_database()
     
     # ============================================================================
-    # 🆕 NEW: ENHANCED LEAD CREATION WITH SELECTIVE ROUND ROBIN
+    # 🆕 NEW: DYNAMIC FIELD VALIDATION FUNCTIONS
+    # ============================================================================
+    
+    async def validate_and_set_course_level(self, course_level: Optional[str]) -> Optional[str]:
+        """Validate and set course level for lead creation"""
+        try:
+            if not course_level:
+                # Get default course level if none provided
+                default_course_level = await CourseLevelHelper.get_default_course_level()
+                if default_course_level:
+                    logger.info(f"No course level provided, using default: {default_course_level}")
+                    return default_course_level
+                else:
+                    logger.warning("No course level provided and no default course level exists - admin must create course levels")
+                    return None
+            
+            # Validate provided course level exists and is active
+            db = self.get_db()
+            
+            course_level_doc = await db.course_levels.find_one({
+                "name": course_level,
+                "is_active": True
+            })
+            
+            if not course_level_doc:
+                logger.warning(f"Invalid course level '{course_level}', checking for default")
+                default_course_level = await CourseLevelHelper.get_default_course_level()
+                if default_course_level:
+                    logger.info(f"Using default course level: {default_course_level}")
+                    return default_course_level
+                else:
+                    logger.warning("No valid course level found and no default exists")
+                    return None
+            
+            logger.info(f"Using provided course level: {course_level}")
+            return course_level
+            
+        except Exception as e:
+            logger.error(f"Error validating course level: {e}")
+            # Try to get default as fallback
+            try:
+                default_course_level = await CourseLevelHelper.get_default_course_level()
+                return default_course_level
+            except:
+                return None
+
+    async def validate_and_set_source(self, source: Optional[str]) -> Optional[str]:
+        """Validate and set source for lead creation"""
+        try:
+            if not source:
+                # Get default source if none provided
+                default_source = await SourceHelper.get_default_source()
+                if default_source:
+                    logger.info(f"No source provided, using default: {default_source}")
+                    return default_source
+                else:
+                    logger.warning("No source provided and no default source exists - admin must create sources")
+                    return None
+            
+            # Validate provided source exists and is active
+            db = self.get_db()
+            
+            source_doc = await db.sources.find_one({
+                "name": source,
+                "is_active": True
+            })
+            
+            if not source_doc:
+                logger.warning(f"Invalid source '{source}', checking for default")
+                default_source = await SourceHelper.get_default_source()
+                if default_source:
+                    logger.info(f"Using default source: {default_source}")
+                    return default_source
+                else:
+                    logger.warning("No valid source found and no default exists")
+                    return None
+            
+            logger.info(f"Using provided source: {source}")
+            return source
+            
+        except Exception as e:
+            logger.error(f"Error validating source: {e}")
+            # Try to get default as fallback
+            try:
+                default_source = await SourceHelper.get_default_source()
+                return default_source
+            except:
+                return None
+
+    async def validate_required_dynamic_fields(self) -> Dict[str, Any]:
+        """Check if required dynamic fields (course levels and sources) exist"""
+        try:
+            db = self.get_db()
+            
+            # Check if any active course levels exist
+            course_levels_count = await db.course_levels.count_documents({"is_active": True})
+            
+            # Check if any active sources exist
+            sources_count = await db.sources.count_documents({"is_active": True})
+            
+            validation_result = {
+                "course_levels_exist": course_levels_count > 0,
+                "sources_exist": sources_count > 0,
+                "course_levels_count": course_levels_count,
+                "sources_count": sources_count,
+                "can_create_leads": course_levels_count > 0 and sources_count > 0
+            }
+            
+            if not validation_result["can_create_leads"]:
+                missing_fields = []
+                if course_levels_count == 0:
+                    missing_fields.append("course_levels")
+                if sources_count == 0:
+                    missing_fields.append("sources")
+                
+                validation_result["error_message"] = f"Cannot create leads: Admin must create {' and '.join(missing_fields)} first"
+            
+            return validation_result
+            
+        except Exception as e:
+            logger.error(f"Error validating dynamic fields: {e}")
+            return {
+                "course_levels_exist": False,
+                "sources_exist": False,
+                "can_create_leads": False,
+                "error_message": f"Error validating required fields: {str(e)}"
+            }
+
+    async def get_course_level_statistics(self) -> Dict[str, int]:
+        """Get statistics of leads by course level"""
+        try:
+            db = self.get_db()
+            
+            # Aggregate leads by course level
+            pipeline = [
+                {"$group": {
+                    "_id": "$course_level",
+                    "count": {"$sum": 1}
+                }},
+                {"$sort": {"count": -1}}
+            ]
+            
+            results = await db.leads.aggregate(pipeline).to_list(None)
+            
+            # Convert to dictionary
+            course_level_stats = {}
+            for result in results:
+                course_level_name = result["_id"] or "unspecified"
+                course_level_stats[course_level_name] = result["count"]
+            
+            return course_level_stats
+            
+        except Exception as e:
+            logger.error(f"Error getting course level statistics: {e}")
+            return {}
+
+    async def get_source_statistics(self) -> Dict[str, int]:
+        """Get statistics of leads by source"""
+        try:
+            db = self.get_db()
+            
+            # Aggregate leads by source
+            pipeline = [
+                {"$group": {
+                    "_id": "$source",
+                    "count": {"$sum": 1}
+                }},
+                {"$sort": {"count": -1}}
+            ]
+            
+            results = await db.leads.aggregate(pipeline).to_list(None)
+            
+            # Convert to dictionary
+            source_stats = {}
+            for result in results:
+                source_name = result["_id"] or "unspecified"
+                source_stats[source_name] = result["count"]
+            
+            return source_stats
+            
+        except Exception as e:
+            logger.error(f"Error getting source statistics: {e}")
+            return {}
+
+    async def bulk_update_course_level(self, old_course_level: str, new_course_level: str, updated_by: str) -> Dict[str, Any]:
+        """Update all leads from old course level to new course level"""
+        try:
+            db = self.get_db()
+            
+            # Validate new course level exists and is active
+            new_course_level_doc = await db.course_levels.find_one({
+                "name": new_course_level,
+                "is_active": True
+            })
+            
+            if not new_course_level_doc:
+                raise ValueError(f"New course level '{new_course_level}' does not exist or is not active")
+            
+            # Update all leads with old course level
+            result = await db.leads.update_many(
+                {"course_level": old_course_level},
+                {
+                    "$set": {
+                        "course_level": new_course_level,
+                        "updated_at": datetime.utcnow()
+                    }
+                }
+            )
+            
+            logger.info(f"Updated {result.modified_count} leads from course level '{old_course_level}' to '{new_course_level}' by {updated_by}")
+            
+            return {
+                "success": True,
+                "message": f"Successfully updated {result.modified_count} leads",
+                "updated_count": result.modified_count,
+                "old_course_level": old_course_level,
+                "new_course_level": new_course_level
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in bulk course level update: {e}")
+            raise Exception(f"Failed to bulk update course level: {str(e)}")
+
+    async def bulk_update_source(self, old_source: str, new_source: str, updated_by: str) -> Dict[str, Any]:
+        """Update all leads from old source to new source"""
+        try:
+            db = self.get_db()
+            
+            # Validate new source exists and is active
+            new_source_doc = await db.sources.find_one({
+                "name": new_source,
+                "is_active": True
+            })
+            
+            if not new_source_doc:
+                raise ValueError(f"New source '{new_source}' does not exist or is not active")
+            
+            # Update all leads with old source
+            result = await db.leads.update_many(
+                {"source": old_source},
+                {
+                    "$set": {
+                        "source": new_source,
+                        "updated_at": datetime.utcnow()
+                    }
+                }
+            )
+            
+            logger.info(f"Updated {result.modified_count} leads from source '{old_source}' to '{new_source}' by {updated_by}")
+            
+            return {
+                "success": True,
+                "message": f"Successfully updated {result.modified_count} leads",
+                "updated_count": result.modified_count,
+                "old_source": old_source,
+                "new_source": new_source
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in bulk source update: {e}")
+            raise Exception(f"Failed to bulk update source: {str(e)}")
+    
+    # ============================================================================
+    # 🆕 NEW: ENHANCED LEAD CREATION WITH DYNAMIC VALIDATION
     # ============================================================================
     
     async def create_lead_with_selective_assignment(
@@ -38,15 +304,20 @@ class LeadService:
         selected_user_emails: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
-        Create lead with selective round robin assignment
-        
-        Args:
-            selected_user_emails: If provided, round robin will only use these users
-            Other params: Same as existing create_lead method
+        Create lead with selective round robin assignment and dynamic validation
         """
         db = self.get_db()
         
         try:
+            # 🆕 NEW: Validate dynamic fields first
+            field_validation = await self.validate_required_dynamic_fields()
+            if not field_validation["can_create_leads"]:
+                return {
+                    "success": False,
+                    "message": field_validation["error_message"],
+                    "validation_error": field_validation
+                }
+            
             # Step 1: Check for duplicates
             duplicate_check = await self.check_duplicate_lead(basic_info.email)
             if duplicate_check["is_duplicate"]:
@@ -56,10 +327,18 @@ class LeadService:
                     "duplicate_check": duplicate_check
                 }
             
-            # Step 2: Generate category-based lead ID
+            # Step 2: Validate and set dynamic fields
+            validated_course_level = await self.validate_and_set_course_level(
+                getattr(basic_info, 'course_level', None)
+            )
+            validated_source = await self.validate_and_set_source(
+                getattr(basic_info, 'source', None)
+            )
+            
+            # Step 3: Generate category-based lead ID
             lead_id = await self.generate_lead_id_by_category(basic_info.category)
             
-            # Step 3: Handle assignment with selective round robin
+            # Step 4: Handle assignment with selective round robin
             assigned_to = assignment_info.assigned_to if assignment_info else None
             assigned_to_name = None
             assignment_method = "manual" if assigned_to else "round_robin"
@@ -86,7 +365,7 @@ class LeadService:
                     if not assigned_to_name:
                         assigned_to_name = assignee.get('email', 'Unknown')
             
-            # Step 4: Create lead document with new multi-assignment fields
+            # Step 5: Create lead document with validated dynamic fields
             lead_doc = {
                 "lead_id": lead_id,
                 "status": status_and_tags.status if hasattr(status_and_tags, 'status') else "New",
@@ -94,8 +373,9 @@ class LeadService:
                 "email": basic_info.email.lower(),
                 "contact_number": basic_info.contact_number,
                 "phone_number": basic_info.contact_number,  # Legacy field
-                "source": basic_info.source,
+                "source": validated_source,  # 🔄 UPDATED: Use validated source
                 "category": basic_info.category,
+                "course_level": validated_course_level,  # 🔄 UPDATED: Use validated course level
                 
                 # Optional fields
                 "age": basic_info.age,
@@ -113,7 +393,7 @@ class LeadService:
                 "assigned_to_name": assigned_to_name,
                 "assignment_method": assignment_method,
                 
-                # 🆕 NEW: Multi-assignment fields
+                # Multi-assignment fields
                 "co_assignees": [],  # Initially empty, can be added later
                 "co_assignees_names": [],
                 "is_multi_assigned": False,
@@ -138,15 +418,15 @@ class LeadService:
                 "updated_at": datetime.utcnow()
             }
             
-            # Step 5: Insert lead
+            # Step 6: Insert lead
             result = await db.leads.insert_one(lead_doc)
             
             if result.inserted_id:
-                # Step 6: Update user array if assigned
+                # Step 7: Update user array if assigned
                 if assigned_to:
                     await user_lead_array_service.add_lead_to_user_array(assigned_to, lead_id)
                 
-                # Step 7: Log activity
+                # Step 8: Log activity
                 await self.log_lead_activity(
                     lead_id=lead_id,
                     activity_type="lead_created",
@@ -154,7 +434,8 @@ class LeadService:
                     created_by=created_by,
                     metadata={
                         "category": basic_info.category,
-                        "source": basic_info.source,
+                        "source": validated_source,
+                        "course_level": validated_course_level,
                         "assigned_to": assigned_to,
                         "assignment_method": assignment_method,
                         "selected_users_pool": selected_user_emails,
@@ -174,6 +455,10 @@ class LeadService:
                     "assigned_to": assigned_to,
                     "assignment_method": assignment_method,
                     "selected_users_pool": selected_user_emails,
+                    "validated_fields": {
+                        "course_level": validated_course_level,
+                        "source": validated_source
+                    },
                     "duplicate_check": {
                         "is_duplicate": False,
                         "checked": True
@@ -187,7 +472,190 @@ class LeadService:
             return {"success": False, "error": str(e)}
     
     # ============================================================================
-    # 🆕 NEW: BULK LEAD CREATION WITH SELECTIVE ROUND ROBIN
+    # 🔄 UPDATED: ENHANCED LEAD CREATION WITH DYNAMIC VALIDATION
+    # ============================================================================
+    
+    async def create_lead_comprehensive(
+        self,
+        lead_data: LeadCreateComprehensive,
+        created_by: str,
+        force_create: bool = False
+    ) -> Dict[str, Any]:
+        """
+        UPDATED: Original comprehensive create method now includes dynamic validation
+        """
+        try:
+            db = self.get_db()
+            
+            # 🆕 NEW: Validate dynamic fields first
+            field_validation = await self.validate_required_dynamic_fields()
+            if not field_validation["can_create_leads"]:
+                return {
+                    "success": False,
+                    "message": field_validation["error_message"],
+                    "validation_error": field_validation
+                }
+            
+            # Step 1: Extract basic info including new fields
+            basic_info = lead_data.basic_info
+            status_and_tags = lead_data.status_and_tags or type('obj', (object,), {})()
+            assignment = lead_data.assignment or type('obj', (object,), {})()
+            additional_info = lead_data.additional_info or type('obj', (object,), {})()
+            
+            logger.info(f"Creating lead with new fields: age={basic_info.age}, experience={basic_info.experience}, nationality={basic_info.nationality}")
+            
+            # Step 2: Check for duplicates
+            if not force_create:
+                duplicate_check = await self.check_duplicate_lead(basic_info.email)
+                if duplicate_check["is_duplicate"]:
+                    return {
+                        "success": False,
+                        "message": "Lead with this email already exists",
+                        "duplicate_check": duplicate_check
+                    }
+            
+            # 🆕 NEW: Step 3: Validate and set dynamic fields
+            validated_course_level = await self.validate_and_set_course_level(
+                getattr(basic_info, 'course_level', None)
+            )
+            validated_source = await self.validate_and_set_source(
+                getattr(basic_info, 'source', None)
+            )
+            
+            # Step 4: Generate category-based lead ID
+            lead_id = await self.generate_lead_id_by_category(basic_info.category)
+            
+            # Step 5: Handle assignment
+            assigned_to = assignment.assigned_to if hasattr(assignment, 'assigned_to') else None
+            assigned_to_name = None
+            assignment_method = "manual" if assigned_to else "round_robin"
+            
+            if not assigned_to:
+                # Auto-assign using round-robin
+                assigned_to = await lead_assignment_service.get_next_assignee_round_robin()
+                assignment_method = "round_robin"
+                logger.info(f"Auto-assigned to: {assigned_to}")
+            
+            # Get assignee name
+            if assigned_to:
+                assignee = await db.users.find_one({"email": assigned_to})
+                if assignee:
+                    assigned_to_name = f"{assignee.get('first_name', '')} {assignee.get('last_name', '')}".strip()
+                    if not assigned_to_name:
+                        assigned_to_name = assignee.get('email', 'Unknown')
+            
+            # Step 6: Create lead document with validated dynamic fields
+            lead_doc = {
+                "lead_id": lead_id,
+                "status": getattr(status_and_tags, 'status', 'New'),
+                "name": basic_info.name,
+                "email": basic_info.email.lower(),
+                "contact_number": basic_info.contact_number,
+                "phone_number": basic_info.contact_number,  # Legacy field
+                "source": validated_source,  # 🔄 UPDATED: Use validated source
+                "category": basic_info.category,
+                "course_level": validated_course_level,  # 🔄 UPDATED: Use validated course level
+                
+                # Add the new optional fields
+                "age": basic_info.age,
+                "experience": basic_info.experience,
+                "nationality": basic_info.nationality,
+                
+                # Status and tags
+                "stage": getattr(status_and_tags, 'stage', 'Pending'),
+                "lead_score": getattr(status_and_tags, 'lead_score', 0),
+                "priority": "medium",
+                "tags": getattr(status_and_tags, 'tags', []),
+                
+                # Assignment
+                "assigned_to": assigned_to,
+                "assigned_to_name": assigned_to_name,
+                "assignment_method": assignment_method,
+                
+                # Multi-assignment fields
+                "co_assignees": [],
+                "co_assignees_names": [],
+                "is_multi_assigned": False,
+                
+                "assignment_history": [
+                    {
+                        "assigned_to": assigned_to,
+                        "assigned_to_name": assigned_to_name,
+                        "assigned_by": created_by,
+                        "assignment_method": assignment_method,
+                        "assigned_at": datetime.utcnow(),
+                        "reason": "Initial assignment"
+                    }
+                ],
+                
+                # Additional info
+                "notes": getattr(additional_info, 'notes', ''),
+                "created_by": created_by,
+                "created_at": datetime.utcnow(),
+                "updated_at": datetime.utcnow()
+            }
+            
+            # Step 7: Insert lead
+            result = await db.leads.insert_one(lead_doc)
+            
+            if result.inserted_id:
+                # Step 8: Update user array if assigned
+                if assigned_to:
+                    await user_lead_array_service.add_lead_to_user_array(assigned_to, lead_id)
+                
+                # Step 9: Log activity
+                await self.log_lead_activity(
+                    lead_id=lead_id,
+                    activity_type="lead_created",
+                    description=f"Lead created with ID: {lead_id}",
+                    created_by=created_by,
+                    metadata={
+                        "category": basic_info.category,
+                        "source": validated_source,
+                        "course_level": validated_course_level,
+                        "assigned_to": assigned_to,
+                        "assignment_method": assignment_method,
+                        "has_age": basic_info.age is not None,
+                        "has_experience": basic_info.experience is not None,
+                        "has_nationality": basic_info.nationality is not None
+                    }
+                )
+                
+                logger.info(f"✅ Lead created successfully: {lead_id} with validated dynamic fields")
+                
+                return {
+                    "success": True,
+                    "message": f"Lead created successfully with ID: {lead_id}",
+                    "lead": self.format_lead_response(lead_doc),
+                    "assignment_info": {
+                        "assigned_to": assigned_to,
+                        "assigned_to_name": assigned_to_name,
+                        "assignment_method": assignment_method
+                    },
+                    "validated_fields": {
+                        "course_level": validated_course_level,
+                        "source": validated_source
+                    },
+                    "duplicate_check": {
+                        "is_duplicate": False,
+                        "checked": True
+                    }
+                }
+            else:
+                return {
+                    "success": False,
+                    "message": "Failed to create lead"
+                }
+            
+        except Exception as e:
+            logger.error(f"Error creating lead: {str(e)}")
+            return {
+                "success": False,
+                "message": f"Failed to create lead: {str(e)}"
+            }
+    
+    # ============================================================================
+    # 🔄 UPDATED: BULK LEAD CREATION WITH DYNAMIC VALIDATION
     # ============================================================================
     
     async def bulk_create_leads_with_selective_assignment(
@@ -198,23 +666,34 @@ class LeadService:
         selected_user_emails: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
-        Bulk create leads with selective round robin assignment
-        
-        Args:
-            leads_data: List of lead data dictionaries
-            created_by: Email of user creating leads
-            assignment_method: "all_users" or "selected_users"
-            selected_user_emails: Required if assignment_method is "selected_users"
+        Bulk create leads with selective round robin assignment and dynamic validation
         """
         db = self.get_db()
         
         try:
+            # 🆕 NEW: Validate dynamic fields first
+            field_validation = await self.validate_required_dynamic_fields()
+            if not field_validation["can_create_leads"]:
+                return {
+                    "success": False,
+                    "message": field_validation["error_message"],
+                    "validation_error": field_validation
+                }
+            
             created_leads = []
             failed_leads = []
             assignment_summary = []
             
             for i, lead_data in enumerate(leads_data):
                 try:
+                    # 🆕 NEW: Validate dynamic fields for each lead
+                    validated_course_level = await self.validate_and_set_course_level(
+                        lead_data.get("course_level")
+                    )
+                    validated_source = await self.validate_and_set_source(
+                        lead_data.get("source")
+                    )
+                    
                     # Generate category-based lead ID
                     lead_id = await self.generate_lead_id_by_category(lead_data.get("category", "General"))
                     
@@ -245,8 +724,9 @@ class LeadService:
                         "email": lead_data.get("email", "").lower(),
                         "contact_number": lead_data.get("contact_number", ""),
                         "phone_number": lead_data.get("contact_number", ""),
-                        "source": lead_data.get("source", "bulk_import"),
+                        "source": validated_source,  # 🔄 UPDATED: Use validated source
                         "category": lead_data.get("category", "General"),
+                        "course_level": validated_course_level,  # 🔄 UPDATED: Use validated course level
                         
                         # Optional fields
                         "age": lead_data.get("age"),
@@ -279,7 +759,9 @@ class LeadService:
                                 "assigned_at": datetime.utcnow(),
                                 "reason": f"Bulk creation ({assignment_method})",
                                 "bulk_index": i,
-                                "selected_users_pool": selected_user_emails if assignment_method == "selected_users" else None
+                                "selected_users_pool": selected_user_emails if assignment_method == "selected_users" else None,
+                                "validated_course_level": validated_course_level,
+                                "validated_source": validated_source
                             }
                         ],
                         
@@ -302,6 +784,8 @@ class LeadService:
                         assignment_summary.append({
                             "lead_id": lead_id,
                             "assigned_to": assigned_to,
+                            "validated_course_level": validated_course_level,
+                            "validated_source": validated_source,
                             "status": "success"
                         })
                         
@@ -356,7 +840,7 @@ class LeadService:
             }
     
     # ============================================================================
-    # 🆕 NEW: METHODS FOR QUERYING MULTI-ASSIGNED LEADS
+    # EXISTING METHODS (KEEPING ALL OTHER METHODS UNCHANGED)
     # ============================================================================
     
     async def get_leads_by_user_including_co_assignments(
@@ -366,9 +850,7 @@ class LeadService:
         limit: int = 20,
         filters: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """
-        Get all leads where user is assigned (primary or co-assignee)
-        """
+        """Get all leads where user is assigned (primary or co-assignee)"""
         db = self.get_db()
         
         try:
@@ -416,9 +898,7 @@ class LeadService:
             }
     
     async def get_multi_assigned_leads_stats(self) -> Dict[str, Any]:
-        """
-        Get statistics about multi-assigned leads
-        """
+        """Get statistics about multi-assigned leads"""
         db = self.get_db()
         
         try:
@@ -488,167 +968,6 @@ class LeadService:
             logger.error(f"Error getting multi-assignment stats: {str(e)}")
             return {"error": str(e)}
     
-    # ============================================================================
-    # EXISTING METHODS (UPDATED TO MAINTAIN COMPATIBILITY)
-    # ============================================================================
-    
-    async def create_lead_comprehensive(
-        self,
-        lead_data: LeadCreateComprehensive,
-        created_by: str,
-        force_create: bool = False
-    ) -> Dict[str, Any]:
-        """
-        UPDATED: Original comprehensive create method now uses selective assignment if needed
-        Maintains backward compatibility while supporting new features
-        """
-        try:
-            db = self.get_db()
-            
-            # Step 1: Extract basic info including new fields
-            basic_info = lead_data.basic_info
-            status_and_tags = lead_data.status_and_tags or type('obj', (object,), {})()
-            assignment = lead_data.assignment or type('obj', (object,), {})()
-            additional_info = lead_data.additional_info or type('obj', (object,), {})()
-            
-            logger.info(f"Creating lead with new fields: age={basic_info.age}, experience={basic_info.experience}, nationality={basic_info.nationality}")
-            
-            # Step 2: Check for duplicates
-            if not force_create:
-                duplicate_check = await self.check_duplicate_lead(basic_info.email)
-                if duplicate_check["is_duplicate"]:
-                    return {
-                        "success": False,
-                        "message": "Lead with this email already exists",
-                        "duplicate_check": duplicate_check
-                    }
-            
-            # Step 3: Generate category-based lead ID
-            lead_id = await self.generate_lead_id_by_category(basic_info.category)
-            
-            # Step 4: Handle assignment
-            assigned_to = assignment.assigned_to if hasattr(assignment, 'assigned_to') else None
-            assigned_to_name = None
-            assignment_method = "manual" if assigned_to else "round_robin"
-            
-            if not assigned_to:
-                # Auto-assign using round-robin
-                assigned_to = await lead_assignment_service.get_next_assignee_round_robin()
-                assignment_method = "round_robin"
-                logger.info(f"Auto-assigned to: {assigned_to}")
-            
-            # Get assignee name
-            if assigned_to:
-                assignee = await db.users.find_one({"email": assigned_to})
-                if assignee:
-                    assigned_to_name = f"{assignee.get('first_name', '')} {assignee.get('last_name', '')}".strip()
-                    if not assigned_to_name:
-                        assigned_to_name = assignee.get('email', 'Unknown')
-            
-            # Step 5: Create lead document with new fields and multi-assignment support
-            lead_doc = {
-                "lead_id": lead_id,
-                "status": getattr(status_and_tags, 'status', 'New'),
-                "name": basic_info.name,
-                "email": basic_info.email.lower(),
-                "contact_number": basic_info.contact_number,
-                "phone_number": basic_info.contact_number,  # Legacy field
-                "source": basic_info.source,
-                "category": basic_info.category,
-                
-                # 🆕 NEW: Add the new optional fields
-                "age": basic_info.age,
-                "experience": basic_info.experience,
-                "nationality": basic_info.nationality,
-                
-                # Status and tags
-                "stage": getattr(status_and_tags, 'stage', 'Pending'),
-                "lead_score": getattr(status_and_tags, 'lead_score', 0),
-                "priority": "medium",
-                "tags": getattr(status_and_tags, 'tags', []),
-                
-                # Assignment
-                "assigned_to": assigned_to,
-                "assigned_to_name": assigned_to_name,
-                "assignment_method": assignment_method,
-                
-                # 🆕 NEW: Multi-assignment fields
-                "co_assignees": [],
-                "co_assignees_names": [],
-                "is_multi_assigned": False,
-                
-                "assignment_history": [
-                    {
-                        "assigned_to": assigned_to,
-                        "assigned_to_name": assigned_to_name,
-                        "assigned_by": created_by,
-                        "assignment_method": assignment_method,
-                        "assigned_at": datetime.utcnow(),
-                        "reason": "Initial assignment"
-                    }
-                ],
-                
-                # Additional info
-                "notes": getattr(additional_info, 'notes', ''),
-                "created_by": created_by,
-                "created_at": datetime.utcnow(),
-                "updated_at": datetime.utcnow()
-            }
-            
-            # Step 6: Insert lead
-            result = await db.leads.insert_one(lead_doc)
-            
-            if result.inserted_id:
-                # Step 7: Update user array if assigned
-                if assigned_to:
-                    await user_lead_array_service.add_lead_to_user_array(assigned_to, lead_id)
-                
-                # Step 8: Log activity
-                await self.log_lead_activity(
-                    lead_id=lead_id,
-                    activity_type="lead_created",
-                    description=f"Lead created with ID: {lead_id}",
-                    created_by=created_by,
-                    metadata={
-                        "category": basic_info.category,
-                        "source": basic_info.source,
-                        "assigned_to": assigned_to,
-                        "assignment_method": assignment_method,
-                        "has_age": basic_info.age is not None,
-                        "has_experience": basic_info.experience is not None,
-                        "has_nationality": basic_info.nationality is not None
-                    }
-                )
-                
-                logger.info(f"✅ Lead created successfully: {lead_id} with new fields")
-                
-                return {
-                    "success": True,
-                    "message": f"Lead created successfully with ID: {lead_id}",
-                    "lead": self.format_lead_response(lead_doc),
-                    "assignment_info": {
-                        "assigned_to": assigned_to,
-                        "assigned_to_name": assigned_to_name,
-                        "assignment_method": assignment_method
-                    },
-                    "duplicate_check": {
-                        "is_duplicate": False,
-                        "checked": True
-                    }
-                }
-            else:
-                return {
-                    "success": False,
-                    "message": "Failed to create lead"
-                }
-            
-        except Exception as e:
-            logger.error(f"Error creating lead: {str(e)}")
-            return {
-                "success": False,
-                "message": f"Failed to create lead: {str(e)}"
-            }
-    
     async def check_duplicate_lead(self, email: str) -> Dict[str, Any]:
         """Check if lead with email already exists"""
         try:
@@ -703,6 +1022,7 @@ class LeadService:
             logger.error(f"Error generating lead ID: {str(e)}")
             # Fallback to simple sequence
             return await self._generate_lead_id()
+    
     async def get_category_short_form(self, category: str) -> str:
         """Get short form for category from database"""
         try:
@@ -746,8 +1066,6 @@ class LeadService:
             # Ultimate fallback
             import time
             return f"LD-{int(time.time())}"
-    
-
     
     async def log_lead_activity(
         self,
@@ -811,9 +1129,18 @@ class LeadService:
         update_data: Dict[str, Any],
         updated_by: str
     ) -> Dict[str, Any]:
-        """Update a lead with activity logging"""
+        """Update a lead with activity logging and dynamic field validation"""
         try:
             db = self.get_db()
+            
+            # 🆕 NEW: Validate dynamic fields if being updated
+            if "course_level" in update_data:
+                validated_course_level = await self.validate_and_set_course_level(update_data["course_level"])
+                update_data["course_level"] = validated_course_level
+            
+            if "source" in update_data:
+                validated_source = await self.validate_and_set_source(update_data["source"])
+                update_data["source"] = validated_source
             
             # Add updated timestamp
             update_data["updated_at"] = datetime.utcnow()
@@ -978,7 +1305,7 @@ class LeadService:
             }
     
     async def get_lead_statistics(self, user_email: str, user_role: str) -> Dict[str, Any]:
-        """Get lead statistics based on user role"""
+        """Get lead statistics based on user role with dynamic field breakdowns"""
         try:
             db = self.get_db()
             
@@ -1007,6 +1334,18 @@ class LeadService:
                 }
             ]
             status_distribution = await db.leads.aggregate(status_pipeline).to_list(None)
+            
+            # 🆕 NEW: Get course level distribution
+            course_level_pipeline = [
+                {"$match": base_query},
+                {
+                    "$group": {
+                        "_id": "$course_level",
+                        "count": {"$sum": 1}
+                    }
+                }
+            ]
+            course_level_distribution = await db.leads.aggregate(course_level_pipeline).to_list(None)
             
             # Get source distribution
             source_pipeline = [
@@ -1040,6 +1379,7 @@ class LeadService:
             return {
                 "total_leads": total_leads,
                 "status_distribution": status_distribution,
+                "course_level_distribution": course_level_distribution,  # 🆕 NEW
                 "source_distribution": source_distribution,
                 "assignment_statistics": assignment_stats,
                 "user_role": user_role
@@ -1048,58 +1388,6 @@ class LeadService:
         except Exception as e:
             logger.error(f"Error getting lead statistics: {str(e)}")
             return {"error": str(e)}
-    
-    def format_lead_response(self, lead_doc: Dict[str, Any]) -> Dict[str, Any]:
-        """Format lead document for response with new fields and multi-assignment support"""
-        if not lead_doc:
-            return None
-            
-        return {
-            "id": str(lead_doc.get("_id", "")),
-            "lead_id": lead_doc.get("lead_id", ""),
-            "name": lead_doc.get("name", ""),
-            "email": lead_doc.get("email", ""),
-            "contact_number": lead_doc.get("contact_number", ""),
-            "phone_number": lead_doc.get("phone_number", ""),
-            "source": lead_doc.get("source", "website"),
-            "category": lead_doc.get("category", ""),
-            
-            # 🆕 NEW: Include new optional fields in response
-            "age": lead_doc.get("age"),
-            "experience": lead_doc.get("experience"),
-            "nationality": lead_doc.get("nationality"),
-            
-            "status": lead_doc.get("status", "Initial"),
-            "stage": lead_doc.get("stage", "Initial"),
-            "lead_score": lead_doc.get("lead_score", 0),
-            "priority": lead_doc.get("priority", "medium"),
-            "tags": lead_doc.get("tags", []),
-            
-            # Assignment fields (single and multi)
-            "assigned_to": lead_doc.get("assigned_to"),
-            "assigned_to_name": lead_doc.get("assigned_to_name"),
-            "assignment_method": lead_doc.get("assignment_method"),
-            
-            # 🆕 NEW: Multi-assignment fields
-            "co_assignees": lead_doc.get("co_assignees", []),
-            "co_assignees_names": lead_doc.get("co_assignees_names", []),
-            "is_multi_assigned": lead_doc.get("is_multi_assigned", False),
-            
-            "assignment_history": lead_doc.get("assignment_history", []),
-            "notes": lead_doc.get("notes", ""),
-            "created_by": lead_doc.get("created_by", ""),
-            "created_at": lead_doc.get("created_at"),
-            "updated_at": lead_doc.get("updated_at"),
-            "last_contacted": lead_doc.get("last_contacted"),
-            
-            # Legacy fields for backward compatibility
-            "country_of_interest": lead_doc.get("country_of_interest", ""),
-            "course_level": lead_doc.get("course_level")
-        }
-    
-    # ============================================================================
-    # 🔍 SEARCH AND FILTERING METHODS
-    # ============================================================================
     
     async def search_leads(
         self,
@@ -1168,6 +1456,54 @@ class LeadService:
                 "leads": [],
                 "total_count": 0
             }
+
+    def format_lead_response(self, lead_doc: Dict[str, Any]) -> Dict[str, Any]:
+        """Format lead document for response with new fields and multi-assignment support"""
+        if not lead_doc:
+            return None
+            
+        return {
+            "id": str(lead_doc.get("_id", "")),
+            "lead_id": lead_doc.get("lead_id", ""),
+            "name": lead_doc.get("name", ""),
+            "email": lead_doc.get("email", ""),
+            "contact_number": lead_doc.get("contact_number", ""),
+            "phone_number": lead_doc.get("phone_number", ""),
+            "source": lead_doc.get("source"),  # 🔄 UPDATED: Can be None if no sources exist
+            "category": lead_doc.get("category", ""),
+            
+            # Include new optional fields in response
+            "age": lead_doc.get("age"),
+            "experience": lead_doc.get("experience"),
+            "nationality": lead_doc.get("nationality"),
+            "course_level": lead_doc.get("course_level"),  # 🔄 UPDATED: Can be None if no course levels exist
+            
+            "status": lead_doc.get("status", "Initial"),
+            "stage": lead_doc.get("stage", "Initial"),
+            "lead_score": lead_doc.get("lead_score", 0),
+            "priority": lead_doc.get("priority", "medium"),
+            "tags": lead_doc.get("tags", []),
+            
+            # Assignment fields (single and multi)
+            "assigned_to": lead_doc.get("assigned_to"),
+            "assigned_to_name": lead_doc.get("assigned_to_name"),
+            "assignment_method": lead_doc.get("assignment_method"),
+            
+            # Multi-assignment fields
+            "co_assignees": lead_doc.get("co_assignees", []),
+            "co_assignees_names": lead_doc.get("co_assignees_names", []),
+            "is_multi_assigned": lead_doc.get("is_multi_assigned", False),
+            
+            "assignment_history": lead_doc.get("assignment_history", []),
+            "notes": lead_doc.get("notes", ""),
+            "created_by": lead_doc.get("created_by", ""),
+            "created_at": lead_doc.get("created_at"),
+            "updated_at": lead_doc.get("updated_at"),
+            "last_contacted": lead_doc.get("last_contacted"),
+            
+            # Legacy fields for backward compatibility
+            "country_of_interest": lead_doc.get("country_of_interest", "")
+        }
 
 # Global service instance
 lead_service = LeadService()

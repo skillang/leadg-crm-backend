@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import logging
 from bson import ObjectId
 
+
 from ..services.user_lead_array_service import user_lead_array_service
 from ..services.lead_assignment_service import lead_assignment_service
 from app.services import lead_category_service
@@ -20,13 +21,13 @@ from ..models.lead import (
     LeadResponse, 
     LeadListResponse, 
     LeadAssign, 
-    CourseLevel,
+  
     LeadBulkCreate, 
     LeadBulkCreateResponse,
     LeadCreateComprehensive,
     LeadResponseComprehensive, 
     LeadStatusUpdate,
-    LeadSource,
+   
     ExperienceLevel,
     # New models for selective round robin and multi-assignment
     SelectiveRoundRobinRequest,
@@ -2336,106 +2337,41 @@ async def update_lead_status(
 # HEALTH CHECK AND DEBUG ENDPOINTS
 # ============================================================================
 
-@router.get("/health")
-async def health_check():
-    """Health check endpoint for the leads module"""
+
+@router.get("/constants/experience-levels")
+async def get_experience_levels():
+    """
+    Get all hardcoded experience levels from the ExperienceLevel enum
+    
+    Returns:
+        List of experience levels with value and label
+    """
     try:
-        db = get_database()
-        
-        # Test database connection
-        lead_count = await db.leads.count_documents({})
-        user_count = await db.users.count_documents({"role": "user", "is_active": True})
-        
-        return {
-            "status": "healthy",
-            "timestamp": datetime.utcnow(),
-            "version": "2.0.0",
-            "features": {
-                "selective_round_robin": True,
-                "multi_user_assignment": True,
-                "enhanced_user_arrays": True,
-                "status_migration": True,
-                "activity_logging": True
-            },
-            "database": {
-                "connected": True,
-                "total_leads": lead_count,
-                "active_users": user_count
+        experience_levels = []
+        for level in ExperienceLevel:
+            # Convert enum values to readable labels
+            label_map = {
+                "fresher": "Fresher",
+                "less_than_1_year": "Less than 1 Year", 
+                "1_to_3_years": "1-3 Years",
+                "3_to_5_years": "3-5 Years",
+                "5_to_10_years": "5-10 Years",
+                "more_than_10_years": "More than 10 Years"
             }
-        }
+            
+            experience_levels.append({
+                "value": level.value,
+                "label": label_map.get(level.value, level.value.replace("_", " ").title())
+            })
         
-    except Exception as e:
-        logger.error(f"Health check failed: {e}")
         return {
-            "status": "unhealthy",
-            "timestamp": datetime.utcnow(),
-            "error": str(e)
+            "success": True,
+            "data": experience_levels,
+            "total": len(experience_levels)
         }
-
-@router.get("/debug/assignment-info/{lead_id}")
-async def debug_assignment_info(
-    lead_id: str,
-    current_user: Dict[str, Any] = Depends(get_admin_user)
-):
-    """Debug endpoint to get detailed assignment information (Admin only)"""
-    try:
-        db = get_database()
-        
-        lead = await db.leads.find_one({"lead_id": lead_id})
-        if not lead:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Lead not found"
-            )
-        
-        # Get assignment details
-        assigned_to = lead.get("assigned_to")
-        co_assignees = lead.get("co_assignees", [])
-        
-        # Get user details for all assignees
-        all_assignees = [assigned_to] + co_assignees if assigned_to else co_assignees
-        user_details = {}
-        
-        for user_email in all_assignees:
-            if user_email:
-                user = await db.users.find_one({"email": user_email})
-                if user:
-                    user_details[user_email] = {
-                        "name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
-                        "email": user_email,
-                        "role": user.get("role"),
-                        "is_active": user.get("is_active"),
-                        "total_assigned_leads": user.get("total_assigned_leads", 0),
-                        "assigned_leads_array": user.get("assigned_leads", [])
-                    }
-        
-        debug_info = {
-            "lead_id": lead_id,
-            "assignment_info": {
-                "assigned_to": assigned_to,
-                "assigned_to_name": lead.get("assigned_to_name"),
-                "co_assignees": co_assignees,
-                "co_assignees_names": lead.get("co_assignees_names", []),
-                "is_multi_assigned": lead.get("is_multi_assigned", False),
-                "assignment_method": lead.get("assignment_method"),
-                "total_assignees": len(all_assignees)
-            },
-            "user_details": user_details,
-            "assignment_history": lead.get("assignment_history", []),
-            "debug_timestamp": datetime.utcnow()
-        }
-        
-        return convert_objectid_to_str(debug_info)
-        
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Debug assignment info error: {e}")
+        logger.error(f"Error fetching experience levels: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to get debug assignment info"
+            status_code=500,
+            detail="Failed to fetch experience levels"
         )
-
-# ============================================================================
-# END OF LEADS ROUTER ENDPOINTS
-# ============================================================================

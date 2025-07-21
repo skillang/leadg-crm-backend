@@ -114,6 +114,11 @@ async def create_indexes():
         await db.leads.create_index([("category", 1), ("age", 1)])  # Category-age analysis
         await db.leads.create_index([("nationality", 1), ("category", 1)])  # Nationality-category analysis
         
+        # 🆕 NEW: Indexes for dynamic course_level field
+        await db.leads.create_index("course_level")  # Course level queries
+        await db.leads.create_index([("course_level", 1), ("created_at", -1)])  # Course level with date
+        await db.leads.create_index([("course_level", 1), ("category", 1)])  # Course level-category analysis
+        
         logger.info("✅ Enhanced Leads indexes created")
         
         # ============================================================================
@@ -135,6 +140,30 @@ async def create_indexes():
         await db.lead_statuses.create_index("created_by")
         await db.lead_statuses.create_index("created_at")
         logger.info("✅ Lead Statuses indexes created")
+        
+        # ============================================================================
+        # 🆕 NEW: COURSE_LEVELS COLLECTION INDEXES
+        # ============================================================================
+        await db.course_levels.create_index("name", unique=True)  # Unique course level names
+        await db.course_levels.create_index([("is_active", 1), ("sort_order", 1)])  # Active course levels sorted
+        await db.course_levels.create_index("is_default")  # Find default course level
+        await db.course_levels.create_index("sort_order")  # Sort for display order
+        await db.course_levels.create_index([("name", 1), ("is_active", 1)])  # Compound for fast lookups
+        await db.course_levels.create_index("created_at")  # For sorting by creation date
+        await db.course_levels.create_index("created_by")  # Track who created course levels
+        logger.info("✅ Course Levels indexes created")
+        
+        # ============================================================================
+        # 🆕 NEW: SOURCES COLLECTION INDEXES
+        # ============================================================================
+        await db.sources.create_index("name", unique=True)  # Unique source names
+        await db.sources.create_index([("is_active", 1), ("sort_order", 1)])  # Active sources sorted
+        await db.sources.create_index("is_default")  # Find default source
+        await db.sources.create_index("sort_order")  # Sort for display order
+        await db.sources.create_index([("name", 1), ("is_active", 1)])  # Compound for fast lookups
+        await db.sources.create_index("created_at")  # For sorting by creation date
+        await db.sources.create_index("created_by")  # Track who created sources
+        logger.info("✅ Sources indexes created")
         
         # ============================================================================
         # TASKS COLLECTION INDEXES (ENHANCED)
@@ -233,7 +262,7 @@ async def create_indexes():
             logger.info("ℹ️ Contacts collection not yet created - indexes will be created when collection exists")
         
         logger.info("🎯 All enhanced database indexes created successfully!")
-        logger.info("🚀 System optimized for multi-user assignment and selective round robin!")
+        logger.info("🚀 System optimized for multi-user assignment, selective round robin, and dynamic course levels & sources!")
         
     except Exception as e:
         logger.error(f"❌ Error creating indexes: {e}")
@@ -250,9 +279,11 @@ async def get_collection_stats():
             "leads", 
             "lead_stages",
             "lead_statuses",
+            "course_levels",  # NEW
+            "sources",        # NEW
             "lead_tasks",
             "lead_activities",
-            "lead_counters",  # NEW
+            "lead_counters",
             "token_blacklist",
             "user_sessions",
             # Future collections
@@ -282,6 +313,15 @@ async def get_collection_stats():
                     active_users = await db[collection_name].count_documents({"is_active": True})
                     stats[f"{collection_name}_active"] = active_users
                     
+                # 🆕 NEW: Stats for course levels and sources
+                elif collection_name == "course_levels":
+                    active_count = await db[collection_name].count_documents({"is_active": True})
+                    stats[f"{collection_name}_active"] = active_count
+                    
+                elif collection_name == "sources":
+                    active_count = await db[collection_name].count_documents({"is_active": True})
+                    stats[f"{collection_name}_active"] = active_count
+                    
             except Exception as collection_error:
                 stats[collection_name] = 0
                 logger.debug(f"Collection {collection_name} not found or error: {collection_error}")
@@ -300,7 +340,7 @@ async def get_index_stats():
     try:
         db = get_database()
         
-        collections = ["users", "leads", "lead_tasks", "lead_activities"]
+        collections = ["users", "leads", "lead_tasks", "lead_activities", "course_levels", "sources"]  # Added new collections
         index_stats = {}
         
         for collection_name in collections:
@@ -336,6 +376,13 @@ async def init_database():
     
     if stats.get('users', 0) > 0:
         logger.info(f"👥 Users: {stats.get('users', 0)} total, {stats.get('users_active', 0)} active")
+    
+    # 🆕 NEW: Log course levels and sources stats
+    if stats.get('course_levels', 0) > 0:
+        logger.info(f"📚 Course Levels: {stats.get('course_levels', 0)} total, {stats.get('course_levels_active', 0)} active")
+    
+    if stats.get('sources', 0) > 0:
+        logger.info(f"📍 Sources: {stats.get('sources', 0)} total, {stats.get('sources_active', 0)} active")
 
 async def cleanup_database():
     """Cleanup database resources"""
