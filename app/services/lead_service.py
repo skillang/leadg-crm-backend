@@ -682,55 +682,47 @@ class LeadService:
         try:
             db = self.get_db()
             
-            # Look up category in database
-            category_doc = await db.lead_categories.find_one({"name": category, "is_active": True})
+            # Get category short form
+            category_short = await self.get_category_short_form(category)
             
-            if category_doc and "short_form" in category_doc:
-                category_short = category_doc["short_form"]
-                
-                # Get the next sequence number for this category
-                result = await db.lead_counters.find_one_and_update(
-                    {"category": category_short},
-                    {"$inc": {"sequence": 1}},
-                    upsert=True,
-                    return_document=True
-                )
-                
-                sequence = result["sequence"]
-                lead_id = f"{category_short}-{sequence}"
-                
-                logger.info(f"Generated lead ID: {lead_id} for category: {category}")
-                return lead_id
-            else:
-                logger.warning(f"Category not found in database: {category}, using fallback")
-                return await self._generate_lead_id()
-                
+            # Get the next sequence number for this category
+            result = await db.lead_counters.find_one_and_update(
+                {"category": category_short},
+                {"$inc": {"sequence": 1}},
+                upsert=True,
+                return_document=True
+            )
+            
+            sequence = result["sequence"]
+            lead_id = f"{category_short}-{sequence}"
+            
+            logger.info(f"Generated lead ID: {lead_id} for category: {category}")
+            return lead_id
+            
         except Exception as e:
             logger.error(f"Error generating lead ID: {str(e)}")
             # Fallback to simple sequence
             return await self._generate_lead_id()
-    
     async def get_category_short_form(self, category: str) -> str:
-        """Get short form for category"""
-        category_mappings = {
-            "Study Abroad": "SA",
-            "Work Abroad": "WA", 
-            "Study in Canada": "SC",
-            "Study in USA": "SU",
-            "Study in UK": "SK",
-            "Study in Australia": "SAU",
-            "Visit Visa": "VV",
-            "General": "GEN",
-            "Technology": "TECH",
-            "Business": "BIZ",
-            "Healthcare": "HC",
-            "Engineering": "ENG",
-            "Immigration": "IMM",
-            "Nurse Abroad": "NA"
-        }
-        
-        return category_mappings.get(category, "LD")
-    
+        """Get short form for category from database"""
+        try:
+            db = self.get_db()
+            
+            # Look up category in database
+            category_doc = await db.lead_categories.find_one({"name": category, "is_active": True})
+            
+            if category_doc and "short_form" in category_doc:
+                # Return short form from database
+                return category_doc["short_form"]
+            
+            # Log warning if category not found
+            logger.warning(f"Category not found in database: {category}, using fallback 'LD'")
+            return "LD"  # Fallback if not found
+            
+        except Exception as e:
+            logger.error(f"Error getting category short form from database: {str(e)}")
+            return "LD"  # Fallback in case of error
+
     async def _generate_lead_id(self) -> str:
         """Generate simple sequential lead ID"""
         try:
