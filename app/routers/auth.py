@@ -1184,6 +1184,7 @@ async def deactivate_department(
     
 
 # Add this endpoint to app/routers/auth.py
+# Add this endpoint to app/routers/auth.py
 
 @router.delete("/users/{user_id}")
 async def delete_user(
@@ -1192,26 +1193,18 @@ async def delete_user(
 ):
     """
     Delete a user (Admin only)
-    This will:
-    1. Check if user exists and prevent self-deletion
-    2. Reassign all leads assigned to this user
-    3. Update tasks created/assigned to this user
-    4. Soft delete the user (mark as inactive)
-    5. Clean up user references
+    - Prevents self-deletion and deleting last admin
+    - Reassigns user's leads to the admin performing deletion
+    - Updates tasks to maintain data integrity
+    - Soft deletes user (marks inactive)
     """
     try:
         db = get_database()
         
-        # Convert user_id to ObjectId if it's a valid ObjectId string
-        user_object_id = None
+        # Find user by ID or email (flexible lookup)
+        user_query = {"$or": [{"email": user_id}]}
         if ObjectId.is_valid(user_id):
-            user_object_id = ObjectId(user_id)
-        
-        # Find user by both _id and email to handle different ID formats
-        user_query = {"$or": []}
-        if user_object_id:
-            user_query["$or"].append({"_id": user_object_id})
-        user_query["$or"].append({"email": user_id})
+            user_query["$or"].append({"_id": ObjectId(user_id)})
         
         user_to_delete = await db.users.find_one(user_query)
         
@@ -1223,16 +1216,16 @@ async def delete_user(
         
         user_email = user_to_delete["email"]
         user_name = f"{user_to_delete.get('first_name', '')} {user_to_delete.get('last_name', '')}".strip()
-        
-        # Prevent admin from deleting themselves
         current_admin_email = current_user.get("email")
+        
+        # Security checks
         if user_email == current_admin_email:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="You cannot delete your own account"
             )
         
-        # Prevent deletion of the last admin user
+        # Prevent deletion of last admin
         if user_to_delete.get("role") == "admin":
             admin_count = await db.users.count_documents({"role": "admin", "is_active": True})
             if admin_count <= 1:
@@ -1241,12 +1234,11 @@ async def delete_user(
                     detail="Cannot delete the last admin user. Create another admin first."
                 )
         
-        logger.info(f"Admin {current_admin_email} initiating deletion of user: {user_email}")
+        logger.info(f"Admin {current_admin_email} deleting user: {user_email}")
         
-        # Step 1: Handle assigned leads - reassign to admin or unassign
-        assigned_leads_count = await db.leads.count_documents({"assigned_to": user_email})
-        if assigned_leads_count > 0:
-            # Option 1: Reassign to the admin performing deletion
+        # Step 1: Reassign leads to the deleting admin
+        assigned_leads = await db.leads.count_documents({"assigned_to": user_email})
+        if assigned_leads > 0:
             await db.leads.update_many(
                 {"assigned_to": user_email},
                 {
@@ -1254,35 +1246,15 @@ async def delete_user(
                         "assigned_to": current_admin_email,
                         "assigned_to_name": f"{current_user.get('first_name', '')} {current_user.get('last_name', '')}".strip(),
                         "reassignment_reason": f"User {user_email} was deleted",
-                        "reassigned_at": datetime.utcnow(),
-                        "reassigned_by": current_admin_email
+                        "updated_at": datetime.utcnow()
                     }
                 }
             )
-            logger.info(f"Reassigned {assigned_leads_count} leads from {user_email} to {current_admin_email}")
+            logger.info(f"Reassigned {assigned_leads} leads to {current_admin_email}")
         
-        # Step 2: Handle co-assigned leads (multi-assignment)
-        co_assigned_leads = await db.leads.find({"co_assignees": user_email}).to_list(None)
-        if co_assigned_leads:
-            for lead in co_assigned_leads:
-                # Remove user from co_assignees array
-                await db.leads.update_one(
-                    {"_id": lead["_id"]},
-                    {
-                        "$pull": {
-                            "co_assignees": user_email,
-                            "co_assignees_names": user_name
-                        },
-                        "$set": {
-                            "updated_at": datetime.utcnow()
-                        }
-                    }
-                )
-            logger.info(f"Removed {user_email} from {len(co_assigned_leads)} co-assigned leads")
-        
-        # Step 3: Update tasks - mark user as "Deleted User" instead of removing
-        tasks_as_assignee = await db.lead_tasks.count_documents({"assigned_to": user_email})
-        if tasks_as_assignee > 0:
+        # Step 2: Update tasks - preserve data but mark user as deleted
+        tasks_assigned = await db.lead_tasks.count_documents({"assigned_to": user_email})
+        if tasks_assigned > 0:
             await db.lead_tasks.update_many(
                 {"assigned_to": user_email},
                 {
@@ -1293,10 +1265,9 @@ async def delete_user(
                     }
                 }
             )
-            logger.info(f"Updated {tasks_as_assignee} tasks where {user_email} was assignee")
         
-        tasks_as_creator = await db.lead_tasks.count_documents({"created_by": str(user_to_delete["_id"])})
-        if tasks_as_creator > 0:
+        tasks_created = await db.lead_tasks.count_documents({"created_by": str(user_to_delete["_id"])})
+        if tasks_created > 0:
             await db.lead_tasks.update_many(
                 {"created_by": str(user_to_delete["_id"])},
                 {
@@ -1306,20 +1277,8 @@ async def delete_user(
                     }
                 }
             )
-            logger.info(f"Updated {tasks_as_creator} tasks created by {user_email}")
         
-        # Step 4: Clean up user arrays (assigned_leads, etc.)
-        await db.users.update_one(
-            {"_id": user_to_delete["_id"]},
-            {
-                "$unset": {
-                    "assigned_leads": 1,
-                    "total_assigned_leads": 1
-                }
-            }
-        )
-        
-        # Step 5: Soft delete user (mark as inactive instead of hard delete)
+        # Step 3: Soft delete user (mark as inactive)
         deletion_result = await db.users.update_one(
             {"_id": user_to_delete["_id"]},
             {
@@ -1327,9 +1286,8 @@ async def delete_user(
                     "is_active": False,
                     "deleted_at": datetime.utcnow(),
                     "deleted_by": current_admin_email,
-                    "deletion_reason": "Admin deletion",
-                    "email_before_deletion": user_email,
-                    "email": f"[DELETED]_{user_email}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"  # Prevent email conflicts
+                    "email_backup": user_email,
+                    "email": f"[DELETED]_{user_email}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
                 }
             }
         )
@@ -1340,26 +1298,7 @@ async def delete_user(
                 detail="Failed to delete user"
             )
         
-        # Step 6: Log the deletion in activities/audit log (if you have one)
-        try:
-            audit_log = {
-                "action": "user_deleted",
-                "performed_by": current_admin_email,
-                "target_user": user_email,
-                "target_user_name": user_name,
-                "timestamp": datetime.utcnow(),
-                "details": {
-                    "reassigned_leads": assigned_leads_count,
-                    "co_assigned_leads_updated": len(co_assigned_leads),
-                    "tasks_updated_as_assignee": tasks_as_assignee,
-                    "tasks_updated_as_creator": tasks_as_creator
-                }
-            }
-            await db.audit_logs.insert_one(audit_log)
-        except Exception as audit_error:
-            logger.warning(f"Failed to log user deletion audit: {audit_error}")
-        
-        logger.info(f"✅ User {user_email} successfully deleted by admin {current_admin_email}")
+        logger.info(f"✅ User {user_email} successfully deleted by {current_admin_email}")
         
         return {
             "success": True,
@@ -1367,135 +1306,20 @@ async def delete_user(
             "deleted_user": {
                 "email": user_email,
                 "name": user_name,
-                "role": user_to_delete.get("role"),
-                "deleted_at": datetime.utcnow().isoformat()
+                "role": user_to_delete.get("role")
             },
-            "cleanup_summary": {
-                "leads_reassigned": assigned_leads_count,
-                "co_assigned_leads_updated": len(co_assigned_leads),
-                "tasks_updated_as_assignee": tasks_as_assignee,
-                "tasks_updated_as_creator": tasks_as_creator,
+            "summary": {
+                "leads_reassigned": assigned_leads,
+                "tasks_updated": tasks_assigned + tasks_created,
                 "reassigned_to": current_admin_email
-            },
-            "note": "This was a soft delete - user marked as inactive. All leads have been reassigned to you."
+            }
         }
         
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error deleting user {user_id}: {e}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete user: {str(e)}"
         )
-
-
-# Additional helper endpoint to get users for admin management
-@router.get("/users", response_model=Dict[str, Any])
-async def get_all_users(
-    page: int = Query(1, ge=1),
-    limit: int = Query(20, ge=1, le=100),
-    role: Optional[str] = Query(None, description="Filter by role: admin or user"),
-    is_active: Optional[bool] = Query(None, description="Filter by active status"),
-    search: Optional[str] = Query(None, description="Search by name or email"),
-    current_user: Dict[str, Any] = Depends(get_admin_user)  # Admin only
-):
-    """
-    Get all users with pagination and filtering (Admin only)
-    Used for user management interface
-    """
-    try:
-        db = get_database()
-        
-        # Build query
-        query = {}
-        
-        if role:
-            query["role"] = role
-            
-        if is_active is not None:
-            query["is_active"] = is_active
-        
-        if search:
-            query["$or"] = [
-                {"email": {"$regex": search, "$options": "i"}},
-                {"first_name": {"$regex": search, "$options": "i"}},
-                {"last_name": {"$regex": search, "$options": "i"}},
-                {"username": {"$regex": search, "$options": "i"}}
-            ]
-        
-        # Get total count
-        total = await db.users.count_documents(query)
-        
-        # Get paginated users
-        skip = (page - 1) * limit
-        users = await db.users.find(
-            query,
-            {
-                "hashed_password": 0,  # Never return password
-                "failed_login_attempts": 0  # Skip sensitive fields
-            }
-        ).skip(skip).limit(limit).sort("created_at", -1).to_list(None)
-        
-        # Format users for response
-        formatted_users = []
-        for user in users:
-            # Get lead count for each user
-            lead_count = await db.leads.count_documents({"assigned_to": user["email"]})
-            
-            formatted_user = {
-                "id": str(user["_id"]),
-                "email": user["email"],
-                "username": user.get("username", ""),
-                "first_name": user.get("first_name", ""),
-                "last_name": user.get("last_name", ""),
-                "full_name": user.get("full_name", f"{user.get('first_name', '')} {user.get('last_name', '')}".strip()),
-                "role": user.get("role", "user"),
-                "department": user.get("department", ""),
-                "phone": user.get("phone", ""),
-                "is_active": user.get("is_active", True),
-                "created_at": user.get("created_at"),
-                "last_login": user.get("last_login"),
-                "login_count": user.get("login_count", 0),
-                "assigned_leads_count": lead_count,
-                "created_by": user.get("created_by", ""),
-                "deleted_at": user.get("deleted_at")  # Show if soft deleted
-            }
-            formatted_users.append(formatted_user)
-        
-        # Get summary stats
-        total_active = await db.users.count_documents({"is_active": True})
-        total_inactive = await db.users.count_documents({"is_active": False})
-        total_admins = await db.users.count_documents({"role": "admin", "is_active": True})
-        total_regular_users = await db.users.count_documents({"role": "user", "is_active": True})
-        
-        return {
-            "success": True,
-            "users": formatted_users,
-            "pagination": {
-                "total": total,
-                "page": page,
-                "limit": limit,
-                "has_next": skip + limit < total,
-                "has_prev": page > 1,
-                "total_pages": (total + limit - 1) // limit
-            },
-            "summary": {
-                "total_users": total,
-                "active_users": total_active,
-                "inactive_users": total_inactive,
-                "admin_users": total_admins,
-                "regular_users": total_regular_users
-            }
-        }
-        
-    except Exception as e:
-        logger.error(f"Error getting users: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to retrieve users"
-        )
-
-# 🔥 NEW: Import the models at the top of auth.py
