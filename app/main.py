@@ -1,4 +1,4 @@
-# app/main.py - Updated with stages router
+# app/main.py - Updated with stages, statuses, course levels, and sources routers
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -7,7 +7,7 @@ import time
 
 from .config.settings import settings
 from .config.database import connect_to_mongo, close_mongo_connection
-from .routers import auth, leads, tasks, notes, documents, timeline, contacts, lead_categories, stages, statuses ,whatsapp   # Added statuses
+from .routers import auth, leads, tasks, notes, documents, timeline, contacts, lead_categories, stages, statuses, course_levels, sources, whatsapp   # Added course_levels and sources
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -29,6 +29,14 @@ async def lifespan(app: FastAPI):
     # Setup default statuses if none exist
     await setup_default_statuses()
     logger.info("✅ Default statuses setup completed")
+    
+    # 🆕 NEW: Check course levels collection (admin must create manually)
+    await setup_default_course_levels()
+    logger.info("✅ Course levels collection checked")
+    
+    # 🆕 NEW: Check sources collection (admin must create manually)
+    await setup_default_sources()
+    logger.info("✅ Sources collection checked")
     
     logger.info("✅ Application startup complete")
     
@@ -67,11 +75,51 @@ async def setup_default_statuses():
     except Exception as e:
         logger.warning(f"Error setting up default statuses: {e}")
 
+# 🆕 NEW: Setup default course levels function
+async def setup_default_course_levels():
+    """Check course levels collection exists - admin must create all course levels manually"""
+    try:
+        from ..config.database import get_database
+        
+        db = get_database()
+        
+        # Just check if collection exists, don't create any defaults
+        existing_count = await db.course_levels.count_documents({})
+        
+        if existing_count == 0:
+            logger.info("📚 Course levels collection empty - admin must create course levels manually")
+        else:
+            active_count = await db.course_levels.count_documents({"is_active": True})
+            logger.info(f"📚 Course levels: {existing_count} total, {active_count} active")
+            
+    except Exception as e:
+        logger.warning(f"Error checking course levels: {e}")
+
+# 🆕 NEW: Setup default sources function
+async def setup_default_sources():
+    """Check sources collection exists - admin must create all sources manually"""
+    try:
+        from ..config.database import get_database
+        
+        db = get_database()
+        
+        # Just check if collection exists, don't create any defaults
+        existing_count = await db.sources.count_documents({})
+        
+        if existing_count == 0:
+            logger.info("📍 Sources collection empty - admin must create sources manually")
+        else:
+            active_count = await db.sources.count_documents({"is_active": True})
+            logger.info(f"📍 Sources: {existing_count} total, {active_count} active")
+            
+    except Exception as e:
+        logger.warning(f"Error checking sources: {e}")
+
 # Create FastAPI application
 app = FastAPI(
     title=settings.app_name,
     version=settings.version,
-    description="LeadG CRM - Customer Relationship Management API with Dynamic Stages",
+    description="LeadG CRM - Customer Relationship Management API with Dynamic Stages, Statuses, Course Levels, and Sources",  # Updated description
     lifespan=lifespan,
     docs_url="/docs" if settings.debug else None,
     redoc_url="/redoc" if settings.debug else None,
@@ -99,17 +147,18 @@ async def add_process_time_header(request: Request, call_next):
     except Exception as e:
         logger.error(f"Request failed: {request.method} {request.url} - Error: {str(e)}", exc_info=True)
         raise
-# Update health check (line ~88)
+
+# 🔄 UPDATED: Health check with new modules
 @app.get("/health")
 async def health_check():
     return {
         "status": "healthy",
         "message": "LeadG CRM API is running",
         "version": settings.version,
-        "modules": ["auth", "leads", "tasks", "notes", "documents", "timeline", "contacts", "stages", "statuses", "whatsapp"]  # Add whatsapp
+        "modules": ["auth", "leads", "tasks", "notes", "documents", "timeline", "contacts", "stages", "statuses", "course-levels", "sources", "whatsapp"]  # Added course-levels and sources
     }
 
-# Update root endpoint (line ~98)
+# 🔄 UPDATED: Root endpoint with new endpoints
 @app.get("/")
 async def root():
     return {
@@ -126,11 +175,14 @@ async def root():
             "contacts": "/contacts",
             "stages": "/stages",
             "statuses": "/statuses",
+            "course-levels": "/course-levels",  # 🆕 NEW
+            "sources": "/sources",              # 🆕 NEW
             "lead-categories": "/lead-categories",
-            "whatsapp": "/api/v1/whatsapp",  # Add whatsapp
+            "whatsapp": "/api/v1/whatsapp",
             "health": "/health"
         }
     }
+
 # Include routers with specific prefixes
 app.include_router(
     auth.router,
@@ -180,23 +232,37 @@ app.include_router(
     tags=["Lead Categories"]
 )
 
-# NEW: Add stages router
+# Add stages router
 app.include_router(
     stages.router,
     prefix="/stages",
     tags=["Stages"]
 )
 
-# NEW: Add statuses router
+# Add statuses router
 app.include_router(
     statuses.router,
     prefix="/statuses",
     tags=["Statuses"]
 )
 
+# 🆕 NEW: Add course levels router
+app.include_router(
+    course_levels.router,
+    prefix="/course-levels",
+    tags=["Course Levels"]
+)
+
+# 🆕 NEW: Add sources router
+app.include_router(
+    sources.router,
+    prefix="/sources",
+    tags=["Sources"]
+)
+
 app.include_router(
     whatsapp.router,
-    prefix="/whatsapp",  # Add prefix here like others
+    prefix="/whatsapp",
     tags=["WhatsApp"]
 )
 

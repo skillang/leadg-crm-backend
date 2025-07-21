@@ -1,4 +1,4 @@
-# app/models/lead.py - Updated with dynamic stages, statuses, and new assignment features
+# app/models/lead.py - Updated with dynamic stages, statuses, course levels, sources, and new assignment features
 
 from pydantic import BaseModel, Field, validator, EmailStr
 from typing import Optional, List, Dict, Any
@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import Enum
 
 # ============================================================================
-# DYNAMIC VALIDATION HELPERS (For stages and statuses)
+# DYNAMIC VALIDATION HELPERS (For stages, statuses, course levels, and sources)
 # ============================================================================
 
 async def validate_stage_exists(stage_name: str) -> bool:
@@ -85,47 +85,91 @@ async def get_default_status() -> str:
     except:
         return "New"
 
+# 🆕 NEW: Dynamic Course Level Functions
+async def get_default_course_level() -> str:
+    """Get the default course level for new leads"""
+    try:
+        from ..config.database import get_database
+        
+        db = get_database()
+        default_course_level = await db.course_levels.find_one({
+            "is_default": True,
+            "is_active": True
+        })
+        
+        if default_course_level:
+            return default_course_level["name"]
+        
+        # Fallback to first active course level
+        first_course_level = await db.course_levels.find_one(
+            {"is_active": True},
+            sort=[("sort_order", 1)]
+        )
+        
+        return first_course_level["name"] if first_course_level else "undergraduate"
+    except:
+        return "undergraduate"
+
+async def validate_course_level_exists(course_level: str) -> bool:
+    """Validate if course level exists and is active"""
+    try:
+        from ..config.database import get_database
+        
+        db = get_database()
+        course_level_doc = await db.course_levels.find_one({
+            "name": course_level,
+            "is_active": True
+        })
+        
+        return course_level_doc is not None
+    except:
+        return True  # Fallback - if validation fails, allow the course level
+
+# 🆕 NEW: Dynamic Source Functions
+async def get_default_source() -> str:
+    """Get the default source for new leads"""
+    try:
+        from ..config.database import get_database
+        
+        db = get_database()
+        default_source = await db.sources.find_one({
+            "is_default": True,
+            "is_active": True
+        })
+        
+        if default_source:
+            return default_source["name"]
+        
+        # Fallback to first active source
+        first_source = await db.sources.find_one(
+            {"is_active": True},
+            sort=[("sort_order", 1)]
+        )
+        
+        return first_source["name"] if first_source else "website"
+    except:
+        return "website"
+
+async def validate_source_exists(source: str) -> bool:
+    """Validate if source exists and is active"""
+    try:
+        from ..config.database import get_database
+        
+        db = get_database()
+        source_doc = await db.sources.find_one({
+            "name": source,
+            "is_active": True
+        })
+        
+        return source_doc is not None
+    except:
+        return True  # Fallback - if validation fails, allow the source
+
 # ============================================================================
-# ENUMERATION CLASSES
+# ENUMERATION CLASSES (Only Experience Level remains as enum)
 # ============================================================================
 
-# Course Level Enumeration
-class CourseLevel(str, Enum):
-    """Course level enumeration"""
-    CERTIFICATE = "certificate"
-    DIPLOMA = "diploma"
-    UNDERGRADUATE = "undergraduate"
-    GRADUATE = "graduate"
-    POSTGRADUATE = "postgraduate"
-    DOCTORATE = "doctorate"
-    PROFESSIONAL = "professional"
-    VOCATIONAL = "vocational"
-
-# Lead Source Enumeration
-class LeadSource(str, Enum):
-    """Lead source enumeration"""
-    WEBSITE = "website"
-    REFERRAL = "referral"
-    SOCIAL_MEDIA = "social media"
-    EMAIL_MARKETING = "email marketing"
-    COLD_CALLING = "cold calling"
-    WALK_IN = "walk in"
-    ADVERTISEMENT = "advertisement"
-    PARTNERSHIP = "partnership"
-    EVENT = "event"
-    ORGANIC_SEARCH = "organic search"
-    PAID_SEARCH = "paid search"
-    LINKEDIN = "linkedin"
-    TWITTER = "twitter"
-    WHATSAPP = "whatsapp"
-    FACEBOOK = "facebook"
-    INSTAGRAM = "instagram"
-    REDDIT = "reddit"
-    YOUTUBE = "youtube"
-    BULK_UPLOAD = "bulk upload"
-    NAUKRI = "naukri"
-
-# Experience Level Enumeration
+# Experience Level Enumeration (Keep as enum - not dynamic)
 class ExperienceLevel(str, Enum):
     """Experience level enumeration"""
     FRESHER = "fresher"
@@ -136,21 +180,24 @@ class ExperienceLevel(str, Enum):
     MORE_THAN_TEN_YEARS = "more_than_10_years"
 
 # ============================================================================
-# BASIC LEAD MODELS (EXISTING)
+# BASIC LEAD MODELS (UPDATED FOR DYNAMIC FIELDS)
 # ============================================================================
 
-# Basic Info Section (Tab 1) - UPDATED with new fields
+# Basic Info Section (Tab 1) - UPDATED with dynamic fields
 class LeadBasicInfo(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     email: EmailStr = Field(...)
     contact_number: str = Field(..., min_length=10, max_length=20)
-    source: LeadSource = Field(default=LeadSource.WEBSITE)
+    source: str = Field(default="website", description="Lead source (dynamic)")  # 🔄 CHANGED: str instead of enum
     category: str = Field(..., min_length=1, description="Lead category (required)")
     
     # Optional additional fields
     age: Optional[int] = Field(None, ge=16, le=100, description="Age of the lead (16-100)")
     experience: Optional[ExperienceLevel] = Field(None, description="Work experience level")
     nationality: Optional[str] = Field(None, max_length=100, description="Nationality of the lead")
+    
+    # 🆕 NEW: Dynamic course level field
+    course_level: Optional[str] = Field(None, description="Course level (dynamic)")  # 🔄 CHANGED: str instead of enum
     
     @validator('category')
     def validate_category(cls, v):
@@ -160,9 +207,23 @@ class LeadBasicInfo(BaseModel):
     
     @validator('nationality')
     def validate_nationality(cls, v):
-        if v:
-            return v.strip()
-        return v
+        if v and not v.strip():
+            return None
+        return v.strip() if v else None
+    
+    @validator('source')
+    def validate_source_string(cls, v):
+        """Basic source validation - detailed validation at service level"""
+        if not v or not v.strip():
+            return "website"  # Default fallback
+        return v.strip().lower().replace(' ', '_')
+    
+    @validator('course_level')
+    def validate_course_level_string(cls, v):
+        """Basic course level validation - detailed validation at service level"""
+        if not v or not v.strip():
+            return None  # Optional field
+        return v.strip().lower().replace(' ', '_')
     
     class Config:
         json_schema_extra = {
@@ -174,7 +235,8 @@ class LeadBasicInfo(BaseModel):
                 "category": "Study Abroad",
                 "age": 24,
                 "experience": "1_to_3_years",
-                "nationality": "Indian"
+                "nationality": "Indian",
+                "course_level": "undergraduate"
             }
         }
 
@@ -229,7 +291,7 @@ class LeadAdditionalInfo(BaseModel):
 class LeadCreateComprehensive(BaseModel):
     """Comprehensive lead creation model with all sections"""
     
-    # Basic Info (Required) - Now includes AGE, EXPERIENCE, Nationality
+    # Basic Info (Required) - Now includes dynamic course level and source
     basic_info: LeadBasicInfo
     
     # Status & Tags (Optional with defaults)
@@ -252,7 +314,8 @@ class LeadCreateComprehensive(BaseModel):
                     "category": "Study Abroad",
                     "age": 24,
                     "experience": "1_to_3_years",
-                    "nationality": "Indian"
+                    "nationality": "Indian",
+                    "course_level": "undergraduate"
                 },
                 "status_and_tags": {
                     "stage": "contacted",
@@ -475,7 +538,7 @@ class LeadResponseExtended(BaseModel):
     name: str
     email: str
     contact_number: Optional[str]
-    source: Optional[str]
+    source: Optional[str]  # 🔄 CHANGED: str instead of enum
     category: Optional[str]
     
     # Single assignment fields (backward compatibility)
@@ -587,7 +650,7 @@ class UserSelectionResponse(BaseModel):
         }
 
 # ============================================================================
-# LEGACY MODELS FOR BACKWARD COMPATIBILITY (UPDATED)
+# LEGACY MODELS FOR BACKWARD COMPATIBILITY (UPDATED FOR DYNAMIC FIELDS)
 # ============================================================================
 
 # Lead Response Model - UPDATED
@@ -603,11 +666,11 @@ class LeadResponseComprehensive(BaseModel):
     updated_at: datetime
     last_contacted: Optional[datetime] = None
     
-    # Basic Info - UPDATED with new fields
+    # Basic Info - UPDATED with dynamic fields
     name: str
     email: str
     contact_number: str
-    source: LeadSource
+    source: str  # 🔄 CHANGED: str instead of LeadSource enum
     category: str
     age: Optional[int] = None
     experience: Optional[ExperienceLevel] = None
@@ -634,15 +697,15 @@ class LeadResponseComprehensive(BaseModel):
     # Legacy fields for backward compatibility
     phone_number: Optional[str] = None
     country_of_interest: Optional[str] = None
-    course_level: Optional[CourseLevel] = None
+    course_level: Optional[str] = None  # 🔄 CHANGED: str instead of CourseLevel enum
 
 # Legacy models for backward compatibility - UPDATED
 class LeadCreate(LeadBasicInfo):
     """Legacy lead creation model for backward compatibility"""
     assigned_to: Optional[str] = None
     country_of_interest: Optional[str] = None
-    course_level: Optional[CourseLevel] = None
-    source: Optional[LeadSource] = LeadSource.WEBSITE
+    course_level: Optional[str] = None  # 🔄 CHANGED: str instead of enum
+    source: Optional[str] = "website"   # 🔄 CHANGED: str instead of enum
     tags: Optional[List[str]] = Field(default_factory=list)
     notes: Optional[str] = None
     # Include the new fields in legacy model too
@@ -657,9 +720,12 @@ class LeadUpdate(BaseModel):
     phone_number: Optional[str] = Field(None, min_length=10, max_length=20)
     contact_number: Optional[str] = Field(None, min_length=10, max_length=20)
     country_of_interest: Optional[str] = Field(None, max_length=200)
-    course_level: Optional[CourseLevel] = None
-    source: Optional[LeadSource] = None
+    course_level: Optional[str] = None  # 🔄 CHANGED: str instead of enum
+    source: Optional[str] = None        # 🔄 CHANGED: str instead of enum
     status: Optional[str] = None
+    stage: Optional[str] = None         # 🆕 NEW: Dynamic stage
+    lead_score: Optional[int] = Field(None, ge=0, le=100)
+    priority: Optional[str] = None
     tags: Optional[List[str]] = None
     notes: Optional[str] = Field(None, max_length=1000)
     category: Optional[str] = Field(None, min_length=1)
@@ -688,12 +754,13 @@ class LeadResponse(BaseModel):
     created_by_name: str
     created_at: datetime
     updated_at: datetime
-    source: LeadSource
+    source: str  # 🔄 CHANGED: str instead of LeadSource enum
     category: str
     # Add new fields to response
     age: Optional[int] = None
     experience: Optional[ExperienceLevel] = None
     nationality: Optional[str] = None
+    course_level: Optional[str] = None  # 🔄 CHANGED: str instead of enum
 
 class LeadListResponse(BaseModel):
     """Lead list response model"""
