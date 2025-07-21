@@ -682,23 +682,29 @@ class LeadService:
         try:
             db = self.get_db()
             
-            # Get category short form
-            category_short = await self.get_category_short_form(category)
+            # Look up category in database
+            category_doc = await db.lead_categories.find_one({"name": category, "is_active": True})
             
-            # Get the next sequence number for this category
-            result = await db.lead_counters.find_one_and_update(
-                {"category": category_short},
-                {"$inc": {"sequence": 1}},
-                upsert=True,
-                return_document=True
-            )
-            
-            sequence = result["sequence"]
-            lead_id = f"{category_short}-{sequence}"
-            
-            logger.info(f"Generated lead ID: {lead_id} for category: {category}")
-            return lead_id
-            
+            if category_doc and "short_form" in category_doc:
+                category_short = category_doc["short_form"]
+                
+                # Get the next sequence number for this category
+                result = await db.lead_counters.find_one_and_update(
+                    {"category": category_short},
+                    {"$inc": {"sequence": 1}},
+                    upsert=True,
+                    return_document=True
+                )
+                
+                sequence = result["sequence"]
+                lead_id = f"{category_short}-{sequence}"
+                
+                logger.info(f"Generated lead ID: {lead_id} for category: {category}")
+                return lead_id
+            else:
+                logger.warning(f"Category not found in database: {category}, using fallback")
+                return await self._generate_lead_id()
+                
         except Exception as e:
             logger.error(f"Error generating lead ID: {str(e)}")
             # Fallback to simple sequence
@@ -748,6 +754,8 @@ class LeadService:
             # Ultimate fallback
             import time
             return f"LD-{int(time.time())}"
+    
+
     
     async def log_lead_activity(
         self,
