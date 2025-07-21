@@ -122,7 +122,7 @@ class LeadSource(str, Enum):
     INSTAGRAM = "instagram"
     REDDIT = "reddit"
     YOUTUBE = "youtube"
-    BULK_UPLOAD = "bulk upload"
+    BULK_UPLOAD = "bulk_import"
     NAUKRI = "naukri"
 
 # Experience Level Enumeration
