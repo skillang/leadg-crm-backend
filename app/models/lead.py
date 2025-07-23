@@ -195,6 +195,7 @@ class LeadBasicInfo(BaseModel):
     age: Optional[int] = Field(None, ge=16, le=100, description="Age of the lead (16-100)")
     experience: Optional[ExperienceLevel] = Field(None, description="Work experience level")
     nationality: Optional[str] = Field(None, max_length=100, description="Nationality of the lead")
+    current_location: Optional[str] = Field(None, max_length=150, description="Current location of the lead")
     
     # 🆕 NEW: Dynamic course level field
     course_level: Optional[str] = Field(None, description="Course level (dynamic)")  # 🔄 CHANGED: str instead of enum
@@ -210,6 +211,13 @@ class LeadBasicInfo(BaseModel):
         if v and not v.strip():
             return None
         return v.strip() if v else None
+    
+    @validator('current_location')
+    def validate_current_location(cls, v):
+        """Validate current_location field - auto-default to 'Not mentioned' if not provided"""
+        if v and v.strip():
+            return v.strip()
+        return "Not mentioned"  # Auto-default value
     
     @validator('source')
     def validate_source_string(cls, v):
@@ -236,6 +244,7 @@ class LeadBasicInfo(BaseModel):
                 "age": 24,
                 "experience": "1_to_3_years",
                 "nationality": "Indian",
+                "current_location": "Mumbai, India",
                 "course_level": "undergraduate"
             }
         }
@@ -315,6 +324,7 @@ class LeadCreateComprehensive(BaseModel):
                     "age": 24,
                     "experience": "1_to_3_years",
                     "nationality": "Indian",
+                    "current_location": "Mumbai, India",
                     "course_level": "undergraduate"
                 },
                 "status_and_tags": {
@@ -326,7 +336,7 @@ class LeadCreateComprehensive(BaseModel):
                     "assigned_to": None  # Always None for auto round-robin assignment
                 },
                 "additional_info": {
-                    "notes": "Student is very interested and has IELTS score of 7.5. Prefers Canada for studies."
+                    "notes": "Student is very interested and has IELTS score of 7.5. Currently based in Mumbai."
                 }
             }
         }
@@ -666,7 +676,7 @@ class LeadResponseComprehensive(BaseModel):
     updated_at: datetime
     last_contacted: Optional[datetime] = None
     
-    # Basic Info - UPDATED with dynamic fields
+    # Basic Info - UPDATED with dynamic fields including current_location
     name: str
     email: str
     contact_number: str
@@ -675,6 +685,7 @@ class LeadResponseComprehensive(BaseModel):
     age: Optional[int] = None
     experience: Optional[ExperienceLevel] = None
     nationality: Optional[str] = None
+    current_location: Optional[str] = None  # 🆕 NEW: Added current_location field
     
     # Status & Tags
     stage: str
@@ -708,10 +719,11 @@ class LeadCreate(LeadBasicInfo):
     source: Optional[str] = "website"   # 🔄 CHANGED: str instead of enum
     tags: Optional[List[str]] = Field(default_factory=list)
     notes: Optional[str] = None
-    # Include the new fields in legacy model too
+    # Include all new fields in legacy model too
     age: Optional[int] = Field(None, ge=16, le=100)
     experience: Optional[ExperienceLevel] = None
     nationality: Optional[str] = Field(None, max_length=100)
+    current_location: Optional[str] = Field(None, max_length=150)  # 🆕 NEW: Added current_location field
 
 class LeadUpdate(BaseModel):
     """Legacy lead update model - UPDATED"""
@@ -729,10 +741,11 @@ class LeadUpdate(BaseModel):
     tags: Optional[List[str]] = None
     notes: Optional[str] = Field(None, max_length=1000)
     category: Optional[str] = Field(None, min_length=1)
-    # Add new fields to update model
+    # Add all new fields to update model
     age: Optional[int] = Field(None, ge=16, le=100)
     experience: Optional[ExperienceLevel] = None
     nationality: Optional[str] = Field(None, max_length=100)
+    current_location: Optional[str] = Field(None, max_length=150)  # 🆕 NEW: Added current_location field
 
 class LeadAssign(BaseModel):
     """Lead assignment/reassignment model"""
@@ -756,10 +769,11 @@ class LeadResponse(BaseModel):
     updated_at: datetime
     source: str  # 🔄 CHANGED: str instead of LeadSource enum
     category: str
-    # Add new fields to response
+    # Add all new fields to response
     age: Optional[int] = None
     experience: Optional[ExperienceLevel] = None
     nationality: Optional[str] = None
+    current_location: Optional[str] = None  # 🆕 NEW: Added current_location field
     course_level: Optional[str] = None  # 🔄 CHANGED: str instead of enum
 
 class LeadListResponse(BaseModel):
