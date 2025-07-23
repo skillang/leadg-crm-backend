@@ -381,6 +381,7 @@ class LeadService:
                 "age": basic_info.age,
                 "experience": basic_info.experience,
                 "nationality": basic_info.nationality,
+                "current_location": basic_info.current_location,
                 
                 # Status and tags
                 "stage": status_and_tags.stage if hasattr(status_and_tags, 'stage') else "Pending",
@@ -560,6 +561,7 @@ class LeadService:
                 "age": basic_info.age,
                 "experience": basic_info.experience,
                 "nationality": basic_info.nationality,
+                "current_location": basic_info.current_location,
                 
                 # Status and tags
                 "stage": getattr(status_and_tags, 'stage', 'Pending'),

@@ -612,9 +612,9 @@ async def process_lead_for_response(lead: Dict[str, Any], db, current_user: Dict
         
         # 🆕 NEW: Handle new optional fields with proper defaults
         lead["age"] = lead.get("age")  # Keep None if not set
-        lead["experience"] = lead.get("experience")  # Keep None if not set
-        lead["nationality"] = lead.get("nationality")  # Keep None if not set
-        lead["current_location"] = lead.get("current_location"),
+        lead["experience"] = lead.get("experience","")  # Keep None if not set
+        lead["nationality"] = lead.get("nationality","")  # Keep None if not set
+        lead["current_location"] = lead.get("current_location","")
         
         # Ensure all required fields have proper defaults
         required_defaults = {
@@ -691,9 +691,9 @@ async def process_lead_for_response(lead: Dict[str, Any], db, current_user: Dict
         lead["category"] = lead.get("category", "")
         # Set defaults for new fields
         lead["age"] = lead.get("age")
-        lead["experience"] = lead.get("experience")
-        lead["nationality"] = lead.get("nationality")
-        lead["current_location"] = lead.get("current_location"),
+        lead["experience"] = lead.get("experience","")
+        lead["nationality"] = lead.get("nationality","")
+        lead["current_location"] = lead.get("current_location","")
         # Set defaults for multi-assignment fields
         lead["co_assignees"] = lead.get("co_assignees", [])
         lead["co_assignees_names"] = lead.get("co_assignees_names", [])
@@ -718,7 +718,7 @@ def transform_lead_to_structured_format(lead: Dict[str, Any]) -> Dict[str, Any]:
             "age": clean_lead.get("age"),
             "experience": clean_lead.get("experience"),
             "nationality": clean_lead.get("nationality"),
-            "current_location": clean_lead.get("current_location"),
+            "current_location": clean_lead.get("current_location",""),
         },
         "status_and_tags": {
             "stage": clean_lead.get("stage", "initial"),
@@ -770,10 +770,10 @@ def format_lead_response(lead_doc: dict) -> dict:
         "category": lead_doc.get("category", ""),
         
         # Include new fields in response
-        "age": lead_doc.get("age"),
-        "experience": lead_doc.get("experience"),
-        "nationality": lead_doc.get("nationality"),
-        "current_location": lead_doc.get("current_location"),  # 🆕 NEW: Added current_location with default
+        "age": lead_doc.get("age",""),
+        "experience": lead_doc.get("experience",""),
+        "nationality": lead_doc.get("nationality",""),
+        "current_location": lead_doc.get("current_location",""),  # 🆕 NEW: Added current_location with default
         
         # Multi-assignment fields
         "co_assignees": lead_doc.get("co_assignees", []),
