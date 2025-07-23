@@ -382,6 +382,7 @@ class LeadService:
                 "experience": basic_info.experience,
                 "nationality": basic_info.nationality,
                 "current_location": basic_info.current_location,
+                "date_of_birth": basic_info.date_of_birth,  # 🆕 NEW
                 
                 # Status and tags
                 "stage": status_and_tags.stage if hasattr(status_and_tags, 'stage') else "Pending",
@@ -556,6 +557,7 @@ class LeadService:
                 "source": validated_source,  # 🔄 UPDATED: Use validated source
                 "category": basic_info.category,
                 "course_level": validated_course_level,  # 🔄 UPDATED: Use validated course level
+                "date_of_birth": basic_info.date_of_birth,  # 🆕 NEW
                 
                 # Add the new optional fields
                 "age": basic_info.age,
@@ -734,6 +736,7 @@ class LeadService:
                         "age": lead_data.get("age"),
                         "experience": lead_data.get("experience"),
                         "nationality": lead_data.get("nationality"),
+                        "date_of_birth": lead_data.get("date_of_birth"),  # 🆕 NEW
                         
                         # Status and tags
                         "stage": lead_data.get("stage", "Pending"),
@@ -1479,6 +1482,7 @@ class LeadService:
             "experience": lead_doc.get("experience"),
             "nationality": lead_doc.get("nationality"),
             "course_level": lead_doc.get("course_level"),  # 🔄 UPDATED: Can be None if no course levels exist
+            "date_of_birth": lead_doc.get("date_of_birth"),  # 🆕 NEW
             
             "status": lead_doc.get("status", "Initial"),
             "stage": lead_doc.get("stage", "Initial"),

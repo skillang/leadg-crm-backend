@@ -25,6 +25,7 @@ class LeadFilterParams(BaseModel):
     age_max: Optional[int] = None  # Maximum age filter
     experience: Optional[ExperienceLevel] = None  # Experience level filter
     nationality: Optional[str] = None  # Nationality filter
+    date_of_birth: Optional[str] = None
     
     # Pagination
     page: int = 1

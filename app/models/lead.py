@@ -2,7 +2,7 @@
 
 from pydantic import BaseModel, Field, validator, EmailStr
 from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, date
 from enum import Enum
 
 # ============================================================================
@@ -196,9 +196,8 @@ class LeadBasicInfo(BaseModel):
     experience: Optional[ExperienceLevel] = Field(None, description="Work experience level")
     nationality: Optional[str] = Field(None, max_length=100, description="Nationality of the lead")
     current_location: Optional[str] = Field(None, max_length=150, description="Current location of the lead")
-    
-    # 🆕 NEW: Dynamic course level field
     course_level: Optional[str] = Field(None, description="Course level (dynamic)")  # 🔄 CHANGED: str instead of enum
+    date_of_birth: Optional[datetime] = Field(None, description="Date of birth (YYYY-MM-DD format)")
     
     @validator('category')
     def validate_category(cls, v):
@@ -232,6 +231,44 @@ class LeadBasicInfo(BaseModel):
         if not v or not v.strip():
             return None  # Optional field
         return v.strip().lower().replace(' ', '_')
+    
+
+    # 🆕 NEW: Add validator for date_of_birth
+    @validator('date_of_birth', pre=True)
+    def parse_date_of_birth(cls, v):
+        """Parse date_of_birth from string to datetime"""
+        if v is None:
+            return None
+            
+        if isinstance(v, str):
+            try:
+                # Parse string date to datetime (midnight time)
+                return datetime.strptime(v, "%Y-%m-%d")
+            except ValueError:
+                raise ValueError("Date must be in YYYY-MM-DD format")
+                
+        if isinstance(v, datetime):
+            return v
+            
+        raise ValueError("Invalid date format")
+    
+    @validator('date_of_birth')
+    def validate_date_of_birth(cls, v):
+        """Validate date of birth"""
+        if v:
+            today = datetime.now().date()
+            birth_date = v.date()  # Extract date part for validation
+            
+            if birth_date > today:
+                raise ValueError("Date of birth cannot be in the future")
+            
+            # Calculate age
+            age = today.year - birth_date.year - ((today.month, today.day) < (birth_date.month, birth_date.day))
+            
+            if age < 16 or age > 100:
+                raise ValueError("Age must be between 16-100 years")
+                
+        return v
     
     class Config:
         json_schema_extra = {
@@ -686,6 +723,7 @@ class LeadResponseComprehensive(BaseModel):
     experience: Optional[ExperienceLevel] = None
     nationality: Optional[str] = None
     current_location: Optional[str] = None  # 🆕 NEW: Added current_location field
+    date_of_birth: Optional[datetime] = None  # 🆕 NEW
     
     # Status & Tags
     stage: str
@@ -724,6 +762,7 @@ class LeadCreate(LeadBasicInfo):
     experience: Optional[ExperienceLevel] = None
     nationality: Optional[str] = Field(None, max_length=100)
     current_location: Optional[str] = Field(None, max_length=150)  # 🆕 NEW: Added current_location field
+    date_of_birth: Optional[datetime] = Field(None, description="Date of birth (YYYY-MM-DD format)")
 
 class LeadUpdate(BaseModel):
     """Legacy lead update model - UPDATED"""
@@ -746,6 +785,7 @@ class LeadUpdate(BaseModel):
     experience: Optional[ExperienceLevel] = None
     nationality: Optional[str] = Field(None, max_length=100)
     current_location: Optional[str] = Field(None, max_length=150)  # 🆕 NEW: Added current_location field
+    date_of_birth: Optional[datetime] = Field(None, description="Date of birth")  
 
 class LeadAssign(BaseModel):
     """Lead assignment/reassignment model"""
@@ -773,6 +813,7 @@ class LeadResponse(BaseModel):
     age: Optional[int] = None
     experience: Optional[ExperienceLevel] = None
     nationality: Optional[str] = None
+    date_of_birth: Optional[str] = None
     current_location: Optional[str] = None  # 🆕 NEW: Added current_location field
     course_level: Optional[str] = None  # 🔄 CHANGED: str instead of enum
 

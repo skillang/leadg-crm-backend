@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, HTTPException, status, Depends, Query
 from typing import Dict, Any, List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import logging
 from bson import ObjectId
 
@@ -615,6 +615,7 @@ async def process_lead_for_response(lead: Dict[str, Any], db, current_user: Dict
         lead["experience"] = lead.get("experience","")  # Keep None if not set
         lead["nationality"] = lead.get("nationality","")  # Keep None if not set
         lead["current_location"] = lead.get("current_location","")
+        lead["date_of_birth"] = lead.get("date_of_birth","") 
         
         # Ensure all required fields have proper defaults
         required_defaults = {
@@ -693,6 +694,7 @@ async def process_lead_for_response(lead: Dict[str, Any], db, current_user: Dict
         lead["age"] = lead.get("age")
         lead["experience"] = lead.get("experience","")
         lead["nationality"] = lead.get("nationality","")
+        lead["date_of_birth"]=lead.get("date_of_birth")
         lead["current_location"] = lead.get("current_location","")
         # Set defaults for multi-assignment fields
         lead["co_assignees"] = lead.get("co_assignees", [])
@@ -718,6 +720,7 @@ def transform_lead_to_structured_format(lead: Dict[str, Any]) -> Dict[str, Any]:
             "age": clean_lead.get("age"),
             "experience": clean_lead.get("experience"),
             "nationality": clean_lead.get("nationality"),
+            "date_of_birth": clean_lead.get("date_of_birth"),
             "current_location": clean_lead.get("current_location",""),
         },
         "status_and_tags": {
@@ -773,6 +776,7 @@ def format_lead_response(lead_doc: dict) -> dict:
         "age": lead_doc.get("age",""),
         "experience": lead_doc.get("experience",""),
         "nationality": lead_doc.get("nationality",""),
+        "date_of_birth": lead_doc.get("birth_of_date"),
         "current_location": lead_doc.get("current_location",""),  # 🆕 NEW: Added current_location with default
         
         # Multi-assignment fields
@@ -817,6 +821,7 @@ def get_activity_type_for_field(field_key: str) -> str:
         "age": "personal_info_updated",
         "experience": "personal_info_updated",
         "nationality": "personal_info_updated",
+        "date_of_birth":"date_of_birth",
         "current_location": "personal_info_updated",
     }
     return activity_mapping.get(field_key, "field_updated")
@@ -895,6 +900,7 @@ async def create_lead(
                         experience=basic_info_data.get("experience"),
                         nationality=basic_info_data.get("nationality"),
                         current_location= basic_info_data.get("current_location"),
+                        date_of_birth=basic_info_data.get("date_of_birth")  # 🆕 NEW
                     ),
                     status_and_tags=LeadStatusAndTags(
                         stage=status_and_tags_data.get("stage", "initial"),
@@ -939,6 +945,7 @@ async def create_lead(
                         experience=lead_data.get("experience"),
                         nationality=lead_data.get("nationality"),
                         current_location=lead_data.get("current_location"),
+                        date_of_birth=lead_data.get("date_of_birth")  # 🆕 NE
                     ),
                     status_and_tags=LeadStatusAndTags(
                         stage=lead_data.get("stage", "initial"),
