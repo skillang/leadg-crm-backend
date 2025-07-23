@@ -722,6 +722,7 @@ def transform_lead_to_structured_format(lead: Dict[str, Any]) -> Dict[str, Any]:
         },
         "status_and_tags": {
             "stage": clean_lead.get("stage", "initial"),
+            "status":clean_lead.get("status"),
             "lead_score": clean_lead.get("lead_score", 0),
             "priority": clean_lead.get("priority", "medium"),
             "tags": clean_lead.get("tags", [])
@@ -897,6 +898,7 @@ async def create_lead(
                     ),
                     status_and_tags=LeadStatusAndTags(
                         stage=status_and_tags_data.get("stage", "initial"),
+                        status=status_and_tags_data.get("status","init"),
                         lead_score=status_and_tags_data.get("lead_score", 0),
                         tags=status_and_tags_data.get("tags", [])
                     ) if status_and_tags_data else None,
@@ -941,6 +943,7 @@ async def create_lead(
                     status_and_tags=LeadStatusAndTags(
                         stage=lead_data.get("stage", "initial"),
                         lead_score=lead_data.get("lead_score", 0),
+                        status=lead_data.get("status", "init"),
                         tags=lead_data.get("tags", [])
                     ),
                     additional_info=LeadAdditionalInfo(
