@@ -1,4 +1,4 @@
-# app/config/settings.py - Updated with WhatsApp configuration
+# app/config/settings.py - Updated with Email (ZeptoMail) configuration
 from pydantic_settings import BaseSettings
 from typing import List
 import secrets
@@ -42,11 +42,19 @@ class Settings(BaseSettings):
     cms_base_url: str = "https://cms.skillang.com/api"
     cms_templates_endpoint: str = "whatsapp-templates"
     
+    # 🆕 EMAIL CONFIGURATION (ZEPTOMAIL)
+    zeptomail_url: str = "api.zeptomail.in/"
+    zeptomail_token: str = ""
+    max_bulk_recipients: int = 500
+    email_rate_limit: int = 100
+    min_schedule_minutes: int = 5
+    max_schedule_days: int = 30
+    
     # Rate Limiting
     rate_limit_requests: int = 100
     rate_limit_window: int = 60
     
-    # Email Configuration
+    # Email Configuration (SMTP - keep existing for backward compatibility)
     smtp_host: str = "smtp.gmail.com"
     smtp_port: int = 587
     smtp_username: str = ""
@@ -116,7 +124,21 @@ class Settings(BaseSettings):
         if os.getenv("CMS_TEMPLATES_ENDPOINT"):
             self.cms_templates_endpoint = os.getenv("CMS_TEMPLATES_ENDPOINT")
         
-        # Email configuration
+        # 🆕 ZEPTOMAIL EMAIL CONFIGURATION
+        if os.getenv("ZEPTOMAIL_URL"):
+            self.zeptomail_url = os.getenv("ZEPTOMAIL_URL")
+        if os.getenv("ZEPTOMAIL_TOKEN"):
+            self.zeptomail_token = os.getenv("ZEPTOMAIL_TOKEN")
+        if os.getenv("MAX_BULK_RECIPIENTS"):
+            self.max_bulk_recipients = int(os.getenv("MAX_BULK_RECIPIENTS"))
+        if os.getenv("EMAIL_RATE_LIMIT"):
+            self.email_rate_limit = int(os.getenv("EMAIL_RATE_LIMIT"))
+        if os.getenv("MIN_SCHEDULE_MINUTES"):
+            self.min_schedule_minutes = int(os.getenv("MIN_SCHEDULE_MINUTES"))
+        if os.getenv("MAX_SCHEDULE_DAYS"):
+            self.max_schedule_days = int(os.getenv("MAX_SCHEDULE_DAYS"))
+        
+        # Email configuration (existing SMTP)
         if os.getenv("SMTP_HOST"):
             self.smtp_host = os.getenv("SMTP_HOST")
         if os.getenv("SMTP_PORT"):
@@ -199,6 +221,23 @@ class Settings(BaseSettings):
     def is_email_configured(self) -> bool:
         """Check if email is properly configured"""
         return bool(self.smtp_username) and bool(self.smtp_password)
+    
+    # 🆕 NEW: ZeptoMail configuration helper
+    def is_zeptomail_configured(self) -> bool:
+        """Check if ZeptoMail is properly configured"""
+        return bool(self.zeptomail_token) and bool(self.zeptomail_url)
+    
+    # 🆕 NEW: Get ZeptoMail configuration
+    def get_zeptomail_config(self) -> dict:
+        """Get ZeptoMail configuration dictionary"""
+        return {
+            "url": self.zeptomail_url,
+            "token": self.zeptomail_token,
+            "max_bulk_recipients": self.max_bulk_recipients,
+            "rate_limit": self.email_rate_limit,
+            "min_schedule_minutes": self.min_schedule_minutes,
+            "max_schedule_days": self.max_schedule_days
+        }
     
     def is_whatsapp_configured(self) -> bool:
         """Check if WhatsApp is properly configured"""

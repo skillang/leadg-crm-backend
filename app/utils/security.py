@@ -48,10 +48,13 @@ class SecurityManager:
         encoded_jwt = jwt.encode(to_encode, self.secret_key, algorithm=self.algorithm)
         return encoded_jwt
 
-    def create_refresh_token(self, data: Dict[str, Any]) -> str:
-        """Create JWT refresh token"""
+    def create_refresh_token(self, data: Dict[str, Any], expire_days: int = None) -> str:
+        """Create JWT refresh token with optional custom expiry"""
         to_encode = data.copy()
-        expire = datetime.utcnow() + timedelta(days=self.refresh_token_expire_days)
+        
+        # Use custom expiry or default
+        days = expire_days or self.refresh_token_expire_days
+        expire = datetime.utcnow() + timedelta(days=days)
         
         to_encode.update({
             "exp": expire,

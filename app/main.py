@@ -1,4 +1,4 @@
-# app/main.py - Updated with stages, statuses, course levels, and sources routers
+# app/main.py - Updated with emails router
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -7,7 +7,7 @@ import time
 
 from .config.settings import settings
 from .config.database import connect_to_mongo, close_mongo_connection
-from .routers import auth, leads, tasks, notes, documents, timeline, contacts, lead_categories, stages, statuses, course_levels, sources, whatsapp   # Added course_levels and sources
+from .routers import auth, leads, tasks, notes, documents, timeline, contacts, lead_categories, stages, statuses, course_levels, sources, whatsapp, emails   # Added emails
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -37,6 +37,14 @@ async def lifespan(app: FastAPI):
     # 🆕 NEW: Check sources collection (admin must create manually)
     await setup_default_sources()
     logger.info("✅ Sources collection checked")
+    
+    # 🆕 NEW: Check email configuration and start scheduler
+    await check_email_configuration()
+    logger.info("✅ Email configuration checked")
+    
+    # 🆕 NEW: Start email scheduler
+    await start_email_scheduler()
+    logger.info("✅ Email scheduler started")
     
     logger.info("✅ Application startup complete")
     
@@ -79,7 +87,7 @@ async def setup_default_statuses():
 async def setup_default_course_levels():
     """Check course levels collection exists - admin must create all course levels manually"""
     try:
-        from ..config.database import get_database
+        from .config.database import get_database
         
         db = get_database()
         
@@ -99,7 +107,7 @@ async def setup_default_course_levels():
 async def setup_default_sources():
     """Check sources collection exists - admin must create all sources manually"""
     try:
-        from ..config.database import get_database
+        from .config.database import get_database
         
         db = get_database()
         
@@ -115,11 +123,49 @@ async def setup_default_sources():
     except Exception as e:
         logger.warning(f"Error checking sources: {e}")
 
+# 🆕 NEW: Start email scheduler function
+async def start_email_scheduler():
+    """Start the background email scheduler"""
+    try:
+        if settings.is_zeptomail_configured():
+            from .services.email_scheduler import email_scheduler
+            await email_scheduler.start_scheduler()
+            logger.info("📧 Email scheduler started successfully")
+        else:
+            logger.info("📧 Email scheduler disabled - ZeptoMail not configured")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to start email scheduler: {e}")
+        logger.info("📧 Email functionality will work without scheduling")
+
+# 🆕 NEW: Check email configuration function
+async def check_email_configuration():
+    """Check email (ZeptoMail) configuration on startup"""
+    try:
+        if settings.is_zeptomail_configured():
+            logger.info("📧 ZeptoMail configuration found - email functionality enabled")
+            
+            # Test connection in background (don't block startup)
+            try:
+                from .services.zepto_client import zepto_client
+                test_result = await zepto_client.test_connection()
+                if test_result["success"]:
+                    logger.info("✅ ZeptoMail connection test successful")
+                else:
+                    logger.warning(f"⚠️ ZeptoMail connection test failed: {test_result.get('message')}")
+            except Exception as e:
+                logger.warning(f"⚠️ ZeptoMail connection test error: {e}")
+        else:
+            logger.warning("📧 ZeptoMail not configured - email functionality disabled")
+            logger.info("   To enable emails: Set ZEPTOMAIL_URL and ZEPTOMAIL_TOKEN in .env")
+            
+    except Exception as e:
+        logger.warning(f"Error checking email configuration: {e}")
+
 # Create FastAPI application
 app = FastAPI(
     title=settings.app_name,
     version=settings.version,
-    description="LeadG CRM - Customer Relationship Management API with Dynamic Stages, Statuses, Course Levels, and Sources",  # Updated description
+    description="LeadG CRM - Customer Relationship Management API with Email Functionality",  # Updated description
     lifespan=lifespan,
     docs_url="/docs" if settings.debug else None,
     redoc_url="/redoc" if settings.debug else None,
@@ -148,17 +194,17 @@ async def add_process_time_header(request: Request, call_next):
         logger.error(f"Request failed: {request.method} {request.url} - Error: {str(e)}", exc_info=True)
         raise
 
-# 🔄 UPDATED: Health check with new modules
+# 🔄 UPDATED: Health check with email module
 @app.get("/health")
 async def health_check():
     return {
         "status": "healthy",
         "message": "LeadG CRM API is running",
         "version": settings.version,
-        "modules": ["auth", "leads", "tasks", "notes", "documents", "timeline", "contacts", "stages", "statuses", "course-levels", "sources", "whatsapp"]  # Added course-levels and sources
+        "modules": ["auth", "leads", "tasks", "notes", "documents", "timeline", "contacts", "stages", "statuses", "course-levels", "sources", "whatsapp", "emails"]  # Added emails
     }
 
-# 🔄 UPDATED: Root endpoint with new endpoints
+# 🔄 UPDATED: Root endpoint with email endpoints
 @app.get("/")
 async def root():
     return {
@@ -175,10 +221,11 @@ async def root():
             "contacts": "/contacts",
             "stages": "/stages",
             "statuses": "/statuses",
-            "course-levels": "/course-levels",  # 🆕 NEW
-            "sources": "/sources",              # 🆕 NEW
+            "course-levels": "/course-levels",
+            "sources": "/sources",
             "lead-categories": "/lead-categories",
-            "whatsapp": "/api/v1/whatsapp",
+            "whatsapp": "/whatsapp",
+            "emails": "/emails",  # 🆕 NEW
             "health": "/health"
         }
     }
@@ -246,14 +293,14 @@ app.include_router(
     tags=["Statuses"]
 )
 
-# 🆕 NEW: Add course levels router
+# Add course levels router
 app.include_router(
     course_levels.router,
     prefix="/course-levels",
     tags=["Course Levels"]
 )
 
-# 🆕 NEW: Add sources router
+# Add sources router
 app.include_router(
     sources.router,
     prefix="/sources",
@@ -264,6 +311,13 @@ app.include_router(
     whatsapp.router,
     prefix="/whatsapp",
     tags=["WhatsApp"]
+)
+
+# 🆕 NEW: Add emails router
+app.include_router(
+    emails.router,
+    prefix="/emails",
+    tags=["Emails"]
 )
 
 if __name__ == "__main__":

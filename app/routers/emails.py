@@ -1,0 +1,543 @@
+# app/routers/emails.py
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
+from typing import List, Optional, Dict, Any
+from datetime import datetime, timedelta
+from bson import ObjectId
+import logging
+
+from ..config.database import get_database
+from ..utils.dependencies import get_current_active_user, get_admin_user
+from ..models.email import (
+    EmailRequest, BulkEmailRequest, EmailResponse,
+    EmailHistoryResponse, EmailHistoryItem,
+    ScheduledEmailsResponse, ScheduledEmailItem,
+    EmailStatsResponse, EmailStats
+)
+from ..services.email_service import get_email_service
+from ..services.zepto_client import test_zepto_connection
+
+logger = logging.getLogger(__name__)
+
+# Create router (following your CRM pattern - no prefix here)
+router = APIRouter(tags=["emails"])
+
+# ============================================================================
+# SINGLE LEAD EMAIL ENDPOINTS
+# ============================================================================
+
+@router.post("/leads/{lead_id}/send")
+async def send_email_to_lead(
+    lead_id: str,
+    email_request: EmailRequest,
+    current_user: Dict[str, Any] = Depends(get_current_active_user)
+):
+    """
+    Send email to a single lead
+    Users can only email leads assigned to them, admins can email any lead
+    """
+    try:
+        logger.info(f"Email request for lead {lead_id} by user {current_user.get('email')}")
+        
+        result = await get_email_service().send_single_lead_email(
+            lead_id=lead_id,
+            email_request=email_request,
+            current_user=current_user
+        )
+        
+        if not result["success"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=result["error"]
+            )
+        
+        return {
+            "success": True,
+            "data": {
+                "email_id": result.get("email_id"),
+                "lead_id": lead_id,
+                "message": result.get("message"),
+                "scheduled": result.get("scheduled", False),
+                "scheduled_time": result.get("scheduled_time"),
+                "created_at": result.get("created_at")
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in send_email_to_lead: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to send email: {str(e)}"
+        )
+
+# ============================================================================
+# BULK EMAIL ENDPOINTS
+# ============================================================================
+
+@router.post("/bulk-send")
+async def send_bulk_email(
+    bulk_request: BulkEmailRequest,
+    current_user: Dict[str, Any] = Depends(get_current_active_user)
+):
+    """
+    Send bulk email to multiple leads
+    Users can send to assigned leads, admins can send to any leads
+    """
+    try:
+        logger.info(f"Bulk email request for {len(bulk_request.lead_ids)} leads by user {current_user.get('email')}")
+        
+        result = await get_email_service().send_bulk_lead_email(
+            bulk_request=bulk_request,
+            current_user=current_user
+        )
+        
+        if not result["success"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=result["error"]
+            )
+        
+        response_data = {
+            "success": True,
+            "data": {
+                "email_id": result.get("email_id"),
+                "message": result.get("message"),
+                "total_recipients": result.get("total_recipients", 0),
+                "scheduled": result.get("scheduled", False),
+                "scheduled_time": result.get("scheduled_time"),
+                "created_at": result.get("created_at")
+            }
+        }
+        
+        # Add warning for permission filtering (users only)
+        if "warning" in result:
+            response_data["data"]["warning"] = result["warning"]
+            response_data["data"]["total_requested"] = result.get("total_requested")
+            response_data["data"]["total_processed"] = result.get("total_processed")
+            response_data["data"]["denied_count"] = result.get("denied_count")
+        
+        return response_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in send_bulk_email: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to send bulk email: {str(e)}"
+        )
+
+# ============================================================================
+# EMAIL HISTORY ENDPOINTS
+# ============================================================================
+
+@router.get("/leads/{lead_id}/history")
+async def get_lead_email_history(
+    lead_id: str,
+    page: int = Query(1, ge=1, description="Page number"),
+    limit: int = Query(10, ge=1, le=50, description="Items per page"),
+    status: Optional[str] = Query(None, description="Filter by status: sent, failed, pending, cancelled"),
+    current_user: Dict[str, Any] = Depends(get_current_active_user)
+):
+    """
+    Get email history for a specific lead
+    Users can only see history for assigned leads, admins see all
+    """
+    try:
+        db = get_database()
+        
+        # Check lead exists and permission (following your CRM pattern)
+        lead = await db.leads.find_one({"lead_id": lead_id})
+        if not lead:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Lead {lead_id} not found"
+            )
+        
+        # Permission check
+        user_role = current_user.get("role")
+        if user_role != "admin":
+            assigned_to = lead.get("assigned_to")
+            current_user_email = current_user.get("email")
+            
+            if assigned_to != current_user_email:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You can only view email history for leads assigned to you"
+                )
+        
+        # Build query
+        query = {
+            "$or": [
+                {"lead_id": lead_id},  # Single lead emails
+                {"lead_ids": lead_id}  # Bulk emails containing this lead
+            ]
+        }
+        
+        if status:
+            query["status"] = status
+        
+        # Get total count
+        total = await db.crm_lead_emails.count_documents(query)
+        
+        # Get emails with pagination
+        skip = (page - 1) * limit
+        emails_cursor = db.crm_lead_emails.find(query).sort("created_at", -1).skip(skip).limit(limit)
+        emails = await emails_cursor.to_list(None)
+        
+        # Format response
+        email_history = []
+        for email in emails:
+            # Find recipient info for this lead
+            recipient_email = lead["email"]
+            recipient_name = lead["name"]
+            recipient_status = "pending"
+            sent_at = None
+            error = None
+            
+            # Look for specific recipient info
+            for recipient in email.get("recipients", []):
+                if recipient.get("lead_id") == lead_id:
+                    recipient_status = recipient.get("status", "pending")
+                    sent_at = recipient.get("sent_at")
+                    error = recipient.get("error")
+                    break
+            
+            history_item = EmailHistoryItem(
+                email_id=email["email_id"],
+                template_key=email["template_key"],
+                template_name=email.get("template_name"),
+                sender_email=email["sender_email"],
+                recipient_email=recipient_email,
+                recipient_name=recipient_name,
+                status=recipient_status,
+                scheduled=email.get("is_scheduled", False),
+                scheduled_time=email.get("scheduled_time"),
+                sent_at=sent_at,
+                error=error,
+                created_by_name=email["created_by_name"],
+                created_at=email["created_at"]
+            )
+            email_history.append(history_item)
+        
+        return EmailHistoryResponse(
+            lead_id=lead_id,
+            emails=email_history,
+            total=total,
+            page=page,
+            limit=limit
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting email history for lead {lead_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get email history: {str(e)}"
+        )
+
+# ============================================================================
+# SCHEDULED EMAILS ENDPOINTS
+# ============================================================================
+
+@router.get("/scheduled")
+async def get_scheduled_emails(
+    page: int = Query(1, ge=1, description="Page number"),
+    limit: int = Query(20, ge=1, le=100, description="Items per page"),
+    status: str = Query("pending", description="Filter by status: pending, sent, failed, cancelled"),
+    current_user: Dict[str, Any] = Depends(get_current_active_user)
+):
+    """
+    Get scheduled emails
+    Users see only their scheduled emails, admins see all
+    """
+    try:
+        db = get_database()
+        
+        # Build query with permission filtering
+        query = {
+            "is_scheduled": True
+        }
+        
+        # Add status filter
+        if status:
+            query["status"] = status
+        
+        # Permission filtering (following your CRM pattern)
+        user_role = current_user.get("role")
+        if user_role != "admin":
+            # Users see only their scheduled emails
+            user_id = str(current_user.get("_id") or current_user.get("id"))
+            query["created_by"] = ObjectId(user_id)
+        
+        # Get total count
+        total = await db.crm_lead_emails.count_documents(query)
+        pending_count = await db.crm_lead_emails.count_documents({
+            **query,
+            "status": "pending"
+        }) if status != "pending" else total
+        
+        # Get scheduled emails with pagination
+        skip = (page - 1) * limit
+        emails_cursor = db.crm_lead_emails.find(query).sort("scheduled_time", 1).skip(skip).limit(limit)
+        emails = await emails_cursor.to_list(None)
+        
+        # Format response
+        scheduled_emails = []
+        for email in emails:
+            scheduled_item = ScheduledEmailItem(
+                email_id=email["email_id"],
+                template_key=email["template_key"],
+                template_name=email.get("template_name"),
+                sender_email=email["sender_email"],
+                total_recipients=email["total_recipients"],
+                lead_id=email.get("lead_id"),
+                lead_ids=email.get("lead_ids"),
+                scheduled_time=email["scheduled_time"],
+                status=email["status"],
+                created_by_name=email["created_by_name"],
+                created_at=email["created_at"]
+            )
+            scheduled_emails.append(scheduled_item)
+        
+        return ScheduledEmailsResponse(
+            emails=scheduled_emails,
+            total=total,
+            pending_count=pending_count,
+            page=page,
+            limit=limit
+        )
+        
+    except Exception as e:
+        logger.error(f"Error getting scheduled emails: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get scheduled emails: {str(e)}"
+        )
+
+@router.delete("/scheduled/{email_id}")
+async def cancel_scheduled_email(
+    email_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_active_user)
+):
+    """
+    Cancel a scheduled email
+    Users can only cancel their own emails, admins can cancel any
+    """
+    try:
+        db = get_database()
+        
+        # Find the scheduled email
+        email = await db.crm_lead_emails.find_one({"email_id": email_id})
+        if not email:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Email {email_id} not found"
+            )
+        
+        # Check if email is cancellable
+        if email.get("status") != "pending":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot cancel email with status '{email.get('status')}'. Only pending emails can be cancelled."
+            )
+        
+        if not email.get("is_scheduled"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email is not scheduled and cannot be cancelled"
+            )
+        
+        # Permission check (following your CRM pattern)
+        user_role = current_user.get("role")
+        if user_role != "admin":
+            email_creator = email.get("created_by")
+            current_user_id = str(current_user.get("_id") or current_user.get("id"))
+            
+            if email_creator != current_user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You can only cancel emails created by you"
+                )
+        
+        # Cancel the email
+        await db.crm_lead_emails.update_one(
+            {"email_id": email_id},
+            {
+                "$set": {
+                    "status": "cancelled",
+                    "cancelled_at": datetime.utcnow(),
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+        
+        logger.info(f"Email {email_id} cancelled by user {current_user.get('email')}")
+        
+        return {
+            "success": True,
+            "message": f"Email {email_id} has been cancelled successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error cancelling email {email_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to cancel email: {str(e)}"
+        )
+
+# ============================================================================
+# EMAIL STATISTICS ENDPOINTS
+# ============================================================================
+
+@router.get("/stats")
+async def get_email_statistics(
+    current_user: Dict[str, Any] = Depends(get_current_active_user)
+):
+    """
+    Get email usage statistics
+    Users see their stats, admins see global stats
+    """
+    try:
+        db = get_database()
+        
+        # Base query with permission filtering
+        base_query = {}
+        user_role = current_user.get("role")
+        
+        if user_role != "admin":
+            # Users see only their stats
+            user_id = str(current_user.get("_id") or current_user.get("id"))
+            base_query["created_by"] = user_id
+        
+        # Calculate date ranges
+        now = datetime.utcnow()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start = today_start - timedelta(days=7)
+        month_start = today_start - timedelta(days=30)
+        
+        # Get statistics
+        stats = EmailStats()
+        
+        # Emails sent today
+        today_query = {**base_query, "status": "sent", "sent_at": {"$gte": today_start}}
+        stats.emails_sent_today = await db.crm_lead_emails.count_documents(today_query)
+        
+        # Emails sent this week
+        week_query = {**base_query, "status": "sent", "sent_at": {"$gte": week_start}}
+        stats.emails_sent_week = await db.crm_lead_emails.count_documents(week_query)
+        
+        # Emails sent this month
+        month_query = {**base_query, "status": "sent", "sent_at": {"$gte": month_start}}
+        stats.emails_sent_month = await db.crm_lead_emails.count_documents(month_query)
+        
+        # Scheduled emails
+        scheduled_query = {**base_query, "status": "pending", "is_scheduled": True}
+        stats.emails_scheduled = await db.crm_lead_emails.count_documents(scheduled_query)
+        
+        # Failed emails today
+        failed_query = {**base_query, "status": "failed", "created_at": {"$gte": today_start}}
+        stats.emails_failed_today = await db.crm_lead_emails.count_documents(failed_query)
+        
+        # Top template (most used)
+        pipeline = [
+            {"$match": {**base_query, "status": "sent"}},
+            {"$group": {"_id": "$template_key", "count": {"$sum": 1}}},
+            {"$sort": {"count": -1}},
+            {"$limit": 1}
+        ]
+        
+        top_template_result = await db.crm_lead_emails.aggregate(pipeline).to_list(1)
+        if top_template_result:
+            stats.top_template = top_template_result[0]["_id"]
+            stats.top_template_count = top_template_result[0]["count"]
+        
+        # Delivery rate calculation
+        total_sent = await db.crm_lead_emails.count_documents({**base_query, "status": "sent"})
+        total_failed = await db.crm_lead_emails.count_documents({**base_query, "status": "failed"})
+        total_attempts = total_sent + total_failed
+        
+        if total_attempts > 0:
+            stats.delivery_rate = round((total_sent / total_attempts) * 100, 2)
+        
+        return EmailStatsResponse(
+            success=True,
+            stats=stats,
+            user_specific=(user_role != "admin")
+        )
+        
+    except Exception as e:
+        logger.error(f"Error getting email statistics: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get email statistics: {str(e)}"
+        )
+
+# ============================================================================
+# SYSTEM ENDPOINTS
+# ============================================================================
+
+@router.get("/scheduler/status")
+async def get_scheduler_status(
+    current_user: Dict[str, Any] = Depends(get_admin_user)  # Admin only
+):
+    """
+    Get email scheduler status and statistics (Admin only)
+    """
+    try:
+        from ..services.email_scheduler import email_scheduler
+        status = await email_scheduler.get_scheduler_status()
+        
+        return {
+            "success": True,
+            "scheduler": status,
+            "timestamp": datetime.utcnow()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting scheduler status: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get scheduler status: {str(e)}"
+        )
+
+@router.get("/test-connection")
+async def test_email_connection(
+    current_user: Dict[str, Any] = Depends(get_admin_user)  # Admin only
+):
+    """
+    Test ZeptoMail API connection (Admin only)
+    """
+    try:
+        result = await test_zepto_connection()
+        
+        return {
+            "success": result["success"],
+            "message": result["message"],
+            "zepto_configured": result.get("authenticated", False),
+            "timestamp": datetime.utcnow()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error testing email connection: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to test connection: {str(e)}"
+        )
+
+# ============================================================================
+# DEBUG ENDPOINTS (Development only)
+# ============================================================================
+
+@router.get("/debug/test")
+async def debug_email_router():
+    """Debug endpoint to test email router is working"""
+    return {
+        "message": "Email router is working!",
+        "timestamp": datetime.utcnow(),
+                    "zepto_configured": get_email_service().zepto_client.is_configured()
+    }

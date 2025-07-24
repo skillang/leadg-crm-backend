@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, List, Union
 import logging
 from bson import ObjectId
+from motor.motor_asyncio import AsyncIOMotorDatabase as Database
 
 from ..config.database import get_database
 from ..utils.security import security, verify_password, get_password_hash
@@ -20,7 +21,7 @@ from ..models.user import (
     UserCreate, UserResponse, UserUpdate, DepartmentHelper, 
     DepartmentCreate, DepartmentType
 )
-
+from ..config.settings import settings  # For token expiry settings
 logger = logging.getLogger(__name__)
 router = APIRouter()
 # REPLACE your existing register_user function in app/routers/auth.py with this:
@@ -262,8 +263,14 @@ async def login_user(request: Request, login_data: LoginRequest):
     }
     
     access_token = security.create_access_token(token_data)
-    refresh_token = security.create_refresh_token(token_data)
-    
+
+
+# 🔥 NEW: Use remember_me for refresh token expiry
+    if login_data.remember_me:
+        refresh_token = security.create_refresh_token(token_data, expire_days=30)
+    else:
+        refresh_token = security.create_refresh_token(token_data, expire_days=7)
+        
     # Store session info
     session_data = {
         "user_id": str(user["_id"]),
@@ -1322,4 +1329,79 @@ async def delete_user(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete user: {str(e)}"
+        )
+    
+@router.post("/refresh", response_model=RefreshTokenResponse)
+async def refresh_token(
+    request: RefreshTokenRequest,
+    db: Database = Depends(get_database)
+):
+    """
+    Refresh access token using refresh token
+    """
+    try:
+        # Verify refresh token
+        payload = security.verify_token(request.refresh_token)
+        if payload is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid refresh token"
+            )
+        
+        # Check token type
+        if payload.get("type") != "refresh":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token type"
+            )
+        
+        # Check if token is blacklisted
+        token_jti = payload.get("jti")
+        if token_jti and await security.is_token_blacklisted(token_jti):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token has been revoked"
+            )
+        
+        # Get user from database
+        user_id = payload.get("sub")
+        user = await db.users.find_one({"_id": ObjectId(user_id)})
+        
+        if not user or not user.get("is_active", False):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found or inactive"
+            )
+        
+        # Create new access token with same data
+        token_data = {
+            "sub": str(user["_id"]),
+            "email": user["email"],
+            "username": user["username"],
+            "role": user["role"]
+        }
+        
+        new_access_token = security.create_access_token(token_data)
+        
+        # Update last activity
+        await db.users.update_one(
+            {"_id": user["_id"]},
+            {"$set": {"last_activity": datetime.utcnow()}}
+        )
+        
+        logger.info(f"Token refreshed for user: {user['email']}")
+        
+        return RefreshTokenResponse(
+            access_token=new_access_token,
+            token_type="bearer",
+            expires_in=security.access_token_expire_minutes * 60
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Token refresh failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not refresh token"
         )
