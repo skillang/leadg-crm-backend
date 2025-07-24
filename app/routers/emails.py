@@ -4,8 +4,11 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
 from bson import ObjectId
 import logging
+import asyncio
+import aiohttp
 
 from ..config.database import get_database
+from ..config.settings import settings
 from ..utils.dependencies import get_current_active_user, get_admin_user
 from ..models.email import (
     EmailRequest, BulkEmailRequest, EmailResponse,
@@ -22,8 +25,129 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["emails"])
 
 # ============================================================================
-# SINGLE LEAD EMAIL ENDPOINTS
+# EMAIL TEMPLATES ENDPOINTS
 # ============================================================================
+
+@router.get("/templates")
+async def get_email_templates(
+    current_user: Dict[str, Any] = Depends(get_current_active_user)
+):
+    """
+    Fetch email templates from CMS
+    Returns available templates for dropdown selection
+    """
+    try:
+        logger.info(f"Fetching email templates for user: {current_user.get('email')}")
+        
+        # Fetch templates from CMS using aiohttp
+        import aiohttp
+        cms_url = f"{settings.cms_base_url}/{settings.email_templates_endpoint}"  # Use email-specific endpoint
+        
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.get(cms_url) as response:
+                    if response.status == 200:
+                        cms_data = await response.json()
+                        
+                        # Format templates for frontend
+                        templates = []
+                        for item in cms_data.get("data", []):
+                            template = {
+                                "key": item.get("key"),
+                                "name": item.get("Template_Name"),
+                                "subject": item.get("subject", ""),
+                                "description": item.get("description", ""),
+                                "template_type": item.get("template_type", "email"),
+                                "is_active": item.get("is_active", True)
+                            }
+                            
+                            # Only include active email templates
+                            if template["key"] and template["name"] and template.get("is_active"):
+                                templates.append(template)
+                        
+                        logger.info(f"Successfully fetched {len(templates)} email templates from CMS")
+                        
+                        return {
+                            "success": True,
+                            "templates": templates,
+                            "total": len(templates),
+                            "message": f"Found {len(templates)} email templates"
+                        }
+                    else:
+                        logger.error(f"CMS API error: {response.status}")
+                        return {
+                            "success": False,
+                            "templates": [],
+                            "total": 0,
+                            "error": f"CMS API returned status {response.status}"
+                        }
+                        
+            except aiohttp.ClientError as e:
+                logger.error(f"Network error fetching templates: {e}")
+                return {
+                    "success": False,
+                    "templates": [],
+                    "total": 0,
+                    "error": f"Network error: {str(e)}"
+                }
+                
+    except Exception as e:
+        logger.error(f"Error fetching email templates: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch email templates: {str(e)}"
+        )
+
+@router.get("/templates/test")
+async def test_cms_connection(
+    current_user: Dict[str, Any] = Depends(get_current_active_user)
+):
+    """
+    Test CMS connection for email templates
+    Debug endpoint to check CMS connectivity
+    """
+    try:
+        import aiohttp
+        cms_url = f"{settings.cms_base_url}/{settings.email_templates_endpoint}"
+        
+        logger.info(f"Testing CMS connection to: {cms_url}")
+        
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.get(cms_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    response_text = await response.text()
+                    
+                    return {
+                        "success": True,
+                        "cms_url": cms_url,
+                        "status_code": response.status,
+                        "response_preview": response_text[:500] + "..." if len(response_text) > 500 else response_text,
+                        "headers": dict(response.headers),
+                        "message": f"CMS connection test completed with status {response.status}"
+                    }
+                    
+            except asyncio.TimeoutError:
+                return {
+                    "success": False,
+                    "cms_url": cms_url,
+                    "error": "Connection timeout (10 seconds)",
+                    "message": "CMS server is not responding"
+                }
+            except aiohttp.ClientError as e:
+                return {
+                    "success": False,
+                    "cms_url": cms_url,
+                    "error": f"Network error: {str(e)}",
+                    "message": "Failed to connect to CMS"
+                }
+                
+    except Exception as e:
+        logger.error(f"Error testing CMS connection: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "CMS connection test failed"
+        }
 
 @router.post("/leads/{lead_id}/send")
 async def send_email_to_lead(

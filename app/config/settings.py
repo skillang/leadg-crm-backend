@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     cms_base_url: str = "https://cms.skillang.com/api"
     cms_templates_endpoint: str = "whatsapp-templates"
     
+    # 🆕 EMAIL CMS CONFIGURATION
+    email_templates_endpoint: str = "mail-templates"  # Email-specific endpoint
+    
     # 🆕 EMAIL CONFIGURATION (ZEPTOMAIL)
     zeptomail_url: str = "api.zeptomail.in/"
     zeptomail_token: str = ""
@@ -123,6 +126,10 @@ class Settings(BaseSettings):
             self.cms_base_url = os.getenv("CMS_BASE_URL")
         if os.getenv("CMS_TEMPLATES_ENDPOINT"):
             self.cms_templates_endpoint = os.getenv("CMS_TEMPLATES_ENDPOINT")
+        
+        # 🆕 EMAIL CMS CONFIGURATION
+        if os.getenv("EMAIL_TEMPLATES_ENDPOINT"):
+            self.email_templates_endpoint = os.getenv("EMAIL_TEMPLATES_ENDPOINT")
         
         # 🆕 ZEPTOMAIL EMAIL CONFIGURATION
         if os.getenv("ZEPTOMAIL_URL"):
