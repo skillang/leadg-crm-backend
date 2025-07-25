@@ -323,12 +323,21 @@ class LeadService:
             
             logger.info(f"✅ Generated new format lead ID: {lead_id} for category '{basic_info.category}' and source '{validated_source}'")
             
-            # Step 6: Handle assignment
+            # Step 6: Handle assignment with support for explicit "unassigned"
             assigned_to = assignment.assigned_to if hasattr(assignment, 'assigned_to') else None
             assigned_to_name = None
-            assignment_method = "manual" if assigned_to else "round_robin"
-            
-            if not assigned_to:
+
+            if assigned_to == "unassigned":
+                # Admin explicitly wants no assignment
+                assigned_to = None
+                assigned_to_name = None
+                assignment_method = "unassigned"
+                logger.info("Lead explicitly set to unassigned by admin")
+            elif assigned_to and assigned_to != "unassigned":
+                # Manual assignment to specific user
+                assignment_method = "manual"
+                logger.info(f"Manual assignment to: {assigned_to}")
+            else:
                 # Auto-assign using round-robin
                 assigned_to = await lead_assignment_service.get_next_assignee_round_robin()
                 assignment_method = "round_robin"
@@ -527,12 +536,22 @@ class LeadService:
             )
             
             # Step 5: Handle assignment with selective round robin
+            # Step 5: Handle assignment with selective round robin and support for explicit "unassigned"
             assigned_to = assignment_info.assigned_to if assignment_info else None
             assigned_to_name = None
-            assignment_method = "manual" if assigned_to else "round_robin"
-            
-            if not assigned_to:
-                # Use selective round robin if specific users provided
+
+            if assigned_to == "unassigned":
+                # Admin explicitly wants no assignment
+                assigned_to = None
+                assigned_to_name = None
+                assignment_method = "unassigned"
+                logger.info("Lead explicitly set to unassigned by admin")
+            elif assigned_to and assigned_to != "unassigned":
+                # Manual assignment to specific user
+                assignment_method = "manual"
+                logger.info(f"Manual assignment to: {assigned_to}")
+            else:
+                # Auto-assign using round-robin
                 if selected_user_emails:
                     assigned_to = await lead_assignment_service.get_next_assignee_selective_round_robin(
                         selected_user_emails
@@ -540,7 +559,6 @@ class LeadService:
                     assignment_method = "selective_round_robin"
                     logger.info(f"Selective round robin assigned to: {assigned_to}")
                 else:
-                    # Use regular round robin for all active users
                     assigned_to = await lead_assignment_service.get_next_assignee_round_robin()
                     assignment_method = "round_robin"
                     logger.info(f"Regular round robin assigned to: {assigned_to}")
@@ -720,14 +738,30 @@ class LeadService:
                     )
                     
                     # Get next assignee based on method
-                    if assignment_method == "selected_users" and selected_user_emails:
-                        assigned_to = await lead_assignment_service.get_next_assignee_selective_round_robin(
-                            selected_user_emails
-                        )
-                        method = "selective_round_robin"
+                    # Check if this lead should be explicitly unassigned
+                    lead_assigned_to = lead_data.get("assigned_to")
+
+                    if lead_assigned_to == "unassigned":
+                        # Explicit unassigned for this lead
+                        assigned_to = None
+                        assigned_to_name = None
+                        method = "unassigned"
+                        logger.info(f"Bulk lead {i} explicitly set to unassigned")
+                    elif lead_assigned_to and lead_assigned_to != "unassigned":
+                        # Manual assignment for this specific lead
+                        assigned_to = lead_assigned_to
+                        method = "manual"
+                        logger.info(f"Bulk lead {i} manually assigned to: {assigned_to}")
                     else:
-                        assigned_to = await lead_assignment_service.get_next_assignee_round_robin()
-                        method = "round_robin"
+                        # Auto-assign using round-robin (existing logic)
+                        if assignment_method == "selected_users" and selected_user_emails:
+                            assigned_to = await lead_assignment_service.get_next_assignee_selective_round_robin(
+                                selected_user_emails
+                            )
+                            method = "selective_round_robin"
+                        else:
+                            assigned_to = await lead_assignment_service.get_next_assignee_round_robin()
+                            method = "round_robin"
                     
                     # Get assignee name
                     assigned_to_name = None
