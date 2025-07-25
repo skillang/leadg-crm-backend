@@ -1114,7 +1114,9 @@ async def get_leads(
                 "$or": [
                     {"name": {"$regex": search, "$options": "i"}},
                     {"email": {"$regex": search, "$options": "i"}},
-                    {"lead_id": {"$regex": search, "$options": "i"}}
+                    {"lead_id": {"$regex": search, "$options": "i"}},
+                    {"contact_number": {"$regex": search, "$options": "i"}},  # Add this line
+                    {"phone_number": {"$regex": search, "$options": "i"}}     
                 ]
             }
             if "$and" in query:
@@ -1203,7 +1205,9 @@ async def get_my_leads(
                 "$or": [
                     {"name": {"$regex": search, "$options": "i"}},
                     {"email": {"$regex": search, "$options": "i"}},
-                    {"lead_id": {"$regex": search, "$options": "i"}}
+                    {"lead_id": {"$regex": search, "$options": "i"}},
+                    {"contact_number": {"$regex": search, "$options": "i"}},  # Add this line
+                    {"phone_number": {"$regex": search, "$options": "i"}}     
                 ]
             }
             query = {
