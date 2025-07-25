@@ -1,4 +1,4 @@
-# app/routers/sources.py - FIXED FILE FOR SOURCE API ENDPOINTS
+# app/routers/sources.py - UPDATED - SOURCE API ENDPOINTS WITH SHORT FORM SUPPORT
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from typing import List, Dict, Any
@@ -6,7 +6,7 @@ import logging
 from ..config.database import get_database
 from bson import ObjectId
 from datetime import datetime
-from ..models.source import SourceCreate, SourceUpdate, SourceResponse, SourceListResponse
+from ..models.source import SourceCreate, SourceUpdate, SourceResponse, SourceListResponse, SourceHelper
 from ..services.source_service import source_service
 from ..utils.dependencies import get_current_active_user, get_admin_user
 
@@ -27,6 +27,7 @@ async def get_all_sources(
     """
     Get all sources (visible to all authenticated users)
     Used for dropdowns in lead creation/editing
+    Now includes short_form field for display
     """
     try:
         logger.info(f"Getting sources for user: {current_user.get('email')}")
@@ -53,6 +54,72 @@ async def get_all_sources(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get sources: {str(e)}"
+        )
+
+@router.get("/suggestions", response_model=Dict[str, Any])
+async def get_source_suggestions(
+    partial_name: str = Query("", description="Partial name to filter suggestions"),
+    current_user: Dict[str, Any] = Depends(get_admin_user)
+):
+    """
+    Get pre-defined source suggestions with short forms (Admin only)
+    Helps admin create common sources quickly
+    """
+    try:
+        logger.info(f"Getting source suggestions for admin: {current_user.get('email')}")
+        
+        suggestions = await source_service.get_source_suggestions(partial_name)
+        
+        return {
+            "success": True,
+            "suggestions": suggestions,
+            "count": len(suggestions),
+            "message": "Source suggestions retrieved successfully"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting source suggestions: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get source suggestions: {str(e)}"
+        )
+
+@router.get("/validate-short-form/{short_form}", response_model=Dict[str, Any])
+async def validate_short_form(
+    short_form: str,
+    exclude_id: str = Query(None, description="Source ID to exclude from validation"),
+    current_user: Dict[str, Any] = Depends(get_admin_user)
+):
+    """
+    Validate if short form is available (Admin only)
+    Used during source creation/editing
+    """
+    try:
+        logger.info(f"Validating short form '{short_form}' for admin: {current_user.get('email')}")
+        
+        is_available = await SourceHelper.validate_source_short_form(short_form, exclude_id)
+        
+        response = {
+            "success": True,
+            "short_form": short_form.upper(),
+            "is_available": is_available
+        }
+        
+        if is_available:
+            response["message"] = f"Short form '{short_form.upper()}' is available"
+        else:
+            response["message"] = f"Short form '{short_form.upper()}' is already taken"
+            # Suggest alternatives
+            suggestion = SourceHelper.generate_suggested_short_form(short_form)
+            response["suggested_alternative"] = suggestion
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Error validating short form: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to validate short form: {str(e)}"
         )
 
 @router.get("/inactive", response_model=SourceListResponse)
@@ -163,17 +230,25 @@ async def create_source(
     source_data: SourceCreate,
     current_user: Dict[str, Any] = Depends(get_admin_user)
 ):
-    """Create a new source (Admin only)"""
+    """
+    Create a new source with short form (Admin only)
+    
+    - **name**: Source name (e.g., "website", "social_media")
+    - **short_form**: 2-3 character code for lead IDs (e.g., "WB", "SM", "RF")
+    - **display_name**: User-friendly name for UI
+    - **description**: Optional description
+    """
     try:
         user_email = current_user.get("email", "unknown")
-        logger.info(f"Creating source '{source_data.name}' by admin: {user_email}")
+        logger.info(f"Creating source '{source_data.name}' with short form '{source_data.short_form}' by admin: {user_email}")
         
         result = await source_service.create_source(source_data, user_email)
         
         return {
             "success": True,
             "message": result["message"],
-            "source": result["source"]
+            "source": result["source"],
+            "lead_id_preview": f"Example lead IDs: NS-{source_data.short_form}-1, SA-{source_data.short_form}-1"
         }
         
     except ValueError as e:
@@ -194,7 +269,11 @@ async def update_source(
     source_data: SourceUpdate,
     current_user: Dict[str, Any] = Depends(get_admin_user)
 ):
-    """Update an existing source (Admin only)"""
+    """
+    Update an existing source (Admin only)
+    
+    Note: short_form cannot be updated to maintain lead ID consistency
+    """
     try:
         user_email = current_user.get("email", "unknown")
         logger.info(f"Updating source {source_id} by admin: {user_email}")
@@ -204,7 +283,8 @@ async def update_source(
         return {
             "success": True,
             "message": result["message"],
-            "source": result["source"]
+            "source": result["source"],
+            "note": "Short form cannot be updated to maintain lead ID consistency"
         }
         
     except ValueError as e:
@@ -250,15 +330,15 @@ async def activate_source(
         if result.modified_count == 0:
             return {
                 "success": True,
-                "message": f"Source '{source['name']}' was already active",
+                "message": f"Source '{source['name']}' (short form: {source.get('short_form', 'N/A')}) was already active",
                 "action": "no_change"
             }
         
-        logger.info(f"Source '{source['name']}' activated by {user_email}")
+        logger.info(f"Source '{source['name']}' (short form: {source.get('short_form', 'N/A')}) activated by {user_email}")
         
         return {
             "success": True,
-            "message": f"Source '{source['name']}' activated successfully",
+            "message": f"Source '{source['name']}' (short form: {source.get('short_form', 'N/A')}) activated successfully",
             "action": "activated"
         }
         
@@ -310,15 +390,15 @@ async def deactivate_source(
         if result.modified_count == 0:
             return {
                 "success": True,
-                "message": f"Source '{source['name']}' was already inactive",
+                "message": f"Source '{source['name']}' (short form: {source.get('short_form', 'N/A')}) was already inactive",
                 "action": "no_change"
             }
         
-        logger.info(f"Source '{source['name']}' deactivated by {user_email}")
+        logger.info(f"Source '{source['name']}' (short form: {source.get('short_form', 'N/A')}) deactivated by {user_email}")
         
         return {
             "success": True,
-            "message": f"Source '{source['name']}' deactivated successfully",
+            "message": f"Source '{source['name']}' (short form: {source.get('short_form', 'N/A')}) deactivated successfully",
             "action": "deactivated"
         }
         

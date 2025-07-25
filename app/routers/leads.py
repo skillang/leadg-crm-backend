@@ -845,6 +845,9 @@ def get_field_change_description(field_name: str, old_value: any, new_value: any
 # ============================================================================
 # CORE ENDPOINTS (UPDATED WITH NEW FEATURES)
 # ============================================================================
+# ============================================================================
+# 🔄 UPDATED: MAIN LEAD CREATION ENDPOINT WITH NEW ID GENERATION
+# ============================================================================
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_lead(
@@ -855,8 +858,8 @@ async def create_lead(
     current_user: Dict[str, Any] = Depends(get_admin_user)
 ):
     """
-    Create a new lead with enhanced assignment options:
-    - Category-based lead IDs (NS-1, SA-1, WA-1, etc.)
+    🔄 UPDATED: Create a new lead with enhanced assignment options:
+    - 🆕 NEW: Category-Source combination lead IDs (NS-WB-1, SA-SM-2, WA-RF-3, etc.)
     - 🆕 NEW: Selective round robin assignment
     - 🆕 NEW: AGE, EXPERIENCE, Nationality fields (optional)
     - Duplicate detection and prevention
@@ -885,6 +888,13 @@ async def create_lead(
                         detail="Category is required. Please select a valid lead category."
                     )
                 
+                # 🆕 NEW: Validate source is provided for new ID format
+                if not basic_info_data.get("source"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Source is required. Please select a valid lead source."
+                    )
+                
                 # Create structured data using the classes
                 from ..models.lead import LeadCreateComprehensive, LeadBasicInfo, LeadStatusAndTags, LeadAssignmentInfo, LeadAdditionalInfo
                 
@@ -893,18 +903,18 @@ async def create_lead(
                         name=basic_info_data.get("name", ""),
                         email=basic_info_data.get("email", ""),
                         contact_number=basic_info_data.get("contact_number", ""),
-                        source=basic_info_data.get("source", "website"),
+                        source=basic_info_data.get("source"),  # 🔄 UPDATED: Now required
                         category=basic_info_data.get("category"),
                         # Handle new optional fields
                         age=basic_info_data.get("age"),
                         experience=basic_info_data.get("experience"),
                         nationality=basic_info_data.get("nationality"),
-                        current_location= basic_info_data.get("current_location"),
-                        date_of_birth=basic_info_data.get("date_of_birth")  # 🆕 NEW
+                        current_location=basic_info_data.get("current_location"),
+                        date_of_birth=basic_info_data.get("date_of_birth")
                     ),
                     status_and_tags=LeadStatusAndTags(
                         stage=status_and_tags_data.get("stage", "initial"),
-                        status=status_and_tags_data.get("status","init"),
+                        status=status_and_tags_data.get("status", "init"),
                         lead_score=status_and_tags_data.get("lead_score", 0),
                         tags=status_and_tags_data.get("tags", [])
                     ) if status_and_tags_data else None,
@@ -931,6 +941,13 @@ async def create_lead(
                         detail="Category is required. Please select a valid lead category."
                     )
                 
+                # 🆕 NEW: Validate source is provided for new ID format
+                if not lead_data.get("source"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Source is required. Please select a valid lead source."
+                    )
+                
                 from ..models.lead import LeadCreateComprehensive, LeadBasicInfo, LeadStatusAndTags, LeadAdditionalInfo
                 
                 structured_lead_data = LeadCreateComprehensive(
@@ -938,14 +955,14 @@ async def create_lead(
                         name=lead_data.get("name", ""),
                         email=lead_data.get("email", ""),
                         contact_number=lead_data.get("contact_number", ""),
-                        source=lead_data.get("source", "website"),
+                        source=lead_data.get("source"),  # 🔄 UPDATED: Now required
                         category=lead_data.get("category"),
                         # Handle new optional fields in legacy format
                         age=lead_data.get("age"),
                         experience=lead_data.get("experience"),
                         nationality=lead_data.get("nationality"),
                         current_location=lead_data.get("current_location"),
-                        date_of_birth=lead_data.get("date_of_birth")  # 🆕 NE
+                        date_of_birth=lead_data.get("date_of_birth")
                     ),
                     status_and_tags=LeadStatusAndTags(
                         stage=lead_data.get("stage", "initial"),
@@ -965,7 +982,7 @@ async def create_lead(
                     detail=f"Invalid lead data format: {str(e)}"
                 )
         
-        # Step 2: Use the enhanced lead service with selective assignment
+        # Step 2: Use the enhanced lead service with NEW ID generation
         from ..services.lead_service import lead_service
         
         # Use selective assignment if users are specified
@@ -979,19 +996,12 @@ async def create_lead(
                 selected_user_emails=selected_users
             )
         else:
-            # Use regular creation method or fallback
-            if hasattr(lead_service, 'create_lead_comprehensive'):
-                result = await lead_service.create_lead_comprehensive(
-                    lead_data=structured_lead_data,
-                    created_by=str(current_user["_id"]),
-                    force_create=force_create
-                )
-            else:
-                # Fallback to basic creation
-                result = {
-                    "success": False,
-                    "message": "Lead service method not available"
-                }
+            # Use regular creation method with NEW ID generation
+            result = await lead_service.create_lead_comprehensive(
+                lead_data=structured_lead_data,
+                created_by=str(current_user["_id"]),
+                force_create=force_create
+            )
         
         if not result["success"]:
             if result.get("duplicate_check", {}).get("is_duplicate"):
@@ -1006,16 +1016,18 @@ async def create_lead(
                     detail=result["message"]
                 )
         
-        logger.info(f"✅ Lead created successfully: {result.get('lead_id', 'unknown')} in category {structured_lead_data.basic_info.category}")
+        logger.info(f"✅ Lead created successfully: {result.get('lead_id', 'unknown')} with NEW format (category-source-number)")
         
-        # Step 3: Return successful response
+        # Step 3: Return successful response with enhanced info
         return convert_objectid_to_str({
             "success": True,
             "message": result.get("message", "Lead created successfully"),
             "lead_id": result.get("lead_id"),
+            "lead_id_format": "category_source_combination",  # 🆕 NEW: Track format used
             "assigned_to": result.get("assigned_to"),
             "assignment_method": result.get("assignment_method"),
             "selected_users_pool": selected_users,
+            "lead_id_info": result.get("lead_id_info", {}),  # 🆕 NEW: ID generation details
             "duplicate_check": result.get("duplicate_check", {
                 "is_duplicate": False,
                 "checked": True
@@ -1774,7 +1786,10 @@ async def bulk_create_leads(
     selected_user_emails: Optional[str] = Query(None, description="Comma-separated user emails for selective round robin"),
     current_user: Dict[str, Any] = Depends(get_admin_user)
 ):
-    """Bulk create leads with enhanced assignment options"""
+    """
+    🔄 UPDATED: Bulk create leads with enhanced assignment options and NEW ID format
+    - 🆕 NEW: Category-Source combination lead IDs (NS-WB-1, SA-SM-2, etc.)
+    """
     try:
         logger.info(f"Bulk creating {len(leads_data)} leads with assignment method: {assignment_method}")
         
@@ -1789,7 +1804,20 @@ async def bulk_create_leads(
                     detail="selected_user_emails is required when assignment_method is 'selected_users'"
                 )
         
-        # Use enhanced bulk creation service if available
+        # 🆕 NEW: Validate all leads have required fields for new ID format
+        for index, lead_data in enumerate(leads_data):
+            if not lead_data.get("category"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Lead at index {index}: Category is required for new ID format"
+                )
+            if not lead_data.get("source"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Lead at index {index}: Source is required for new ID format"
+                )
+        
+        # Use enhanced bulk creation service with NEW ID generation
         from ..services.lead_service import lead_service
         
         # Check if enhanced bulk creation method exists
@@ -1801,9 +1829,13 @@ async def bulk_create_leads(
                 selected_user_emails=selected_users
             )
             
+            # 🆕 NEW: Add format info to response
+            result["lead_id_format"] = "category_source_combination"
+            result["format_info"] = "Generated IDs use format: {CATEGORY_SHORT}-{SOURCE_SHORT}-{NUMBER}"
+            
             return convert_objectid_to_str(result)
         else:
-            # Fallback to individual creation
+            # Fallback to individual creation with NEW ID format
             results = []
             successful_creates = 0
             failed_creates = 0
@@ -1811,7 +1843,7 @@ async def bulk_create_leads(
             
             for index, lead_data in enumerate(leads_data):
                 try:
-                    # Call the enhanced single lead endpoint
+                    # Call the updated single lead endpoint
                     result = await create_lead(
                         lead_data=lead_data,
                         force_create=force_create,
@@ -1824,6 +1856,7 @@ async def bulk_create_leads(
                             "index": index,
                             "status": "created",
                             "lead_id": result.get("lead_id"),
+                            "lead_id_format": "category_source_combination",  # 🆕 NEW
                             "assigned_to": result.get("assigned_to"),
                             "assignment_method": result.get("assignment_method")
                         })
@@ -1865,6 +1898,8 @@ async def bulk_create_leads(
                 "message": f"Bulk creation completed: {successful_creates} leads created, {duplicates_skipped} duplicates skipped, {failed_creates} failed",
                 "assignment_method": assignment_method,
                 "selected_users": selected_users,
+                "lead_id_format": "category_source_combination",  # 🆕 NEW
+                "format_info": "Generated IDs use format: {CATEGORY_SHORT}-{SOURCE_SHORT}-{NUMBER}",  # 🆕 NEW
                 "summary": {
                     "total_attempted": len(leads_data),
                     "successful_creates": successful_creates,

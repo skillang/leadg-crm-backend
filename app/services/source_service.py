@@ -1,4 +1,4 @@
-# app/services/source_service.py - NEW FILE FOR SOURCE BUSINESS LOGIC
+# app/services/source_service.py - UPDATED - SOURCE BUSINESS LOGIC WITH SHORT FORM SUPPORT
 
 from typing import List, Optional, Dict, Any
 from bson import ObjectId
@@ -14,14 +14,19 @@ class SourceService:
     """Service class for source management operations"""
     
     async def create_source(self, source_data: SourceCreate, created_by: str) -> Dict[str, Any]:
-        """Create a new source"""
+        """Create a new source with short form validation"""
         try:
             db = get_database()
             
             # Validate unique name
-            is_unique = await SourceHelper.validate_source_name(source_data.name)
-            if not is_unique:
+            is_unique_name = await SourceHelper.validate_source_name(source_data.name)
+            if not is_unique_name:
                 raise ValueError(f"Source with name '{source_data.name}' already exists")
+            
+            # Validate unique short form
+            is_unique_short_form = await SourceHelper.validate_source_short_form(source_data.short_form)
+            if not is_unique_short_form:
+                raise ValueError(f"Source with short form '{source_data.short_form}' already exists")
             
             # If this is set as default, unset other defaults
             if source_data.is_default:
@@ -45,11 +50,11 @@ class SourceService:
             created_source["id"] = str(created_source.pop("_id"))
             created_source["lead_count"] = 0  # New source has no leads
             
-            logger.info(f"Source '{source_data.name}' created by {created_by}")
+            logger.info(f"Source '{source_data.name}' with short form '{source_data.short_form}' created by {created_by}")
             
             return {
                 "success": True,
-                "message": f"Source '{source_data.name}' created successfully",
+                "message": f"Source '{source_data.name}' created successfully with short form '{source_data.short_form}'",
                 "source": created_source
             }
             
@@ -59,6 +64,37 @@ class SourceService:
         except Exception as e:
             logger.error(f"Error creating source: {e}")
             raise Exception(f"Failed to create source: {str(e)}")
+    
+    async def get_source_short_form(self, source_name: str) -> str:
+        """Get short form for a source by name - CRITICAL for lead ID generation"""
+        try:
+            db = get_database()
+            
+            source = await db.sources.find_one({"name": source_name, "is_active": True})
+            
+            if source and "short_form" in source:
+                logger.info(f"Found short form '{source['short_form']}' for source '{source_name}'")
+                return source["short_form"]
+            
+            # Log warning if source not found
+            logger.warning(f"Source '{source_name}' not found in database, using fallback 'UN'")
+            return "UN"  # Unknown source fallback
+            
+        except Exception as e:
+            logger.error(f"Error getting source short form: {str(e)}")
+            return "UN"  # Fallback in case of error
+    
+    async def validate_source_exists(self, source_name: str) -> bool:
+        """Validate if source exists and is active"""
+        try:
+            db = get_database()
+            
+            source = await db.sources.find_one({"name": source_name, "is_active": True})
+            return source is not None
+            
+        except Exception as e:
+            logger.error(f"Error validating source existence: {str(e)}")
+            return False
     
     async def get_all_sources(self, include_lead_count: bool = False, active_only: bool = True) -> List[Dict[str, Any]]:
         """Get all sources"""
@@ -116,7 +152,7 @@ class SourceService:
             raise Exception(f"Failed to get source: {str(e)}")
     
     async def update_source(self, source_id: str, update_data: SourceUpdate, updated_by: str) -> Dict[str, Any]:
-        """Update an existing source"""
+        """Update an existing source - Note: short_form cannot be updated"""
         try:
             db = get_database()
             
@@ -125,7 +161,7 @@ class SourceService:
             if not existing_source:
                 raise ValueError(f"Source with ID {source_id} not found")
             
-            # Prepare update data
+            # Prepare update data (short_form is excluded from SourceUpdate model)
             update_dict = {k: v for k, v in update_data.dict().items() if v is not None}
             
             if not update_dict:
@@ -208,7 +244,7 @@ class SourceService:
             if result.deleted_count == 0:
                 raise ValueError(f"Failed to delete source {source_id}")
             
-            logger.info(f"Source '{source['name']}' deleted by {deleted_by}")
+            logger.info(f"Source '{source['name']}' (short form: {source.get('short_form', 'N/A')}) deleted by {deleted_by}")
             
             return {
                 "success": True,
@@ -221,6 +257,39 @@ class SourceService:
         except Exception as e:
             logger.error(f"Error deleting source: {e}")
             raise Exception(f"Failed to delete source: {str(e)}")
+    
+    async def get_source_suggestions(self, partial_name: str = "") -> List[Dict[str, str]]:
+        """Get source creation suggestions with auto-generated short forms"""
+        try:
+            # Common source suggestions with their logical short forms
+            suggestions = [
+                {"name": "website", "short_form": "WB", "display_name": "Website"},
+                {"name": "social_media", "short_form": "SM", "display_name": "Social Media"},
+                {"name": "referral", "short_form": "RF", "display_name": "Referral"},
+                {"name": "email_campaign", "short_form": "EM", "display_name": "Email Campaign"},
+                {"name": "cold_call", "short_form": "CC", "display_name": "Cold Call"},
+                {"name": "walk_in", "short_form": "WI", "display_name": "Walk-in"},
+                {"name": "advertisement", "short_form": "AD", "display_name": "Advertisement"},
+                {"name": "events", "short_form": "EV", "display_name": "Events"},
+                {"name": "partnership", "short_form": "PT", "display_name": "Partnership"},
+            ]
+            
+            # Filter by partial name if provided
+            if partial_name:
+                suggestions = [s for s in suggestions if partial_name.lower() in s["name"]]
+            
+            # Check if short forms are already taken
+            db = get_database()
+            for suggestion in suggestions:
+                existing = await db.sources.find_one({"short_form": suggestion["short_form"]})
+                if existing:
+                    suggestion["short_form"] = f"{suggestion['short_form']}1"  # Add number if taken
+            
+            return suggestions
+            
+        except Exception as e:
+            logger.error(f"Error getting source suggestions: {str(e)}")
+            return []
 
 # Create service instance
 source_service = SourceService()
