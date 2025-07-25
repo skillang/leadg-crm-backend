@@ -12,7 +12,7 @@ from ..services.lead_assignment_service import lead_assignment_service
 from app.services import lead_category_service
 from ..services.lead_category_service import lead_category_service
 from ..config.database import get_database
-from ..utils.dependencies import get_current_active_user, get_admin_user
+from ..utils.dependencies import get_current_active_user, get_admin_user, get_user_with_single_lead_permission, get_user_with_bulk_lead_permission
 
 # Updated imports with new models
 from ..models.lead import (
@@ -855,7 +855,7 @@ async def create_lead(
     force_create: bool = Query(False, description="Create lead even if duplicates exist"),
     # 🆕 NEW: Support for selective round robin
     selected_user_emails: Optional[str] = Query(None, description="Comma-separated list of user emails for selective round robin"),
-    current_user: Dict[str, Any] = Depends(get_admin_user)
+    current_user: Dict[str, Any] = Depends(get_user_with_single_lead_permission) 
 ):
     """
     🔄 UPDATED: Create a new lead with enhanced assignment options:
@@ -1788,7 +1788,7 @@ async def bulk_create_leads(
     # 🆕 NEW: Bulk creation with selective round robin
     assignment_method: str = Query("all_users", description="Assignment method: 'all_users' or 'selected_users'"),
     selected_user_emails: Optional[str] = Query(None, description="Comma-separated user emails for selective round robin"),
-    current_user: Dict[str, Any] = Depends(get_admin_user)
+    current_user: Dict[str, Any] = Depends(get_user_with_bulk_lead_permission) 
 ):
     """
     🔄 UPDATED: Bulk create leads with enhanced assignment options and NEW ID format

@@ -1,4 +1,4 @@
-# app/main.py - Updated with emails router
+# app/main.py - Updated with permissions router
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -7,7 +7,7 @@ import time
 
 from .config.settings import settings
 from .config.database import connect_to_mongo, close_mongo_connection
-from .routers import auth, leads, tasks, notes, documents, timeline, contacts, lead_categories, stages, statuses, course_levels, sources, whatsapp, emails   # Added emails
+from .routers import auth, leads, tasks, notes, documents, timeline, contacts, lead_categories, stages, statuses, course_levels, sources, whatsapp, emails, permissions   # 🆕 Added permissions
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -45,6 +45,10 @@ async def lifespan(app: FastAPI):
     # 🆕 NEW: Start email scheduler
     await start_email_scheduler()
     logger.info("✅ Email scheduler started")
+    
+    # 🆕 NEW: Initialize default permissions for existing users
+    await initialize_user_permissions()
+    logger.info("✅ User permissions initialized")
     
     logger.info("✅ Application startup complete")
     
@@ -161,11 +165,49 @@ async def check_email_configuration():
     except Exception as e:
         logger.warning(f"Error checking email configuration: {e}")
 
+# 🆕 NEW: Initialize user permissions function
+async def initialize_user_permissions():
+    """Initialize default permissions for existing users who don't have permissions field"""
+    try:
+        from .config.database import get_database
+        
+        db = get_database()
+        
+        # Find users without permissions field
+        users_without_permissions = await db.users.count_documents({"permissions": {"$exists": False}})
+        
+        if users_without_permissions > 0:
+            logger.info(f"🔒 Found {users_without_permissions} users without permissions field")
+            
+            # Add default permissions to users who don't have them
+            result = await db.users.update_many(
+                {"permissions": {"$exists": False}},
+                {
+                    "$set": {
+                        "permissions": {
+                            "can_create_single_lead": False,
+                            "can_create_bulk_leads": False,
+                            "granted_by": None,
+                            "granted_at": None,
+                            "last_modified_by": None,
+                            "last_modified_at": None
+                        }
+                    }
+                }
+            )
+            
+            logger.info(f"🔒 Added default permissions to {result.modified_count} users")
+        else:
+            logger.info("🔒 All users already have permissions field")
+            
+    except Exception as e:
+        logger.warning(f"Error initializing user permissions: {e}")
+
 # Create FastAPI application
 app = FastAPI(
     title=settings.app_name,
     version=settings.version,
-    description="LeadG CRM - Customer Relationship Management API with Email Functionality",  # Updated description
+    description="LeadG CRM - Customer Relationship Management API with Email Functionality and Granular Permissions",  # 🔄 Updated description
     lifespan=lifespan,
     docs_url="/docs" if settings.debug else None,
     redoc_url="/redoc" if settings.debug else None,
@@ -194,17 +236,17 @@ async def add_process_time_header(request: Request, call_next):
         logger.error(f"Request failed: {request.method} {request.url} - Error: {str(e)}", exc_info=True)
         raise
 
-# 🔄 UPDATED: Health check with email module
+# 🔄 UPDATED: Health check with permissions module
 @app.get("/health")
 async def health_check():
     return {
         "status": "healthy",
         "message": "LeadG CRM API is running",
         "version": settings.version,
-        "modules": ["auth", "leads", "tasks", "notes", "documents", "timeline", "contacts", "stages", "statuses", "course-levels", "sources", "whatsapp", "emails"]  # Added emails
+        "modules": ["auth", "leads", "tasks", "notes", "documents", "timeline", "contacts", "stages", "statuses", "course-levels", "sources", "whatsapp", "emails", "permissions"]  # 🆕 Added permissions
     }
 
-# 🔄 UPDATED: Root endpoint with email endpoints
+# 🔄 UPDATED: Root endpoint with permissions endpoints
 @app.get("/")
 async def root():
     return {
@@ -225,7 +267,8 @@ async def root():
             "sources": "/sources",
             "lead-categories": "/lead-categories",
             "whatsapp": "/whatsapp",
-            "emails": "/emails",  # 🆕 NEW
+            "emails": "/emails",
+            "permissions": "/permissions",  # 🆕 NEW
             "health": "/health"
         }
     }
@@ -313,11 +356,18 @@ app.include_router(
     tags=["WhatsApp"]
 )
 
-# 🆕 NEW: Add emails router
+# Add emails router
 app.include_router(
     emails.router,
     prefix="/emails",
     tags=["Emails"]
+)
+
+# 🆕 NEW: Add permissions router
+app.include_router(
+    permissions.router,
+    prefix="/permissions",
+    tags=["Permissions"]
 )
 
 if __name__ == "__main__":

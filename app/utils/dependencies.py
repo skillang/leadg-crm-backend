@@ -25,6 +25,7 @@ async def get_current_user(
 ) -> Dict[str, Any]:
     """
     Dependency to get current authenticated user from JWT token
+    Enhanced to include user permissions for lead creation
     """
     token = credentials.credentials
     
@@ -56,6 +57,17 @@ async def get_current_user(
     # Check if user is active
     if not user_data.get("is_active", False):
         raise AuthenticationError("User account is disabled")
+    
+    # 🆕 NEW: Ensure permissions field exists for backward compatibility
+    if "permissions" not in user_data:
+        user_data["permissions"] = {
+            "can_create_single_lead": False,
+            "can_create_bulk_leads": False,
+            "granted_by": None,
+            "granted_at": None,
+            "last_modified_by": None,
+            "last_modified_at": None
+        }
     
     # Update last activity
     await db.users.update_one(
@@ -92,3 +104,115 @@ async def get_admin_user(
             detail="Not enough permissions. Admin access required."
         )
     return current_user
+
+# 🆕 NEW: Permission-based dependencies for lead creation
+
+async def get_user_with_single_lead_permission(
+    current_user: Dict[str, Any] = Depends(get_current_active_user)
+) -> Dict[str, Any]:
+    """
+    Dependency to allow admins OR users with single lead creation permission
+    Used for: POST /api/v1/leads/ (single lead creation)
+    """
+    user_role = current_user.get("role")
+    
+    # Admins always have permission
+    if user_role == "admin":
+        logger.info(f"Admin user {current_user.get('email')} accessing single lead creation")
+        return current_user
+    
+    # Check user permissions
+    permissions = current_user.get("permissions", {})
+    if permissions.get("can_create_single_lead", False):
+        logger.info(f"User {current_user.get('email')} has single lead creation permission")
+        return current_user
+    
+    # Log permission denial
+    logger.warning(f"User {current_user.get('email')} denied single lead creation - no permission")
+    
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="You don't have permission to create leads. Contact your administrator to request access."
+    )
+
+async def get_user_with_bulk_lead_permission(
+    current_user: Dict[str, Any] = Depends(get_current_active_user)
+) -> Dict[str, Any]:
+    """
+    Dependency to allow admins OR users with bulk lead creation permission
+    Used for: POST /api/v1/leads/bulk-create (bulk lead creation)
+    """
+    user_role = current_user.get("role")
+    
+    # Admins always have permission
+    if user_role == "admin":
+        logger.info(f"Admin user {current_user.get('email')} accessing bulk lead creation")
+        return current_user
+    
+    # Check user permissions
+    permissions = current_user.get("permissions", {})
+    if permissions.get("can_create_bulk_leads", False):
+        logger.info(f"User {current_user.get('email')} has bulk lead creation permission")
+        return current_user
+    
+    # Log permission denial
+    logger.warning(f"User {current_user.get('email')} denied bulk lead creation - no permission")
+    
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="You don't have permission to create bulk leads. Contact your administrator to request access."
+    )
+
+# 🆕 NEW: Helper function to check specific permissions
+def check_user_permission(current_user: Dict[str, Any], permission_name: str) -> bool:
+    """
+    Helper function to check if user has specific permission
+    
+    Args:
+        current_user: Current user data from JWT
+        permission_name: Name of permission to check (e.g., 'can_create_single_lead')
+    
+    Returns:
+        bool: True if user has permission, False otherwise
+    """
+    # Admins always have all permissions
+    if current_user.get("role") == "admin":
+        return True
+    
+    # Check specific permission
+    permissions = current_user.get("permissions", {})
+    return permissions.get(permission_name, False)
+
+# 🆕 NEW: Get user permissions summary
+def get_user_permissions_summary(current_user: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Get a summary of user's permissions for UI display
+    
+    Returns:
+        dict: Summary of user permissions and capabilities
+    """
+    user_role = current_user.get("role")
+    permissions = current_user.get("permissions", {})
+    
+    if user_role == "admin":
+        return {
+            "is_admin": True,
+            "can_create_single_lead": True,
+            "can_create_bulk_leads": True,
+            "can_manage_permissions": True,
+            "can_assign_leads": True,
+            "can_view_all_leads": True,
+            "permission_source": "admin_role"
+        }
+    
+    return {
+        "is_admin": False,
+        "can_create_single_lead": permissions.get("can_create_single_lead", False),
+        "can_create_bulk_leads": permissions.get("can_create_bulk_leads", False),
+        "can_manage_permissions": False,
+        "can_assign_leads": False,
+        "can_view_all_leads": False,
+        "permission_source": "user_permissions",
+        "granted_by": permissions.get("granted_by"),
+        "granted_at": permissions.get("granted_at")
+    }

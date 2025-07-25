@@ -1,4 +1,4 @@
-# app/models/user.py - Fully Dynamic Department System
+# app/models/user.py - Fully Dynamic Department System + LEAD CREATION PERMISSIONS
 
 from pydantic import BaseModel, EmailStr, Field, validator
 from typing import Optional, List, Union
@@ -22,6 +22,28 @@ class CallingStatus(str, Enum):
 class DepartmentType(str, Enum):
     """Only essential predefined department"""
     ADMIN = "admin"  # Only admin is predefined
+
+# 🆕 NEW: Permission Models for Lead Creation
+class UserPermissions(BaseModel):
+    """User permissions for lead creation and other actions"""
+    can_create_single_lead: bool = False
+    can_create_bulk_leads: bool = False
+    granted_by: Optional[str] = None
+    granted_at: Optional[datetime] = None
+    last_modified_by: Optional[str] = None
+    last_modified_at: Optional[datetime] = None
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "can_create_single_lead": True,
+                "can_create_bulk_leads": False,
+                "granted_by": "admin@company.com",
+                "granted_at": "2025-01-15T10:30:00Z",
+                "last_modified_by": "admin@company.com",
+                "last_modified_at": "2025-01-15T10:30:00Z"
+            }
+        }
 
 class UserBase(BaseModel):
     """Base user model with common fields"""
@@ -80,6 +102,9 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     """User creation model"""
     password: str = Field(..., min_length=8, max_length=100)
+    
+    # 🆕 NEW: Optional permissions during user creation (defaults to no permissions)
+    permissions: Optional[UserPermissions] = UserPermissions()
 
     @validator('password')
     def validate_password(cls, v):
@@ -104,7 +129,11 @@ class UserCreate(UserBase):
                 "password": "SecurePass123",
                 "role": "user",
                 "phone": "+1-555-123-4567",
-                "departments": ["sales", "marketing"]  # Admin creates these first
+                "departments": ["sales", "marketing"],  # Admin creates these first
+                "permissions": {
+                    "can_create_single_lead": False,
+                    "can_create_bulk_leads": False
+                }
             }
         }
 
@@ -128,6 +157,9 @@ class UserResponse(BaseModel):
     department_list: List[str] = Field(
         description="Always returns departments as a list for consistency"
     )
+    
+    # 🆕 NEW: Include permissions in user response
+    permissions: Optional[UserPermissions] = UserPermissions()
     
     created_at: datetime
     last_login: Optional[datetime] = None
@@ -157,6 +189,9 @@ class UserUpdate(BaseModel):
     phone: Optional[str] = None
     departments: Optional[Union[str, List[str]]] = None
     is_active: Optional[bool] = None
+    
+    # 🆕 NEW: Allow updating permissions through user update
+    permissions: Optional[UserPermissions] = None
 
     @validator('departments')
     def validate_departments_update(cls, v):
@@ -173,6 +208,87 @@ class UserUpdate(BaseModel):
             return v
         
         return departments_list if len(departments_list) > 1 else (departments_list[0] if departments_list else None)
+
+# 🆕 NEW: Permission Management Models
+class PermissionUpdateRequest(BaseModel):
+    """Request model for updating user permissions"""
+    user_email: str = Field(..., description="Email of the user to update permissions for")
+    can_create_single_lead: bool = Field(..., description="Allow user to create single leads")
+    can_create_bulk_leads: bool = Field(..., description="Allow user to create bulk leads")
+    reason: Optional[str] = Field(None, max_length=500, description="Reason for permission change")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "user_email": "john@company.com",
+                "can_create_single_lead": True,
+                "can_create_bulk_leads": False,
+                "reason": "Promoted to senior sales agent"
+            }
+        }
+
+class PermissionUpdateResponse(BaseModel):
+    """Response model for permission updates"""
+    success: bool
+    message: str
+    user_email: str
+    updated_permissions: UserPermissions
+    updated_by: str
+    updated_at: datetime
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "message": "Permissions updated successfully",
+                "user_email": "john@company.com",
+                "updated_permissions": {
+                    "can_create_single_lead": True,
+                    "can_create_bulk_leads": False,
+                    "granted_by": "admin@company.com",
+                    "granted_at": "2025-01-15T10:30:00Z",
+                    "last_modified_by": "admin@company.com",
+                    "last_modified_at": "2025-01-15T10:30:00Z"
+                },
+                "updated_by": "admin@company.com",
+                "updated_at": "2025-01-15T10:30:00Z"
+            }
+        }
+
+class UserPermissionsListResponse(BaseModel):
+    """Response model for listing users with their permissions"""
+    success: bool
+    users: List[UserResponse]
+    total: int
+    summary: dict
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "users": [
+                    {
+                        "id": "user123",
+                        "email": "john@company.com",
+                        "first_name": "John",
+                        "last_name": "Smith",
+                        "role": "user",
+                        "permissions": {
+                            "can_create_single_lead": True,
+                            "can_create_bulk_leads": False,
+                            "granted_by": "admin@company.com"
+                        }
+                    }
+                ],
+                "total": 5,
+                "summary": {
+                    "total_users": 5,
+                    "with_single_permission": 3,
+                    "with_bulk_permission": 1,
+                    "with_no_permissions": 1
+                }
+            }
+        }
 
 # 🚀 NEW: Department Management Models
 class DepartmentCreate(BaseModel):
