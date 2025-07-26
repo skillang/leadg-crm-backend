@@ -85,10 +85,15 @@ class SecurityManager:
             logger.error(f"Error checking token blacklist: {e}")
             return True  # Fail safe - treat as blacklisted
 
-    async def blacklist_token(self, token_jti: str, expires_at: datetime):
+    async def blacklist_token(self, token_jti: str, expires_at: datetime = None):
         """Add token to blacklist"""
         try:
             db = get_database()
+            
+            # If expires_at not provided, set a default (7 days from now)
+            if expires_at is None:
+                expires_at = datetime.utcnow() + timedelta(days=7)
+            
             await db.token_blacklist.insert_one({
                 "token_jti": token_jti,
                 "expires_at": expires_at,
@@ -97,6 +102,9 @@ class SecurityManager:
             logger.info(f"Token {token_jti} blacklisted successfully")
         except Exception as e:
             logger.error(f"Failed to blacklist token: {e}")
+
+
+
 
     # 🆕 NEW: Enhanced user fetching with permissions
     async def get_user_with_permissions(self, user_id: str) -> Optional[Dict[str, Any]]:

@@ -1337,7 +1337,7 @@ async def refresh_token(
     db: Database = Depends(get_database)
 ):
     """
-    Refresh access token using refresh token
+    Refresh access token using refresh token with token rotation
     """
     try:
         # Verify refresh token
@@ -1373,26 +1373,34 @@ async def refresh_token(
                 detail="User not found or inactive"
             )
         
-        # Create new access token with same data
+        # Create new tokens with same user data
         token_data = {
             "sub": str(user["_id"]),
             "email": user["email"],
             "username": user["username"],
             "role": user["role"]
         }
-        
+
         new_access_token = security.create_access_token(token_data)
-        
+
+        # 🔥 FIXED: Create new refresh token for security (token rotation)
+        new_refresh_token = security.create_refresh_token(token_data, expire_days=7)
+
+        # 🔥 FIXED: Blacklist the old refresh token for security
+        if token_jti:
+            await security.blacklist_token(token_jti)
+
         # Update last activity
         await db.users.update_one(
             {"_id": user["_id"]},
             {"$set": {"last_activity": datetime.utcnow()}}
         )
-        
-        logger.info(f"Token refreshed for user: {user['email']}")
-        
+
+        logger.info(f"Token refreshed for user: {user['email']} (with token rotation)")
+
         return RefreshTokenResponse(
             access_token=new_access_token,
+            refresh_token=new_refresh_token,  # 🔥 FIXED: Return new refresh token
             token_type="bearer",
             expires_in=security.access_token_expire_minutes * 60
         )
