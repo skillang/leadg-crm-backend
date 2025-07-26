@@ -1,4 +1,4 @@
-# app/models/lead.py - Updated with dynamic stages, statuses, course levels, sources, and new assignment features
+# app/models/lead.py - Updated with dynamic stages, statuses, course levels, sources, new assignment features, and WhatsApp integration
 
 from pydantic import BaseModel, Field, validator, EmailStr
 from typing import Optional, List, Dict, Any
@@ -575,11 +575,11 @@ class SelectiveRoundRobinResponse(BaseModel):
         }
 
 # ============================================================================
-# 🆕 NEW: EXTENDED LEAD RESPONSE WITH MULTI-ASSIGNMENT INFO
+# 🆕 NEW: EXTENDED LEAD RESPONSE WITH MULTI-ASSIGNMENT INFO + WHATSAPP
 # ============================================================================
 
 class LeadResponseExtended(BaseModel):
-    """Extended lead response with multi-assignment information"""
+    """Extended lead response with multi-assignment information and WhatsApp tracking"""
     lead_id: str
     status: str
     name: str
@@ -605,6 +605,12 @@ class LeadResponseExtended(BaseModel):
     # All assignees (computed field)
     all_assignees: List[str] = Field(default_factory=list, description="All users assigned to this lead")
     all_assignees_names: List[str] = Field(default_factory=list, description="Names of all assignees")
+    
+    # 🆕 NEW: WhatsApp Activity Fields
+    last_whatsapp_activity: Optional[datetime] = Field(None, description="Last WhatsApp interaction timestamp")
+    last_whatsapp_message: Optional[str] = Field(None, description="Preview of last WhatsApp message")
+    whatsapp_message_count: int = Field(default=0, description="Total WhatsApp messages for this lead")
+    unread_whatsapp_count: int = Field(default=0, description="Unread WhatsApp messages count")
     
     def __init__(self, **data):
         super().__init__(**data)
@@ -641,7 +647,11 @@ class LeadResponseExtended(BaseModel):
                 "is_multi_assigned": True,
                 "assignment_method": "multi_user_manual",
                 "all_assignees": ["john.doe@leadg.com", "jane.smith@leadg.com"],
-                "all_assignees_names": ["John Doe", "Jane Smith"]
+                "all_assignees_names": ["John Doe", "Jane Smith"],
+                "last_whatsapp_activity": "2024-01-15T10:30:00Z",
+                "last_whatsapp_message": "Thanks for the information!",
+                "whatsapp_message_count": 5,
+                "unread_whatsapp_count": 2
             }
         }
 
@@ -697,12 +707,12 @@ class UserSelectionResponse(BaseModel):
         }
 
 # ============================================================================
-# LEGACY MODELS FOR BACKWARD COMPATIBILITY (UPDATED FOR DYNAMIC FIELDS)
+# LEGACY MODELS FOR BACKWARD COMPATIBILITY (UPDATED FOR DYNAMIC FIELDS + WHATSAPP)
 # ============================================================================
 
 # Lead Response Model - UPDATED
 class LeadResponseComprehensive(BaseModel):
-    """Comprehensive lead response model"""
+    """Comprehensive lead response model with WhatsApp tracking"""
     # System Info
     id: str
     lead_id: str
@@ -747,6 +757,12 @@ class LeadResponseComprehensive(BaseModel):
     phone_number: Optional[str] = None
     country_of_interest: Optional[str] = None
     course_level: Optional[str] = None  # 🔄 CHANGED: str instead of CourseLevel enum
+    
+    # 🆕 NEW: WhatsApp Activity Fields
+    last_whatsapp_activity: Optional[datetime] = Field(None, description="Last WhatsApp interaction timestamp")
+    last_whatsapp_message: Optional[str] = Field(None, description="Preview of last WhatsApp message")
+    whatsapp_message_count: int = Field(default=0, description="Total WhatsApp messages for this lead")
+    unread_whatsapp_count: int = Field(default=0, description="Unread WhatsApp messages count")
 
 # Legacy models for backward compatibility - UPDATED
 class LeadCreate(LeadBasicInfo):
@@ -763,9 +779,15 @@ class LeadCreate(LeadBasicInfo):
     nationality: Optional[str] = Field(None, max_length=100)
     current_location: Optional[str] = Field(None, max_length=150)  # 🆕 NEW: Added current_location field
     date_of_birth: Optional[datetime] = Field(None, description="Date of birth (YYYY-MM-DD format)")
+    
+    # 🆕 NEW: WhatsApp fields (for completeness, but will be auto-initialized)
+    last_whatsapp_activity: Optional[datetime] = None
+    last_whatsapp_message: Optional[str] = None
+    whatsapp_message_count: int = 0
+    unread_whatsapp_count: int = 0
 
 class LeadUpdate(BaseModel):
-    """Legacy lead update model - UPDATED"""
+    """Legacy lead update model - UPDATED with WhatsApp fields"""
     name: Optional[str] = Field(None, min_length=1, max_length=100)
     email: Optional[EmailStr] = None
     phone_number: Optional[str] = Field(None, min_length=10, max_length=20)
@@ -785,7 +807,13 @@ class LeadUpdate(BaseModel):
     experience: Optional[ExperienceLevel] = None
     nationality: Optional[str] = Field(None, max_length=100)
     current_location: Optional[str] = Field(None, max_length=150)  # 🆕 NEW: Added current_location field
-    date_of_birth: Optional[datetime] = Field(None, description="Date of birth")  
+    date_of_birth: Optional[datetime] = Field(None, description="Date of birth")
+    
+    # 🆕 NEW: WhatsApp fields (usually managed by system, but can be updated manually)
+    last_whatsapp_activity: Optional[datetime] = None
+    last_whatsapp_message: Optional[str] = Field(None, max_length=500)
+    whatsapp_message_count: Optional[int] = Field(None, ge=0)
+    unread_whatsapp_count: Optional[int] = Field(None, ge=0)
 
 class LeadAssign(BaseModel):
     """Lead assignment/reassignment model"""
@@ -793,7 +821,7 @@ class LeadAssign(BaseModel):
     notes: Optional[str] = Field(None, max_length=500, description="Reason for assignment/reassignment")
 
 class LeadResponse(BaseModel):
-    """Legacy lead response model - UPDATED"""
+    """Legacy lead response model - UPDATED with WhatsApp fields"""
     id: str
     lead_id: str
     name: str
@@ -816,6 +844,12 @@ class LeadResponse(BaseModel):
     date_of_birth: Optional[str] = None
     current_location: Optional[str] = None  # 🆕 NEW: Added current_location field
     course_level: Optional[str] = None  # 🔄 CHANGED: str instead of enum
+    
+    # 🆕 NEW: WhatsApp Activity Fields
+    last_whatsapp_activity: Optional[datetime] = None
+    last_whatsapp_message: Optional[str] = None
+    whatsapp_message_count: int = 0
+    unread_whatsapp_count: int = 0
 
 class LeadListResponse(BaseModel):
     """Lead list response model"""
@@ -860,3 +894,56 @@ class DuplicateCheckResult(BaseModel):
     existing_lead_id: Optional[str] = None
     duplicate_field: Optional[str] = None
     message: Optional[str] = None
+
+# ============================================================================
+# 🆕 NEW: WHATSAPP-SPECIFIC LEAD UPDATE MODELS
+# ============================================================================
+
+class LeadWhatsAppActivityUpdate(BaseModel):
+    """Model for updating WhatsApp activity on a lead"""
+    last_whatsapp_activity: Optional[datetime] = None
+    last_whatsapp_message: Optional[str] = Field(None, max_length=500, description="Preview of last message")
+    increment_message_count: bool = Field(default=False, description="Whether to increment message count by 1")
+    increment_unread_count: bool = Field(default=False, description="Whether to increment unread count by 1")
+    reset_unread_count: bool = Field(default=False, description="Whether to reset unread count to 0")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "last_whatsapp_activity": "2024-01-15T10:30:00Z",
+                "last_whatsapp_message": "Thanks for the information!",
+                "increment_message_count": True,
+                "increment_unread_count": False,
+                "reset_unread_count": False
+            }
+        }
+
+class LeadWhatsAppSummary(BaseModel):
+    """Summary model for lead WhatsApp activity"""
+    lead_id: str
+    lead_name: str
+    assigned_to: Optional[str]
+    last_whatsapp_activity: Optional[datetime]
+    last_whatsapp_message: Optional[str]
+    whatsapp_message_count: int
+    unread_whatsapp_count: int
+    has_whatsapp_activity: bool = Field(default=False, description="Whether lead has any WhatsApp messages")
+    
+    def __init__(self, **data):
+        super().__init__(**data)
+        # Automatically set has_whatsapp_activity based on message count
+        self.has_whatsapp_activity = self.whatsapp_message_count > 0
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "lead_id": "LD-1001",
+                "lead_name": "John Smith",
+                "assigned_to": "john.doe@leadg.com",
+                "last_whatsapp_activity": "2024-01-15T10:30:00Z",
+                "last_whatsapp_message": "Thanks for the information!",
+                "whatsapp_message_count": 5,
+                "unread_whatsapp_count": 2,
+                "has_whatsapp_activity": True
+            }
+        }

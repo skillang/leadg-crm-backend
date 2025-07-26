@@ -1710,8 +1710,237 @@ class LeadService:
                 "total_count": 0
             }
 
+
+
+
+    # ADD THESE METHODS TO YOUR EXISTING app/services/lead_service.py
+
+# ============================================================================
+# 🆕 NEW: WHATSAPP INTEGRATION METHODS (Add these to LeadService class)
+# ============================================================================
+
+    async def update_lead_whatsapp_activity(
+        self,
+        lead_id: str,
+        last_message: str,
+        increment_total: bool = False,
+        increment_unread: bool = False
+    ) -> Dict[str, Any]:
+        """Update lead's WhatsApp activity fields"""
+        try:
+            db = self.get_db()
+            
+            update_fields = {
+                "last_whatsapp_activity": datetime.utcnow(),
+                "last_whatsapp_message": last_message[:200] if last_message else None  # Preview only
+            }
+            
+            # Handle counter increments
+            inc_fields = {}
+            if increment_total:
+                inc_fields["whatsapp_message_count"] = 1
+            if increment_unread:
+                inc_fields["unread_whatsapp_count"] = 1
+            
+            # Build update query
+            update_query = {"$set": update_fields}
+            if inc_fields:
+                update_query["$inc"] = inc_fields
+            
+            # Update lead
+            result = await db.leads.update_one(
+                {"lead_id": lead_id},
+                update_query
+            )
+            
+            if result.modified_count > 0:
+                logger.info(f"Updated WhatsApp activity for lead {lead_id}")
+                return {
+                    "success": True,
+                    "lead_id": lead_id,
+                    "updated_fields": list(update_fields.keys()) + list(inc_fields.keys())
+                }
+            else:
+                return {
+                    "success": False,
+                    "message": "Lead not found or no changes made"
+                }
+                
+        except Exception as e:
+            logger.error(f"Error updating WhatsApp activity for lead {lead_id}: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def increment_whatsapp_message_count(self, lead_id: str, count: int = 1) -> bool:
+        """Increment WhatsApp message count for a lead"""
+        try:
+            db = self.get_db()
+            
+            result = await db.leads.update_one(
+                {"lead_id": lead_id},
+                {
+                    "$inc": {"whatsapp_message_count": count},
+                    "$set": {"updated_at": datetime.utcnow()}
+                }
+            )
+            
+            return result.modified_count > 0
+            
+        except Exception as e:
+            logger.error(f"Error incrementing WhatsApp message count for lead {lead_id}: {str(e)}")
+            return False
+
+    async def update_unread_whatsapp_count(self, lead_id: str, new_count: int) -> bool:
+        """Set unread WhatsApp message count for a lead"""
+        try:
+            db = self.get_db()
+            
+            result = await db.leads.update_one(
+                {"lead_id": lead_id},
+                {
+                    "$set": {
+                        "unread_whatsapp_count": max(0, new_count),  # Ensure non-negative
+                        "updated_at": datetime.utcnow()
+                    }
+                }
+            )
+            
+            return result.modified_count > 0
+            
+        except Exception as e:
+            logger.error(f"Error updating unread WhatsApp count for lead {lead_id}: {str(e)}")
+            return False
+
+    async def reset_unread_whatsapp_count(self, lead_id: str) -> bool:
+        """Reset unread WhatsApp message count to 0"""
+        return await self.update_unread_whatsapp_count(lead_id, 0)
+
+    async def get_leads_with_whatsapp_activity(
+        self,
+        user_email: str,
+        user_role: str,
+        limit: int = 50
+    ) -> Dict[str, Any]:
+        """Get leads that have WhatsApp activity (for active chats list)"""
+        try:
+            db = self.get_db()
+            
+            # Build base query for leads with WhatsApp activity
+            base_query = {"whatsapp_message_count": {"$gt": 0}}
+            
+            # Add role-based filtering
+            if user_role != "admin":
+                base_query.update({
+                    "$or": [
+                        {"assigned_to": user_email},
+                        {"co_assignees": user_email}
+                    ]
+                })
+            
+            # Get leads sorted by last WhatsApp activity
+            leads = await db.leads.find(base_query).sort(
+                "last_whatsapp_activity", -1
+            ).limit(limit).to_list(length=limit)
+            
+            # Format leads for response
+            formatted_leads = []
+            for lead in leads:
+                formatted_lead = {
+                    "lead_id": lead["lead_id"],
+                    "name": lead["name"],
+                    "email": lead["email"],
+                    "contact_number": lead.get("contact_number", ""),
+                    "assigned_to": lead.get("assigned_to"),
+                    "assigned_to_name": lead.get("assigned_to_name"),
+                    "last_whatsapp_activity": lead.get("last_whatsapp_activity"),
+                    "last_whatsapp_message": lead.get("last_whatsapp_message"),
+                    "whatsapp_message_count": lead.get("whatsapp_message_count", 0),
+                    "unread_whatsapp_count": lead.get("unread_whatsapp_count", 0)
+                }
+                formatted_leads.append(formatted_lead)
+            
+            return {
+                "success": True,
+                "leads": formatted_leads,
+                "total_count": len(formatted_leads),
+                "user_role": user_role
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting leads with WhatsApp activity: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e),
+                "leads": []
+            }
+
+    async def get_whatsapp_statistics(
+        self,
+        user_email: str,
+        user_role: str
+    ) -> Dict[str, Any]:
+        """Get WhatsApp usage statistics for leads"""
+        try:
+            db = self.get_db()
+            
+            # Build base query based on user role
+            if user_role == "admin":
+                base_query = {}
+            else:
+                base_query = {
+                    "$or": [
+                        {"assigned_to": user_email},
+                        {"co_assignees": user_email}
+                    ]
+                }
+            
+            # Get leads with WhatsApp activity
+            leads_with_whatsapp = await db.leads.count_documents({
+                **base_query,
+                "whatsapp_message_count": {"$gt": 0}
+            })
+            
+            # Get total unread messages
+            pipeline = [
+                {"$match": base_query},
+                {
+                    "$group": {
+                        "_id": None,
+                        "total_unread": {"$sum": "$unread_whatsapp_count"},
+                        "total_messages": {"$sum": "$whatsapp_message_count"}
+                    }
+                }
+            ]
+            
+            stats_result = await db.leads.aggregate(pipeline).to_list(None)
+            
+            if stats_result:
+                total_unread = stats_result[0].get("total_unread", 0)
+                total_messages = stats_result[0].get("total_messages", 0)
+            else:
+                total_unread = 0
+                total_messages = 0
+            
+            return {
+                "leads_with_whatsapp": leads_with_whatsapp,
+                "total_unread_messages": total_unread,
+                "total_whatsapp_messages": total_messages,
+                "user_role": user_role
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting WhatsApp statistics: {str(e)}")
+            return {"error": str(e)}
+
+    # ============================================================================
+    # 🔄 UPDATE EXISTING METHOD: format_lead_response (Add WhatsApp fields)
+    # ============================================================================
+
+    # REPLACE your existing format_lead_response method with this updated version:
     def format_lead_response(self, lead_doc: Dict[str, Any]) -> Dict[str, Any]:
-        """Format lead document for response with new fields and multi-assignment support"""
+        """Format lead document for response with new fields, multi-assignment support, and WhatsApp tracking"""
         if not lead_doc:
             return None
             
@@ -1722,15 +1951,15 @@ class LeadService:
             "email": lead_doc.get("email", ""),
             "contact_number": lead_doc.get("contact_number", ""),
             "phone_number": lead_doc.get("phone_number", ""),
-            "source": lead_doc.get("source"),  # 🔄 UPDATED: Can be None if no sources exist
+            "source": lead_doc.get("source"),  # Can be None if no sources exist
             "category": lead_doc.get("category", ""),
             
             # Include new optional fields in response
             "age": lead_doc.get("age"),
             "experience": lead_doc.get("experience"),
             "nationality": lead_doc.get("nationality"),
-            "course_level": lead_doc.get("course_level"),  # 🔄 UPDATED: Can be None if no course levels exist
-            "date_of_birth": lead_doc.get("date_of_birth"),  # 🆕 NEW
+            "course_level": lead_doc.get("course_level"),  # Can be None if no course levels exist
+            "date_of_birth": lead_doc.get("date_of_birth"),
             
             "status": lead_doc.get("status", "Initial"),
             "stage": lead_doc.get("stage", "Initial"),
@@ -1756,10 +1985,33 @@ class LeadService:
             "last_contacted": lead_doc.get("last_contacted"),
             
             # Legacy fields for backward compatibility
-            "country_of_interest": lead_doc.get("country_of_interest", "")
+            "country_of_interest": lead_doc.get("country_of_interest", ""),
+            
+            # 🆕 NEW: WhatsApp Activity Fields
+            "last_whatsapp_activity": lead_doc.get("last_whatsapp_activity"),
+            "last_whatsapp_message": lead_doc.get("last_whatsapp_message"),
+            "whatsapp_message_count": lead_doc.get("whatsapp_message_count", 0),
+            "unread_whatsapp_count": lead_doc.get("unread_whatsapp_count", 0)
         }
 
-    # ... (Include all other existing methods from the original file) ...
+# ============================================================================
+# 🔄 UPDATE LEAD CREATION: Initialize WhatsApp fields
+# ============================================================================
 
+# ADD these fields to your lead creation in create_lead_comprehensive method
+# Find this section in your existing method and add the WhatsApp fields:
+
+# Around line where you create lead_doc, add these fields:
+"""
+# 🆕 NEW: Initialize WhatsApp fields
+"last_whatsapp_activity": None,
+"last_whatsapp_message": None,
+"whatsapp_message_count": 0,
+"unread_whatsapp_count": 0,
+"""
+
+# Same addition needed in:
+# - create_lead_with_selective_assignment method
+# - bulk_create_leads_with_selective_assignment method
 # Global service instance
 lead_service = LeadService()

@@ -1,4 +1,4 @@
-# app/config/database.py - Enhanced with Multi-Assignment and Selective Round Robin Indexes
+# app/config/database.py - Enhanced with Multi-Assignment and Selective Round Robin Indexes + WhatsApp Support
 
 import motor.motor_asyncio
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
@@ -51,7 +51,7 @@ async def close_mongo_connection():
         logger.info("🔌 MongoDB connection closed")
 
 async def create_indexes():
-    """Create database indexes for optimal performance with enhanced multi-assignment support"""
+    """Create database indexes for optimal performance with enhanced multi-assignment support and WhatsApp integration"""
     try:
         db = get_database()
         logger.info("📊 Creating enhanced database indexes...")
@@ -74,7 +74,7 @@ async def create_indexes():
         logger.info("✅ Enhanced Users indexes created")
         
         # ============================================================================
-        # LEADS COLLECTION INDEXES (ENHANCED WITH MULTI-ASSIGNMENT)
+        # LEADS COLLECTION INDEXES (ENHANCED WITH MULTI-ASSIGNMENT + WHATSAPP)
         # ============================================================================
         await db.leads.create_index("lead_id", unique=True)
         await db.leads.create_index("email")
@@ -119,7 +119,57 @@ async def create_indexes():
         await db.leads.create_index([("course_level", 1), ("created_at", -1)])  # Course level with date
         await db.leads.create_index([("course_level", 1), ("category", 1)])  # Course level-category analysis
         
-        logger.info("✅ Enhanced Leads indexes created")
+        # 🆕 NEW: WHATSAPP ACTIVITY INDEXES FOR LEADS
+        await db.leads.create_index("last_whatsapp_activity")  # Sort by WhatsApp activity
+        await db.leads.create_index("whatsapp_message_count")  # Filter leads with messages
+        await db.leads.create_index("unread_whatsapp_count")  # Find leads with unread messages
+        await db.leads.create_index([("assigned_to", 1), ("unread_whatsapp_count", 1)])  # User's unread messages
+        await db.leads.create_index([("last_whatsapp_activity", -1), ("assigned_to", 1)])  # Recent WhatsApp activity per user
+        await db.leads.create_index([("unread_whatsapp_count", 1), ("last_whatsapp_activity", -1)])  # Unread messages by recent activity
+        await db.leads.create_index([("whatsapp_message_count", 1), ("assigned_to", 1)])  # Message count per user
+        
+        logger.info("✅ Enhanced Leads indexes with WhatsApp fields created")
+        
+        # ============================================================================
+        # 🆕 NEW: WHATSAPP MESSAGES COLLECTION INDEXES
+        # ============================================================================
+        logger.info("📱 Creating WhatsApp Messages collection indexes...")
+        
+        whatsapp_messages_collection = db.whatsapp_messages
+        await whatsapp_messages_collection.create_index("message_id", unique=True)  # Unique WhatsApp message ID
+        await whatsapp_messages_collection.create_index("lead_id")  # Query by lead
+        await whatsapp_messages_collection.create_index("phone_number")  # Match incoming messages by phone
+        
+        # Status and type indexes
+        await whatsapp_messages_collection.create_index("direction")  # Filter incoming/outgoing
+        await whatsapp_messages_collection.create_index("status")  # Filter by delivery status
+        await whatsapp_messages_collection.create_index("message_type")  # Filter by message type
+        
+        # Timestamp indexes for sorting
+        await whatsapp_messages_collection.create_index("timestamp")  # Sort by time
+        await whatsapp_messages_collection.create_index([("timestamp", -1)])  # Recent messages first
+        
+        # Compound indexes for efficient chat queries
+        await whatsapp_messages_collection.create_index([("lead_id", 1), ("timestamp", 1)])  # Chat history queries
+        await whatsapp_messages_collection.create_index([("lead_id", 1), ("timestamp", -1)])  # Recent chat history
+        await whatsapp_messages_collection.create_index([("lead_id", 1), ("direction", 1)])  # Filter by direction per lead
+        await whatsapp_messages_collection.create_index([("phone_number", 1), ("timestamp", 1)])  # Phone-based queries
+        await whatsapp_messages_collection.create_index([("lead_id", 1), ("status", 1)])  # Message status per lead
+        
+        # User activity indexes
+        await whatsapp_messages_collection.create_index("sent_by_user_id")  # Messages sent by specific user
+        await whatsapp_messages_collection.create_index([("sent_by_user_id", 1), ("timestamp", -1)])  # User activity timeline
+        
+        # Performance indexes for dashboard queries
+        await whatsapp_messages_collection.create_index([("direction", 1), ("timestamp", -1)])  # Recent incoming/outgoing
+        await whatsapp_messages_collection.create_index([("status", 1), ("direction", 1)])  # Status-direction analysis
+        await whatsapp_messages_collection.create_index([("lead_id", 1), ("direction", 1), ("status", 1)])  # Complete message filtering
+        
+        # Unread message tracking
+        await whatsapp_messages_collection.create_index([("direction", 1), ("is_read", 1)])  # Unread incoming messages
+        await whatsapp_messages_collection.create_index([("lead_id", 1), ("direction", 1), ("is_read", 1)])  # Unread per lead
+        
+        logger.info("✅ WhatsApp Messages indexes created")
         
         # ============================================================================
         # LEAD_STAGES COLLECTION INDEXES
@@ -262,7 +312,8 @@ async def create_indexes():
             logger.info("ℹ️ Contacts collection not yet created - indexes will be created when collection exists")
         
         logger.info("🎯 All enhanced database indexes created successfully!")
-        logger.info("🚀 System optimized for multi-user assignment, selective round robin, and dynamic course levels & sources!")
+        logger.info("📱 WhatsApp chat functionality fully supported!")
+        logger.info("🚀 System optimized for multi-user assignment, selective round robin, dynamic course levels & sources, and WhatsApp integration!")
         
     except Exception as e:
         logger.error(f"❌ Error creating indexes: {e}")
@@ -270,7 +321,7 @@ async def create_indexes():
         logger.warning("⚠️ Continuing without optimal indexes - some queries may be slower")
 
 async def get_collection_stats():
-    """Get database collection statistics with enhanced metrics"""
+    """Get database collection statistics with enhanced metrics including WhatsApp"""
     try:
         db = get_database()
         
@@ -279,11 +330,12 @@ async def get_collection_stats():
             "leads", 
             "lead_stages",
             "lead_statuses",
-            "course_levels",  # NEW
-            "sources",        # NEW
+            "course_levels",
+            "sources",
             "lead_tasks",
             "lead_activities",
             "lead_counters",
+            "whatsapp_messages",  # NEW: WhatsApp messages collection
             "token_blacklist",
             "user_sessions",
             # Future collections
@@ -309,11 +361,29 @@ async def get_collection_stats():
                     unassigned = await db[collection_name].count_documents({"assigned_to": None})
                     stats[f"{collection_name}_unassigned"] = unassigned
                     
+                    # NEW: WhatsApp activity stats
+                    with_whatsapp = await db[collection_name].count_documents({"whatsapp_message_count": {"$gt": 0}})
+                    stats[f"{collection_name}_with_whatsapp"] = with_whatsapp
+                    
+                    unread_whatsapp = await db[collection_name].count_documents({"unread_whatsapp_count": {"$gt": 0}})
+                    stats[f"{collection_name}_unread_whatsapp"] = unread_whatsapp
+                    
                 elif collection_name == "users":
                     active_users = await db[collection_name].count_documents({"is_active": True})
                     stats[f"{collection_name}_active"] = active_users
                     
-                # 🆕 NEW: Stats for course levels and sources
+                elif collection_name == "whatsapp_messages":
+                    # NEW: WhatsApp message stats
+                    incoming = await db[collection_name].count_documents({"direction": "incoming"})
+                    stats[f"{collection_name}_incoming"] = incoming
+                    
+                    outgoing = await db[collection_name].count_documents({"direction": "outgoing"})
+                    stats[f"{collection_name}_outgoing"] = outgoing
+                    
+                    unread = await db[collection_name].count_documents({"direction": "incoming", "is_read": False})
+                    stats[f"{collection_name}_unread"] = unread
+                    
+                # Stats for course levels and sources
                 elif collection_name == "course_levels":
                     active_count = await db[collection_name].count_documents({"is_active": True})
                     stats[f"{collection_name}_active"] = active_count
@@ -336,11 +406,11 @@ async def get_collection_stats():
         return {"error": str(e)}
 
 async def get_index_stats():
-    """Get index statistics for performance monitoring"""
+    """Get index statistics for performance monitoring including WhatsApp collections"""
     try:
         db = get_database()
         
-        collections = ["users", "leads", "lead_tasks", "lead_activities", "course_levels", "sources"]  # Added new collections
+        collections = ["users", "leads", "lead_tasks", "lead_activities", "course_levels", "sources", "whatsapp_messages"]  # Added WhatsApp collection
         index_stats = {}
         
         for collection_name in collections:
@@ -373,16 +443,23 @@ async def init_database():
     
     if stats.get('leads', 0) > 0:
         logger.info(f"🎯 Leads: {stats.get('leads', 0)} total, {stats.get('leads_multi_assigned', 0)} multi-assigned, {stats.get('leads_unassigned', 0)} unassigned")
+        logger.info(f"📱 WhatsApp: {stats.get('leads_with_whatsapp', 0)} leads with messages, {stats.get('leads_unread_whatsapp', 0)} with unread")
     
     if stats.get('users', 0) > 0:
         logger.info(f"👥 Users: {stats.get('users', 0)} total, {stats.get('users_active', 0)} active")
     
-    # 🆕 NEW: Log course levels and sources stats
+    # Course levels and sources stats
     if stats.get('course_levels', 0) > 0:
         logger.info(f"📚 Course Levels: {stats.get('course_levels', 0)} total, {stats.get('course_levels_active', 0)} active")
     
     if stats.get('sources', 0) > 0:
         logger.info(f"📍 Sources: {stats.get('sources', 0)} total, {stats.get('sources_active', 0)} active")
+    
+    # NEW: WhatsApp messages stats
+    if stats.get('whatsapp_messages', 0) > 0:
+        logger.info(f"💬 WhatsApp: {stats.get('whatsapp_messages', 0)} total messages, {stats.get('whatsapp_messages_incoming', 0)} incoming, {stats.get('whatsapp_messages_outgoing', 0)} outgoing")
+        if stats.get('whatsapp_messages_unread', 0) > 0:
+            logger.info(f"📬 Unread WhatsApp messages: {stats.get('whatsapp_messages_unread', 0)}")
 
 async def cleanup_database():
     """Cleanup database resources"""
@@ -411,6 +488,10 @@ async def test_database_connection():
         if "leads" in collections:
             explain_result = await db.leads.find({"assigned_to": {"$ne": None}}).explain()
             logger.info("🔍 Lead query performance test completed")
+        
+        # Test WhatsApp collection if exists
+        if "whatsapp_messages" in collections:
+            logger.info("📱 WhatsApp messages collection available")
         
         return True
         
