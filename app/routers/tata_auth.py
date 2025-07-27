@@ -9,7 +9,7 @@ from datetime import datetime
 from ..services.tata_auth_service import tata_auth_service
 from ..utils.dependencies import get_admin_user
 from ..models.tata_integration import (
-    TataLoginRequest, TataLoginResponse, TataTokenRefreshResponse,
+    TataLoginRequest, TataLoginResponse, TataRefreshTokenResponse,
     TataLogoutResponse, TataIntegrationHealth
 )
 
@@ -74,7 +74,7 @@ async def login_to_tata(
             detail=f"Internal error during Tata login: {str(e)}"
         )
 
-@router.post("/refresh", response_model=TataTokenRefreshResponse)
+@router.post("/refresh", response_model=TataRefreshTokenResponse)
 async def refresh_tata_token(
     current_user: dict = Depends(get_admin_user)  # Only admins can manage tokens
 ):

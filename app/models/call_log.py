@@ -412,3 +412,75 @@ class CallExportResponse(BaseModel):
     file_size: Optional[str] = Field(None, description="File size in human readable format")
     expires_at: datetime = Field(..., description="Download link expiry time")
     message: str = Field(..., description="Export status message")
+
+# ============================================================================
+# SYSTEM HEALTH MODEL (Add this to your call_log.py)
+# ============================================================================
+
+class CallSystemHealth(BaseModel):
+    """System health status for call functionality"""
+    overall_status: str = Field(..., description="Overall system health status")
+    tata_api_status: str = Field(..., description="Tata API connectivity status")
+    call_service_status: str = Field(..., description="Call service status")
+    database_status: str = Field(..., description="Database connectivity status")
+    active_calls: int = Field(default=0, description="Currently active calls")
+    calls_last_hour: int = Field(default=0, description="Calls made in last hour")
+    success_rate_24h: float = Field(default=0.0, description="24-hour success rate percentage")
+    average_response_time: float = Field(default=0.0, description="Average API response time")
+    recent_errors: List[str] = Field(default=[], description="Recent error messages")
+    system_alerts: List[str] = Field(default=[], description="Current system alerts")
+    last_health_check: datetime = Field(default_factory=datetime.utcnow, description="Last health check timestamp")
+    
+    @validator('overall_status')
+    def validate_overall_status(cls, v):
+        allowed_statuses = ['healthy', 'degraded', 'unhealthy']
+        if v not in allowed_statuses:
+            raise ValueError(f'Overall status must be one of: {allowed_statuses}')
+        return v
+    
+# ============================================================================
+# MISSING RESPONSE MODELS (Add these to your call_log.py)
+# ============================================================================
+
+class ClickToCallResponse(BaseModel):
+    """Response model for click-to-call initiation"""
+    success: bool = Field(..., description="Call initiation success")
+    message: str = Field(..., description="Response message")
+    call_id: str = Field(..., description="Internal call log ID")
+    tata_call_id: Optional[str] = Field(None, description="Tata API call ID")
+    call_status: str = Field(..., description="Current call status")
+    estimated_connection_time: int = Field(..., description="Estimated connection time in seconds")
+    initiated_at: datetime = Field(..., description="Call initiation timestamp")
+    caller_number: Optional[str] = Field(None, description="Caller's number")
+    destination_number: str = Field(..., description="Destination number")
+
+class SupportCallResponse(BaseModel):
+    """Response model for support call requests"""
+    success: bool = Field(..., description="Support request success")
+    message: str = Field(..., description="Response message")
+    support_call_id: str = Field(..., description="Support call ID")
+    ticket_number: Optional[str] = Field(None, description="Support ticket number")
+    priority: str = Field(..., description="Assigned priority")
+    estimated_callback_time: int = Field(..., description="Estimated callback time in seconds")
+    support_agent_info: Optional[Dict[str, Any]] = Field(None, description="Assigned support agent info")
+    submitted_at: datetime = Field(..., description="Support request timestamp")
+
+class CallPermissionResponse(BaseModel):
+    """Response model for call permissions check"""
+    user_id: str = Field(..., description="User ID")
+    can_make_calls: bool = Field(..., description="Whether user can make calls")
+    has_tata_mapping: bool = Field(..., description="Whether user has Tata mapping")
+    tata_agent_id: Optional[str] = Field(None, description="Tata agent ID if mapped")
+    call_limit_remaining: Optional[int] = Field(None, description="Remaining call limit")
+    daily_call_count: int = Field(default=0, description="Calls made today")
+    permission_errors: List[str] = Field(default=[], description="Permission error messages")
+    last_call_time: Optional[datetime] = Field(None, description="Last call timestamp")
+    checked_at: datetime = Field(..., description="Permission check timestamp")
+
+class CallWebhookPayload(BaseModel):
+    """Webhook payload from Tata Tele API"""
+    event_type: str = Field(..., description="Type of webhook event")
+    call_id: str = Field(..., description="Call ID from Tata")
+    status: Optional[str] = Field(None, description="Call status")
+    timestamp: datetime = Field(..., description="Event timestamp")
+    data: Optional[Dict[str, Any]] = Field(None, description="Additional event data")

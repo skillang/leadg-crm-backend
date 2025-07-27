@@ -32,10 +32,10 @@ class TataCallService:
     
     def __init__(self):
         self.settings = get_settings()
-        self.db = get_database()
+        self.db = None
         self.auth_service = tata_auth_service
-        self.base_url = self.settings.TATA_API_BASE_URL
-        self.timeout = self.settings.TATA_API_TIMEOUT or 30
+        self.base_url = self.settings.tata_api_base_url
+        self.timeout = self.settings.tata_api_timeout or 30
         
         # API endpoints
         self.endpoints = {
@@ -45,9 +45,8 @@ class TataCallService:
             "user_detail": f"{self.base_url}/v1/user"
         }
         
-        # Call configuration
-        self.default_timeout = getattr(self.settings, 'DEFAULT_CALL_TIMEOUT', 300)
-        self.max_concurrent_calls = getattr(self.settings, 'MAX_CONCURRENT_CALLS', 50)
+        self.default_timeout = getattr(self.settings, 'default_call_timeout', 300)
+        self.max_concurrent_calls = getattr(self.settings, 'max_concurrent_calls', 50)
 
     async def _make_authenticated_request(
         self, 

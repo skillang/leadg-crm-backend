@@ -32,7 +32,7 @@ class TataUserService:
     
     def __init__(self):
         self.settings = get_settings()
-        self.db = get_database()
+        self.db = None
         self.auth_service = tata_auth_service
         self.base_url = self.settings.TATA_API_BASE_URL
         

@@ -1,4 +1,4 @@
-# app/config/settings.py - Updated with Email (ZeptoMail) configuration
+# app/config/settings.py - Updated with Email (ZeptoMail) and Tata Tele configuration
 from pydantic_settings import BaseSettings
 from typing import List
 import secrets
@@ -55,7 +55,6 @@ class Settings(BaseSettings):
     max_schedule_days: int = 30
 
     # 🆕 NEW: Tata Tele Integration Settings
-
     tata_api_base_url: str = "https://api-smartflo.tatateleservices.com"
     tata_email: Optional[str] = None
     tata_password: Optional[str] = None
@@ -166,6 +165,38 @@ class Settings(BaseSettings):
         if os.getenv("MAX_SCHEDULE_DAYS"):
             self.max_schedule_days = int(os.getenv("MAX_SCHEDULE_DAYS"))
         
+        # 🆕 NEW: TATA TELE ENVIRONMENT VARIABLES
+        if os.getenv("TATA_API_BASE_URL"):
+            self.tata_api_base_url = os.getenv("TATA_API_BASE_URL")
+        if os.getenv("TATA_EMAIL"):
+            self.tata_email = os.getenv("TATA_EMAIL")
+        if os.getenv("TATA_PASSWORD"):
+            self.tata_password = os.getenv("TATA_PASSWORD")
+        if os.getenv("TATA_API_TIMEOUT"):
+            self.tata_api_timeout = int(os.getenv("TATA_API_TIMEOUT"))
+        if os.getenv("TATA_API_RETRIES"):
+            self.tata_api_retries = int(os.getenv("TATA_API_RETRIES"))
+        if os.getenv("TATA_ENCRYPTION_KEY"):
+            self.tata_encryption_key = os.getenv("TATA_ENCRYPTION_KEY")
+        if os.getenv("TATA_SUPPORT_API_KEY"):
+            self.tata_support_api_key = os.getenv("TATA_SUPPORT_API_KEY")
+        
+        # Call configuration
+        if os.getenv("DEFAULT_CALL_TIMEOUT"):
+            self.default_call_timeout = int(os.getenv("DEFAULT_CALL_TIMEOUT"))
+        if os.getenv("MAX_CONCURRENT_CALLS"):
+            self.max_concurrent_calls = int(os.getenv("MAX_CONCURRENT_CALLS"))
+        if os.getenv("CALL_LOG_RETENTION_DAYS"):
+            self.call_log_retention_days = int(os.getenv("CALL_LOG_RETENTION_DAYS"))
+        if os.getenv("MAX_SYNC_BATCH_SIZE"):
+            self.max_sync_batch_size = int(os.getenv("MAX_SYNC_BATCH_SIZE"))
+        
+        # Webhook configuration
+        if os.getenv("TATA_WEBHOOK_SECRET"):
+            self.tata_webhook_secret = os.getenv("TATA_WEBHOOK_SECRET")
+        if os.getenv("TATA_WEBHOOK_URL"):
+            self.tata_webhook_url = os.getenv("TATA_WEBHOOK_URL")
+        
         # Email configuration (existing SMTP)
         if os.getenv("SMTP_HOST"):
             self.smtp_host = os.getenv("SMTP_HOST")
@@ -267,6 +298,34 @@ class Settings(BaseSettings):
             "max_schedule_days": self.max_schedule_days
         }
     
+    # 🆕 NEW: Tata Tele configuration helper
+    def is_tata_configured(self) -> bool:
+        """Check if Tata Tele integration is properly configured"""
+        return bool(
+            self.tata_email and 
+            self.tata_password and 
+            self.tata_encryption_key
+        )
+    
+    # 🆕 NEW: Get Tata Tele configuration
+    def get_tata_config(self) -> dict:
+        """Get Tata Tele configuration dictionary"""
+        return {
+            "api_base_url": self.tata_api_base_url,
+            "email": self.tata_email,
+            "password": self.tata_password,
+            "api_timeout": self.tata_api_timeout,
+            "api_retries": self.tata_api_retries,
+            "encryption_key": self.tata_encryption_key,
+            "support_api_key": self.tata_support_api_key,
+            "default_call_timeout": self.default_call_timeout,
+            "max_concurrent_calls": self.max_concurrent_calls,
+            "call_log_retention_days": self.call_log_retention_days,
+            "max_sync_batch_size": self.max_sync_batch_size,
+            "webhook_secret": self.tata_webhook_secret,
+            "webhook_url": self.tata_webhook_url
+        }
+    
     def is_whatsapp_configured(self) -> bool:
         """Check if WhatsApp is properly configured"""
         return bool(self.whatsapp_license_number) and bool(self.whatsapp_api_key)
@@ -288,3 +347,8 @@ class Settings(BaseSettings):
 
 # Global settings instance
 settings = Settings()
+
+# 🆕 CRITICAL: Add the missing get_settings function
+def get_settings() -> Settings:
+    """Get global settings instance - Required by Tata services"""
+    return settings

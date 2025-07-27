@@ -31,7 +31,8 @@ class CallLogService:
     
     def __init__(self):
         self.settings = get_settings()
-        self.db = get_database()
+        self.db = None
+    
         
         # Configuration
         self.default_page_size = 20
