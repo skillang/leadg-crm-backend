@@ -5,6 +5,7 @@ import secrets
 import json
 import os
 from dotenv import load_dotenv
+from typing import Optional
 
 # Load .env file before anything else
 load_dotenv(override=True)
@@ -52,6 +53,26 @@ class Settings(BaseSettings):
     email_rate_limit: int = 100
     min_schedule_minutes: int = 5
     max_schedule_days: int = 30
+
+    # 🆕 NEW: Tata Tele Integration Settings
+
+    tata_api_base_url: str = "https://api-smartflo.tatateleservices.com"
+    tata_email: Optional[str] = None
+    tata_password: Optional[str] = None
+    tata_api_timeout: int = 30
+    tata_api_retries: int = 3
+    tata_encryption_key: Optional[str] = None
+    tata_support_api_key: Optional[str] = None
+    
+    # Call configuration
+    default_call_timeout: int = 300
+    max_concurrent_calls: int = 50
+    call_log_retention_days: int = 365
+    max_sync_batch_size: int = 10
+    
+    # Webhook configuration
+    tata_webhook_secret: Optional[str] = None
+    tata_webhook_url: Optional[str] = None
     
     # Rate Limiting
     rate_limit_requests: int = 100

@@ -7,7 +7,7 @@ import time
 
 from .config.settings import settings
 from .config.database import connect_to_mongo, close_mongo_connection
-from .routers import auth, leads, tasks, notes, documents, timeline, contacts, lead_categories, stages, statuses, course_levels, sources, whatsapp, emails, permissions   # 🆕 Added permissions
+from .routers import auth, leads, tasks, notes, documents, timeline, contacts, lead_categories, stages, statuses, course_levels, sources, whatsapp, emails, permissions, tata_auth, tata_calls, call_logs, tata_users   # 🆕 Added permissions
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -243,7 +243,8 @@ async def health_check():
         "status": "healthy",
         "message": "LeadG CRM API is running",
         "version": settings.version,
-        "modules": ["auth", "leads", "tasks", "notes", "documents", "timeline", "contacts", "stages", "statuses", "course-levels", "sources", "whatsapp", "emails", "permissions"]  # 🆕 Added permissions
+        "modules": ["auth", "leads", "tasks", "notes", "documents", "timeline", "contacts", "stages", "statuses", "course-levels", "sources", "whatsapp", "emails", "permissions","tata-auth", "tata-calls", "call-logs", "tata-users"]  # 🆕 Added permissions
+
     }
 
 # 🔄 UPDATED: Root endpoint with permissions endpoints
@@ -368,6 +369,30 @@ app.include_router(
     permissions.router,
     prefix="/permissions",
     tags=["Permissions"]
+)
+
+app.include_router(
+    tata_auth.router,
+    prefix="/tata-auth",
+    tags=["Tata Authentication"]
+)
+
+app.include_router(
+    tata_calls.router,
+    prefix="/tata-calls",
+    tags=["Tata Calls"]
+)
+
+app.include_router(
+    call_logs.router,
+    prefix="/call-logs",
+    tags=["Call Logs & Analytics"]
+)
+
+app.include_router(
+    tata_users.router,
+    prefix="/tata-users", 
+    tags=["Tata User Sync"]
 )
 
 if __name__ == "__main__":

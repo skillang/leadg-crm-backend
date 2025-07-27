@@ -13,7 +13,7 @@ class CallRequest(BaseModel):
     notes: Optional[str] = Field(None, description="Call notes")
 
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "lead_id": "LD-1000",
                 "phone_number": "+91-9876543210",
