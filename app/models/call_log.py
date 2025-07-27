@@ -484,3 +484,14 @@ class CallWebhookPayload(BaseModel):
     status: Optional[str] = Field(None, description="Call status")
     timestamp: datetime = Field(..., description="Event timestamp")
     data: Optional[Dict[str, Any]] = Field(None, description="Additional event data")
+# Add this to your call_log.py file
+
+class CallLogListResponse(BaseModel):
+    """Response model for call log lists with pagination"""
+    calls: List[CallLogResponse] = Field(..., description="List of call logs")
+    total_count: int = Field(..., description="Total number of calls matching filter")
+    limit: int = Field(..., description="Records per page")
+    offset: int = Field(..., description="Number of records skipped")
+    has_more: bool = Field(..., description="Whether there are more records")
+    filters_applied: Dict[str, Any] = Field(..., description="Applied filters")
+    retrieved_at: datetime = Field(..., description="Data retrieval timestamp")

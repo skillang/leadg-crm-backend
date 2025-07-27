@@ -32,9 +32,9 @@ class TataUserService:
     
     def __init__(self):
         self.settings = get_settings()
-        self.db = None
+        self.db = None  # 🔧 Lazy initialization
         self.auth_service = tata_auth_service
-        self.base_url = self.settings.TATA_API_BASE_URL
+        self.base_url = self.settings.tata_api_base_url  # 🔧 Fixed: lowercase
         
         # API endpoints
         self.endpoints = {
@@ -44,9 +44,18 @@ class TataUserService:
             "update_user": f"{self.base_url}/v1/user"
         }
         
-        # Sync configuration
-        self.sync_config = TataUserSyncConfig()
-        self.max_sync_batch_size = getattr(self.settings, 'MAX_SYNC_BATCH_SIZE', 10)
+        # Sync configuration - 🔧 Fixed: lowercase attributes
+        self.max_sync_batch_size = getattr(self.settings, 'max_sync_batch_size', 10)
+
+    def _get_db(self):
+        """🔧 Add this method for lazy database initialization"""
+        if self.db is None:
+            try:
+                self.db = get_database()
+            except RuntimeError:
+                return None
+        return self.db
+
 
     async def _make_authenticated_request(
         self, 
@@ -763,3 +772,4 @@ class TataUserService:
                 completed_at=datetime.utcnow(),
                 total_duration=0
             )
+tata_user_service = TataUserService()
