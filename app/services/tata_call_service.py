@@ -42,62 +42,65 @@ class TataCallService:
             "click_to_call": f"{self.base_url}/v1/click_to_call",
             "support_call": f"{self.base_url}/v1/click_to_call_support",
             "users": f"{self.base_url}/v1/users",
-            "user_detail": f"{self.base_url}/v1/user"
+            "user_detail": f"{self.base_url}/v1/user",
+            "my_numbers": f"{self.base_url}/v1/my_number"   # ← Add this too"my_numbers": f"{self.base_url}/v1/my_number"   # ← Add this too"my_numbers": f"{self.base_url}/v1/my_number"   # ← Add this too
         }
         
         self.default_timeout = getattr(self.settings, 'default_call_timeout', 300)
         self.max_concurrent_calls = getattr(self.settings, 'max_concurrent_calls', 50)
+    def _get_db(self):
+        """Lazy database initialization"""
+        if self.db is None:
+            try:
+                self.db = get_database()
+            except RuntimeError:
+                return None
+        return self.db
 
     async def _make_authenticated_request(
-        self, 
-        method: str, 
-        url: str, 
-        data: Optional[Dict] = None,
-        user_id: str = "system"
-    ) -> Tuple[bool, Dict[str, Any]]:
+    self, 
+    method: str, 
+    url: str, 
+    data: Optional[Dict] = None,
+    user_id: str = "system"
+) -> Tuple[bool, Dict[str, Any]]:
         """Make authenticated request to Tata API using stored tokens"""
         try:
-            # Get valid token
-            token = await self.auth_service.get_valid_token(user_id)
+            # Get valid token (no parameters needed)
+            token = await self.auth_service.get_valid_token()  # ✅ FIXED
             if not token:
-                logger.error(f"No valid token available for user: {user_id}")
+                logger.error("No valid token available")
                 return False, {"error": "Authentication failed", "message": "No valid token available"}
             
-            # Prepare headers
+            # Make actual HTTP request
+            import httpx
             headers = {
-                "Accept": "application/json",
+                "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {token}"
+                "Accept": "application/json"
             }
             
-            # Make request
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                logger.info(f"Making authenticated {method} request to {url}")
-                
-                if method.upper() == "POST":
-                    response = await client.post(url, json=data, headers=headers)
-                elif method.upper() == "GET":
+            async with httpx.AsyncClient(timeout=30) as client:
+                if method.upper() == "GET":
                     response = await client.get(url, headers=headers)
+                elif method.upper() == "POST":
+                    response = await client.post(url, headers=headers, json=data)
+                elif method.upper() == "PUT":
+                    response = await client.put(url, headers=headers, json=data)
+                elif method.upper() == "DELETE":
+                    response = await client.delete(url, headers=headers)
                 else:
-                    raise ValueError(f"Unsupported HTTP method: {method}")
-                
-                # Parse response
-                try:
-                    response_data = response.json()
-                except:
-                    response_data = {"message": response.text}
-                
-                logger.info(f"Response status: {response.status_code}")
+                    return False, {"error": "Unsupported HTTP method"}
                 
                 if response.status_code == 200:
-                    return True, response_data
+                    return True, response.json()
                 else:
-                    logger.warning(f"Request failed with status {response.status_code}: {response_data}")
-                    return False, response_data
+                    logger.error(f"API request failed: {response.status_code} - {response.text}")
+                    return False, {
+                        "error": f"API request failed with status {response.status_code}",
+                        "message": response.text
+                    }
                     
-        except httpx.TimeoutException:
-            logger.error("Request timeout")
-            return False, {"error": "Timeout", "message": "Request timed out"}
         except Exception as e:
             logger.error(f"Request error: {str(e)}")
             return False, {"error": "Request failed", "message": str(e)}
@@ -131,12 +134,31 @@ class TataCallService:
     async def _get_user_agent_number(self, crm_user_id: str) -> Optional[str]:
         """Get Tata agent number for CRM user"""
         try:
+            db = self._get_db()  # ✅ FIXED
+            if db is None:
+                logger.error("Database not available")
+                return None
             # Get user mapping
-            user_mapping = await self.db.tata_user_mappings.find_one({"crm_user_id": crm_user_id})
+            user_mapping = await db.tata_user_mappings.find_one({"crm_user_id": crm_user_id})  # ✅ FIXED: Use db, not self.db
             if not user_mapping:
                 logger.warning(f"No Tata mapping found for CRM user: {crm_user_id}")
                 return None
             
+            # 🆕 PRIORITY: Use caller_id (DID) first, then fallback to agent_id
+            caller_id = user_mapping.get("tata_caller_id") or user_mapping.get("tata_did_number")
+            if caller_id:
+                logger.info(f"Using caller_id for user {crm_user_id}: {caller_id}")
+                return caller_id
+            
+            # Fallback to agent_id or phone
+            agent_number = user_mapping.get("tata_agent_id") or user_mapping.get("tata_phone")
+            if agent_number:
+                logger.info(f"Using agent_id fallback for user {crm_user_id}: {agent_number}")
+                return agent_number
+                
+            logger.warning(f"No caller_id or agent number found for user: {crm_user_id}")
+            return None 
+
             agent_phone = user_mapping.get("tata_phone")
             if not agent_phone:
                 logger.warning(f"No agent phone found for user: {crm_user_id}")

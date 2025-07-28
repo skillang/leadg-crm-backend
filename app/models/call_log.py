@@ -64,6 +64,8 @@ class CallOutcome(str, Enum):
 
 class ClickToCallRequest(BaseModel):
     """Request model for Tata Click-to-Call API"""
+    lead_id: Optional[str] = Field(None, description="Lead ID for tracking")
+    notes: Optional[str] = Field(None, description="Call notes")
     agent_number: str = Field(..., description="Smartflo agent number")
     destination_number: str = Field(..., description="Customer number to call")
     caller_id: Optional[str] = Field(None, description="Caller ID shown to customer")
@@ -116,12 +118,6 @@ class CallLogCreate(BaseModel):
     notes: Optional[str] = Field(None, max_length=1000, description="Pre-call notes or context")
     scheduled_at: Optional[datetime] = Field(None, description="Scheduled call time (for callbacks)")
     custom_identifier: Optional[str] = Field(None, description="Custom identifier for tracking")
-
-    @validator('lead_id')
-    def validate_lead_id(cls, v):
-        if not re.match(r'^LD-\d+$', v):
-            raise ValueError('Lead ID must be in format LD-XXXX')
-        return v
 
     @validator('destination_number')
     def validate_destination_number(cls, v):
@@ -437,16 +433,13 @@ class CallSystemHealth(BaseModel):
         if v not in allowed_statuses:
             raise ValueError(f'Overall status must be one of: {allowed_statuses}')
         return v
-    
-# ============================================================================
 # MISSING RESPONSE MODELS (Add these to your call_log.py)
-# ============================================================================
 
 class ClickToCallResponse(BaseModel):
     """Response model for click-to-call initiation"""
     success: bool = Field(..., description="Call initiation success")
     message: str = Field(..., description="Response message")
-    call_id: str = Field(..., description="Internal call log ID")
+    call_id: Optional[str] = Field(None, description="Internal call log ID")
     tata_call_id: Optional[str] = Field(None, description="Tata API call ID")
     call_status: str = Field(..., description="Current call status")
     estimated_connection_time: int = Field(..., description="Estimated connection time in seconds")

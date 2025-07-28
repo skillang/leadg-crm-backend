@@ -51,7 +51,7 @@ class EmailRequest(BaseModel):
         json_encoders = {
             datetime: lambda v: v.isoformat()
         }
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "template_key": "welcome_template",
                 "sender_email_prefix": "info",
@@ -93,7 +93,7 @@ class BulkEmailRequest(BaseModel):
         json_encoders = {
             datetime: lambda v: v.isoformat()
         }
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "lead_ids": ["LD-1001", "LD-1002", "LD-1003"],
                 "template_key": "newsletter_template",
