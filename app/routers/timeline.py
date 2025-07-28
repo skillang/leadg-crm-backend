@@ -52,7 +52,7 @@ async def debug_timeline_data(lead_id: str):
         # Test the exact query
         query = {
             "lead_id": lead_id,
-            "activity_type": {"$in": TIMELINE_CONTENT_ACTIVITIES}
+            # "activity_type": {"$in": TIMELINE_CONTENT_ACTIVITIES}
         }
         
         count = await db.lead_activities.count_documents(query)
@@ -136,11 +136,11 @@ async def get_lead_timeline(
         # Build base query - ONLY content activities for this lead
         query = {
             "lead_id": lead_id,
-            "activity_type": {"$in": TIMELINE_CONTENT_ACTIVITIES}
+            # "activity_type": {"$in": TIMELINE_CONTENT_ACTIVITIES}
         }
         
         # Add activity type filter
-        if activity_type and activity_type in TIMELINE_CONTENT_ACTIVITIES:
+        if activity_type :
             query["activity_type"] = activity_type
         
         # Add date range filter
@@ -226,7 +226,7 @@ async def get_timeline_stats(
             {
                 "$match": {
                     "lead_id": lead_id,
-                    "activity_type": {"$in": TIMELINE_CONTENT_ACTIVITIES},
+                    # "activity_type": {"$in": TIMELINE_CONTENT_ACTIVITIES},
                     "created_at": {"$gte": start_date}
                 }
             },
