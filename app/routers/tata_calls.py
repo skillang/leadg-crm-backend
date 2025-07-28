@@ -50,27 +50,35 @@ async def initiate_click_to_call(
                 detail="Lead ID is required"
             )
         
-        # Initiate call through service
-        result = await tata_call_service.initiate_click_to_call(
+        # Extract user_id with fallbacks (same pattern as other endpoints)
+        user_id_fallback = (current_user.get("user_id") or 
+                           current_user.get("_id") or 
+                           current_user.get("id") or 
+                           current_user.get("email"))
+        
+        # Initiate call through service (fix parameters and return handling)
+        success, result = await tata_call_service.initiate_click_to_call(
             lead_id=call_request.lead_id,
             destination_number=call_request.destination_number,
-            caller_user_id=current_user["user_id"],
-            call_purpose=call_request.call_purpose,
-            notes=call_request.notes
+            current_user=current_user,  # ← Pass whole user dict
+            caller_id=call_request.caller_id,  # ← Add caller_id
+            notes=call_request.notes,
+            call_timeout=call_request.call_timeout  # ← Add timeout if exists
         )
         
-        if not result["success"]:
+        # Handle tuple response from service
+        if not success:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=result["message"]
+                detail=result.get("message", "Call initiation failed")
             )
         
-        logger.info(f"Click-to-call initiated successfully: {result['call_id']}")
+        logger.info(f"Click-to-call initiated successfully: {result.get('call_id')}")
         
         return ClickToCallResponse(
             success=True,
             message="Call initiated successfully",
-            call_id=result["call_id"],
+            call_id=result.get("call_id"),
             tata_call_id=result.get("tata_call_id"),
             call_status="initiated",
             estimated_connection_time=result.get("estimated_connection_time", 30),

@@ -111,7 +111,8 @@ async def create_user_mapping(
         # Convert ObjectIds and return
         mapping = convert_objectid_to_str(result["mapping"])
         
-        logger.info(f"User mapping created successfully: {mapping['_id']}")
+        logger.info(f"User mapping created successfully: {mapping['id']}")
+
         return mapping
         
     except HTTPException:
@@ -230,10 +231,15 @@ async def sync_single_user(
     try:
         logger.info(f"Admin {current_user['email']} syncing user {user_id}")
         
+        user_id_fallback = (current_user.get("user_id") or 
+                   current_user.get("_id") or 
+                   current_user.get("id") or 
+                   current_user.get("email"))
+        
         # Sync user through service
         result = await tata_user_service.sync_single_user(
-            crm_user_id=user_id,
-            initiated_by=current_user["user_id"]
+        crm_user_id=user_id,
+        initiated_by=str(user_id_fallback)  
         )
         
         if not result["success"]:

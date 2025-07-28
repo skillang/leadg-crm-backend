@@ -191,6 +191,8 @@ class TataUserMappingResponse(BaseModel):
     last_synced: Optional[datetime] = Field(None, description="Last sync timestamp")
     sync_attempts: int = Field(..., description="Number of sync attempts")
     last_sync_error: Optional[str] = Field(None, description="Last error message")
+    tata_caller_id: Optional[str] = Field(None, description="Tata caller ID (DID)")
+    tata_did_number: Optional[str] = Field(None, description="Tata DID number")
     
     # Tata configuration
     tata_user_type: Optional[str] = Field(None, description="Tata user type")

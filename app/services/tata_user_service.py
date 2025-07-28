@@ -41,7 +41,8 @@ class TataUserService:
             "users": f"{self.base_url}/v1/users",
             "user_detail": f"{self.base_url}/v1/user",
             "create_user": f"{self.base_url}/v1/user",
-            "update_user": f"{self.base_url}/v1/user"
+            "update_user": f"{self.base_url}/v1/user",
+            "my_numbers": f"{self.base_url}/v1/my_number"   # ← Add this too
         }
         
         # Sync configuration - 🔧 Fixed: lowercase attributes
@@ -62,60 +63,49 @@ class TataUserService:
         method: str, 
         url: str, 
         data: Optional[Dict] = None,
-        user_id: str = "system"
+        user_id: str = "system"  # ← Keep for backward compatibility but don't use
     ) -> Tuple[bool, Dict[str, Any]]:
         """Make authenticated request to Tata API"""
         try:
-            # Get valid token
-            token = await self.auth_service.get_valid_token(user_id)
+            # Get valid token (no parameters needed)
+            token = await self.auth_service.get_valid_token()  # ← FIXED
             if not token:
-                logger.error(f"No valid token available for user: {user_id}")
+                logger.error("No valid token available")
                 return False, {"error": "Authentication failed", "message": "No valid token available"}
             
-            # Use the auth service's request method
-            # This is a simplified version - in practice, we'd implement HTTP client here
-            # For now, we'll return mock responses for demonstration
+            # Make actual HTTP request
+            import httpx
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            }
             
-            if method == "GET" and "users" in url:
-                # Mock response for getting users list
-                return True, {
-                    "has_more": False,
-                    "count": 1,
-                    "last_seen_id": 1,
-                    "data": [{
-                        "id": 288256,
-                        "name": "Test User",
-                        "login_id": "test_user",
-                        "is_login_based_calling_enabled": True,
-                        "is_international_outbound_enabled": False,
-                        "user_status": 1,
-                        "agent": {
-                            "id": "0502842370002",
-                            "name": "Test User",
-                            "status": 0,
-                            "follow_me_number": "+919999999999"
-                        },
-                        "user_role": {
-                            "id": 54742,
-                            "name": "Agent"
-                        },
-                        "extension": "1001"
-                    }]
-                }
-            elif method == "POST" and "user" in url:
-                # Mock response for creating user
-                return True, {
-                    "success": True,
-                    "message": "User created successfully",
-                    "user_id": "288256"
-                }
-            else:
-                return True, {"success": True, "message": "Operation completed"}
+            async with httpx.AsyncClient(timeout=30) as client:
+                if method.upper() == "GET":
+                    response = await client.get(url, headers=headers)
+                elif method.upper() == "POST":
+                    response = await client.post(url, headers=headers, json=data)
+                elif method.upper() == "PUT":
+                    response = await client.put(url, headers=headers, json=data)
+                elif method.upper() == "DELETE":
+                    response = await client.delete(url, headers=headers)
+                else:
+                    return False, {"error": "Unsupported HTTP method"}
                 
+                if response.status_code == 200:
+                    return True, response.json()
+                else:
+                    logger.error(f"API request failed: {response.status_code} - {response.text}")
+                    return False, {
+                        "error": f"API request failed with status {response.status_code}",
+                        "message": response.text
+                    }
+                    
         except Exception as e:
             logger.error(f"Request error: {str(e)}")
             return False, {"error": "Request failed", "message": str(e)}
-
+        
     async def _log_sync_event(
         self, 
         event_type: str, 
@@ -241,23 +231,92 @@ class TataUserService:
                 crm_user_id=crm_user_id,
                 validation_errors=[f"Validation failed: {str(e)}"]
             )
-
-
+    
+    async def _fetch_tata_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetch user data from Tata API by email/login_id
+        """
+        try:
+            # Make request to Tata Users API
+            success, response = await self._make_authenticated_request(
+                method="GET",
+                url=self.endpoints["users"],
+                user_id="system"
+            )
+            
+            if not success:
+                logger.error(f"Failed to fetch Tata users: {response}")
+                return None
+            
+            # Search for user by email/login_id in the response
+            users_data = response.get("data", [])
+            for user in users_data:
+                if (user.get("login_id") == email or 
+                    user.get("name", "").lower() == email.split("@")[0].lower()):
+                    logger.info(f"Found Tata user: {user.get('id')} - {user.get('name')}")
+                    return user
+            
+            logger.warning(f"User not found in Tata system: {email}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error fetching Tata user by email {email}: {str(e)}")
+            return None
+    
+    async def _fetch_user_extension(self, agent_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetch user's extension/caller_id from My Numbers API
+        """
+        try:
+            # Make request to My Numbers API
+            success, response = await self._make_authenticated_request(
+                method="GET",
+                url=f"{self.base_url}/v1/my_number",
+                user_id="system"
+            )
+            
+            if not success:
+                logger.error(f"Failed to fetch My Numbers: {response}")
+                return None
+            
+            # Search for entry where destination matches agent_id
+            numbers_data = response if isinstance(response, list) else response.get("data", [])
+            
+            for number_entry in numbers_data:
+                destination = number_entry.get("destination", "")
+                # Match pattern: "agent||0506197500004"
+                if destination == f"agent||{agent_id}":
+                    logger.info(f"Found extension for agent {agent_id}: {number_entry.get('did')}")
+                    return {
+                        "did": number_entry.get("did"),           # Caller ID number
+                        "alias": number_entry.get("alias"),       # Alias
+                        "id": number_entry.get("id"),             # Number ID
+                        "name": number_entry.get("name"),         # Name
+                        "destination_name": number_entry.get("destination_name")
+                    }
+            
+            logger.warning(f"No extension found for agent: {agent_id}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error fetching extension for agent {agent_id}: {str(e)}")
+            return None
 
     async def create_user_mapping(
-        self, 
-        mapping_data: Dict[str, Any],  # ← Changed: Accept dict instead of TataUserMappingCreate
-        created_by: str
-    ) -> Dict[str, Any]:  # ← Changed: Return dict instead of TataUserMappingResponse
+    self, 
+    mapping_data: Dict[str, Any],
+    created_by: str
+) -> Dict[str, Any]:
         """
         Create a new user mapping between CRM and Tata systems
+        NOW WITH AUTO-SYNC TO GET REAL TATA DATA
         """
         try:
             # 🔧 FIX: Use lazy database initialization
             db = self._get_db()
             if db is None:
                 return {"success": False, "message": "Database not available"}
-            
+
             crm_user_id = mapping_data["crm_user_id"]
             
             # Check if mapping already exists
@@ -272,47 +331,72 @@ class TataUserService:
             crm_user = await db.users.find_one({"_id": ObjectId(crm_user_id)})
             if not crm_user:
                 return {"success": False, "message": "CRM user not found"}
+
+            # 🆕 NEW: AUTO-FETCH REAL TATA USER DATA
+            tata_user_data = await self._fetch_tata_user_by_email(
+                email=mapping_data.get("tata_email") or crm_user.get("email")
+            )
             
-            # Create mapping document
+            if not tata_user_data:
+                return {
+                    "success": False, 
+                    "message": "User not found in Tata system. User must be created in Tata first."
+                }
+            
+
+            # 🆕 EXTRACT REAL IDS FROM TATA API RESPONSE
+            real_tata_user_id = str(tata_user_data.get("id"))
+            real_tata_agent_id = tata_user_data.get("agent", {}).get("id")
+            
+            if not real_tata_agent_id:
+                return {
+                    "success": False, 
+                    "message": "User exists in Tata but has no agent ID assigned"
+                }
+            extension_data = await self._fetch_user_extension(real_tata_agent_id)
+            caller_id = extension_data.get("did") if extension_data else None
+
+            # Create mapping document WITH REAL DATA
             mapping_doc = {
-                    "crm_user_id": crm_user_id,
-                    "tata_user_id": mapping_data.get("tata_user_id"),
-                    "tata_agent_id": mapping_data.get("tata_agent_id"),
-                    "tata_login_id": mapping_data.get("tata_login_id"),
-                    "tata_email": mapping_data.get("tata_email"),
-                    "tata_phone": mapping_data.get("tata_phone"),
-                    "sync_status": "synced",
-                    "sync_attempts": 0,  # ← Add this
-                    "is_login_based_calling": True,  # ← Add this
-                    "is_international_outbound": False,  # ← Add this
-                    "auto_sync_enabled": True,  # ← Add this
-                    "can_make_calls": True,  # ← Add this
-                    "created_at": datetime.utcnow(),
-                    "updated_at": datetime.utcnow(),
-                    "created_by": created_by,
-                    "last_synced": datetime.utcnow(),
-                    "is_active": True
+                "crm_user_id": crm_user_id,
+                "tata_user_id": real_tata_user_id,           # ← Real Tata user ID
+                "tata_agent_id": real_tata_agent_id,         # ← Real Tata agent ID
+                "tata_login_id": tata_user_data.get("login_id"),
+                "tata_email": mapping_data.get("tata_email"),
+                "tata_phone": tata_user_data.get("agent", {}).get("follow_me_number"),
+                # "tata_extension": tata_user_data.get("extension"),
+                "sync_status": "synced",
+                "tata_caller_id": caller_id,                        # 🆕 NEW: From My Numbers API
+                "tata_did_number": caller_id,
+                "sync_attempts": 1,
+                "is_login_based_calling": tata_user_data.get("is_login_based_calling_enabled", True),
+                "is_international_outbound": tata_user_data.get("is_international_outbound_enabled", False),
+                "auto_sync_enabled": True,
+                "can_make_calls": True,
+                "created_at": datetime.utcnow(),
+                "updated_at": datetime.utcnow(),
+                "created_by": created_by,
+                "last_synced": datetime.utcnow(),
+                "is_active": True
             }
             
             # Insert mapping
             result = await db.tata_user_mappings.insert_one(mapping_doc)
             
             # Get the created mapping
-            # Get the created mapping
             created_mapping = await db.tata_user_mappings.find_one({"_id": result.inserted_id})
-            # created_mapping["_id"] = str(created_mapping["_id"])
-            created_mapping["crm_user_id"] = str(created_mapping["crm_user_id"])  # Ensure CRM ID is string
-            # 🔧 FIXED: Ensure we return a response that matches the mol
-
-            # 🔧 FIXED: Create response that matches TataUserMappingResponse model
+            
+            # Create response mapping
             response_mapping = {
-                "id": str(created_mapping["_id"]),  # ← Required: 'id' not '_id'
-                "crm_user_id": created_mapping["crm_user_id"],
+                "id": str(created_mapping["_id"]),
+                
+                # CRM user data
+                "crm_user_id": str(created_mapping["crm_user_id"]),
                 "crm_user_name": crm_user.get("full_name", crm_user.get("email", "Unknown")),
                 "crm_user_email": crm_user.get("email", ""),
                 "crm_user_role": crm_user.get("role", "user"),
                 
-                # Tata fields
+                # Tata user data
                 "tata_user_id": created_mapping.get("tata_user_id"),
                 "tata_agent_id": created_mapping.get("tata_agent_id"),
                 "tata_login_id": created_mapping.get("tata_login_id"),
@@ -320,46 +404,48 @@ class TataUserService:
                 "tata_phone": created_mapping.get("tata_phone"),
                 "tata_extension": created_mapping.get("tata_extension"),
                 
-                # Status fields
+                # Status and configuration
                 "sync_status": created_mapping.get("sync_status", "synced"),
                 "last_synced": created_mapping.get("last_synced"),
-                "sync_attempts": created_mapping.get("sync_attempts", 0),  # ← Required field
+                "sync_attempts": created_mapping.get("sync_attempts", 0),
                 "last_sync_error": created_mapping.get("last_sync_error"),
                 
-                # Configuration fields (required by model)
-                "tata_user_type": created_mapping.get("tata_user_type"),
-                "tata_role_id": created_mapping.get("tata_role_id"),
-                "tata_role_name": created_mapping.get("tata_role_name"),
-                "is_login_based_calling": created_mapping.get("is_login_based_calling", True),  # ← Required
-                "is_international_outbound": created_mapping.get("is_international_outbound", False),  # ← Required
-                "is_web_login_blocked": created_mapping.get("is_web_login_blocked", False),
+                # 🔧 FIX: ADD THESE MISSING FIELDS
+                "tata_caller_id": created_mapping.get("tata_caller_id"),           # ← WAS MISSING
+                "tata_did_number": created_mapping.get("tata_did_number"),         # ← WAS MISSING
                 
-                # Agent fields
-                "agent_intercom": created_mapping.get("agent_intercom"),
-                "agent_status": created_mapping.get("agent_status"),
-                "agent_status_text": created_mapping.get("agent_status_text"),
+                # Tata configuration
+                "tata_user_type": created_mapping.get("tata_user_type"),
+                "tata_role_name": created_mapping.get("tata_role_name"),
+                "is_login_based_calling": created_mapping.get("is_login_based_calling", True),
+                "is_international_outbound": created_mapping.get("is_international_outbound", False),
+                "is_web_login_blocked": created_mapping.get("is_web_login_blocked", False),  # ← WAS MISSING
+                "agent_status": created_mapping.get("agent_status"),               # ← WAS MISSING
+                "agent_status_text": created_mapping.get("agent_status_text"),     # ← WAS MISSING
                 
                 # Timestamps
                 "created_at": created_mapping.get("created_at"),
                 "updated_at": created_mapping.get("updated_at"),
                 
-                # Flags (required by model)
+                # Flags
                 "is_active": created_mapping.get("is_active", True),
-                "auto_sync_enabled": created_mapping.get("auto_sync_enabled", True),  # ← Required
-                "can_make_calls": created_mapping.get("can_make_calls", True)  # ← Required
+                "auto_sync_enabled": created_mapping.get("auto_sync_enabled", True),
+                "can_make_calls": created_mapping.get("can_make_calls", True)
             }
-
-            logger.info(f"User mapping created successfully for {crm_user_id}")
+            logger.info(f"User mapping created successfully for {crm_user_id} with real Tata data")
 
             return {
                 "success": True,
-                "message": "User mapping created successfully", 
+                "message": "User mapping created successfully with real Tata data", 
                 "mapping": response_mapping
             }
             
         except Exception as e:
             logger.error(f"Error creating user mapping: {str(e)}", exc_info=True)
             return {"success": False, "message": f"Failed to create mapping: {str(e)}"}
+
+
+
 
 
     def _generate_login_id(self, user: Dict[str, Any]) -> str:
@@ -787,6 +873,81 @@ class TataUserService:
                 total_duration=0
             )
 
+    async def sync_single_user(
+    self, 
+    crm_user_id: str, 
+    initiated_by: str
+) -> Dict[str, Any]:
+        """
+        Synchronize a single user with Tata system
+        """
+        try:
+            # 🔧 FIX: Use lazy database initialization
+            db = self._get_db()
+            if db is None:
+                return {"success": False, "message": "Database not available"}
+            
+            # Check if CRM user exists
+            crm_user = await db.users.find_one({"_id": ObjectId(crm_user_id)})
+            if not crm_user:
+                return {"success": False, "message": "CRM user not found"}
+            
+            # Check if mapping already exists
+            existing_mapping = await db.tata_user_mappings.find_one({
+                "crm_user_id": crm_user_id
+            })
+            
+            if existing_mapping:
+                # Update existing mapping
+                result = await db.tata_user_mappings.update_one(
+                    {"_id": existing_mapping["_id"]},
+                    {
+                        "$set": {
+                            "last_synced": datetime.utcnow(),
+                            "updated_at": datetime.utcnow(),
+                            "sync_attempts": existing_mapping.get("sync_attempts", 0) + 1,
+                            "sync_status": "synced"
+                        }
+                    }
+                )
+                
+                return {
+                    "success": True,
+                    "message": "User mapping updated successfully",
+                    "sync_status": "updated",
+                    "tata_user_id": existing_mapping.get("tata_user_id"),
+                    "mapping_id": existing_mapping["_id"]
+                }
+            else:
+                # Create new mapping using existing method
+                mapping_data = {
+                    "crm_user_id": crm_user_id,
+                    "tata_login_id": crm_user.get("email"),
+                    "tata_email": crm_user.get("email"),
+                    "tata_phone": crm_user.get("phone", ""),
+                    "auto_create_agent": True
+                }
+                
+                result = await self.create_user_mapping(
+                    mapping_data=mapping_data,
+                    created_by=initiated_by
+                )
+                
+                if result["success"]:
+                    return {
+                        "success": True,
+                        "message": "User synced and mapping created",
+                        "sync_status": "created",
+                        "mapping_id": result["mapping"]["id"]
+                    }
+                else:
+                    return result
+            
+        except Exception as e:
+            logger.error(f"Error syncing user {crm_user_id}: {str(e)}", exc_info=True)
+            return {"success": False, "message": f"Failed to sync user: {str(e)}"}
+    
+
     async def get_user_mappings(
         self, 
         limit: int = 50, 
@@ -811,20 +972,56 @@ class TataUserService:
             mappings = []
             
             async for mapping in cursor:
-                # Convert ObjectId to string
-                mapping["_id"] = str(mapping["_id"])
+                # Convert to response format matching TataUserMappingResponse model
+                response_mapping = {
+                    "id": str(mapping["_id"]),  # ← Change _id to id
+                    "crm_user_id": str(mapping["crm_user_id"]),
+                    "tata_user_id": mapping.get("tata_user_id"),
+                    "tata_agent_id": mapping.get("tata_agent_id"),
+                    "tata_login_id": mapping.get("tata_login_id"),
+                    "tata_email": mapping.get("tata_email"),
+                    "tata_phone": mapping.get("tata_phone"),
+                    "tata_extension": mapping.get("tata_extension"),
+                    "tata_caller_id": mapping.get("tata_caller_id"),           # ← ADD THIS
+                    "tata_did_number": mapping.get("tata_did_number"),
+                    "sync_status": mapping.get("sync_status", "pending"),
+                    "last_synced": mapping.get("last_synced"),
+                    "sync_attempts": mapping.get("sync_attempts", 0),
+                    "last_sync_error": mapping.get("last_sync_error"),
+                    "tata_user_type": mapping.get("tata_user_type"),
+                    "tata_role_id": mapping.get("tata_role_id"),
+                    "tata_role_name": mapping.get("tata_role_name"),
+                    "is_login_based_calling": mapping.get("is_login_based_calling", True),
+                    "is_international_outbound": mapping.get("is_international_outbound", False),
+                    "is_web_login_blocked": mapping.get("is_web_login_blocked", False),
+                    "agent_intercom": mapping.get("agent_intercom"),
+                    "agent_status": mapping.get("agent_status"),
+                    "agent_status_text": mapping.get("agent_status_text"),
+                    "created_at": mapping.get("created_at"),
+                    "updated_at": mapping.get("updated_at"),
+                    "is_active": mapping.get("is_active", True),
+                    "auto_sync_enabled": mapping.get("auto_sync_enabled", True),
+                    "can_make_calls": mapping.get("can_make_calls", True)
+                }
+                
+                # Get CRM user details
                 if "crm_user_id" in mapping:
-                    # Get CRM user details
                     try:
                         crm_user = await db.users.find_one({"_id": ObjectId(mapping["crm_user_id"])})
                         if crm_user:
-                            mapping["crm_user_name"] = crm_user.get("full_name", crm_user.get("email", "Unknown"))
-                            mapping["crm_user_email"] = crm_user.get("email", "")
+                            response_mapping["crm_user_name"] = crm_user.get("full_name", crm_user.get("email", "Unknown"))
+                            response_mapping["crm_user_email"] = crm_user.get("email", "")
+                            response_mapping["crm_user_role"] = crm_user.get("role", "user")
+                        else:
+                            response_mapping["crm_user_name"] = "Unknown"
+                            response_mapping["crm_user_email"] = ""
+                            response_mapping["crm_user_role"] = "user"
                     except:
-                        mapping["crm_user_name"] = "Unknown"
-                        mapping["crm_user_email"] = ""
+                        response_mapping["crm_user_name"] = "Unknown"
+                        response_mapping["crm_user_email"] = ""
+                        response_mapping["crm_user_role"] = "user"
                 
-                mappings.append(mapping)
+                mappings.append(response_mapping)
             
             logger.info(f"Retrieved {len(mappings)} user mappings")
             return mappings
