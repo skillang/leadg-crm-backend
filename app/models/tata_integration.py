@@ -41,7 +41,7 @@ class IntegrationStatus(str, Enum):
 
 class TataLoginRequest(BaseModel):
     """Request model for Tata Tele login"""
-    email: EmailStr = Field(..., description="Tata Tele login email")
+    email: str = Field(..., description="Tata Tele login ID or email")  # ← Fixed: str instead of EmailStr
     password: str = Field(..., min_length=6, description="Tata Tele password")
 
     class Config:

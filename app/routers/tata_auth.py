@@ -58,11 +58,11 @@ async def login_to_tata(
         logger.info(f"Tata login successful for admin {current_user['email']}")
         
         return TataLoginResponse(
-            success=True,
-            message="Successfully logged into Tata Tele API",
-            access_token="***ENCRYPTED***",  # Don't expose actual token
-            expires_at=result["expires_at"],
-            login_time=datetime.utcnow()
+            success=result["success"],
+            access_token=result["access_token"],
+            token_type=result.get("token_type", "bearer"),
+            expires_in=result.get("expires_in", 3600),
+            number_of_days_left=result.get("number_of_days_left")
         )
         
     except HTTPException:
@@ -153,40 +153,46 @@ async def logout_from_tata(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Internal error during Tata logout: {str(e)}"
         )
-
+    
+    
 @router.get("/health", response_model=TataIntegrationHealth)
 async def get_tata_integration_health(
-    current_user: dict = Depends(get_admin_user)  # Only admins can check health
+    current_user: dict = Depends(get_admin_user)
 ):
-    """
-    Get Tata Tele integration health status
-    
-    - **Token Status**: Checks if tokens are valid and not expired
-    - **API Connectivity**: Tests connection to Tata API
-    - **Service Health**: Overall integration health score
-    - **Statistics**: Integration usage statistics
-    """
     try:
         logger.info(f"Admin {current_user['email']} checking Tata integration health")
         
         # Get health status from service
         health_status = await tata_auth_service.get_health_status()
         
-        return TataIntegrationHealth(
-            is_authenticated=health_status["is_authenticated"],
-            token_valid=health_status["token_valid"],
-            token_expires_at=health_status.get("token_expires_at"),
-            api_connectivity=health_status["api_connectivity"],
-            last_successful_call=health_status.get("last_successful_call"),
-            integration_status=health_status["integration_status"],
-            health_score=health_status["health_score"],
-            total_api_calls=health_status.get("total_api_calls", 0),
-            failed_calls_24h=health_status.get("failed_calls_24h", 0),
-            last_health_check=datetime.utcnow()
-        )
+        # 🔧 DEBUG: Print what we actually got
+        print("=" * 50)
+        print("HEALTH SERVICE RETURNED:")
+        print(health_status)
+        print("KEYS IN RESPONSE:", list(health_status.keys()) if isinstance(health_status, dict) else "Not a dict")
+        print("=" * 50)
         
-    except HTTPException:
-        raise  # Re-raise HTTP exceptions as-is
+        # 🔧 QUICK FIX: Ensure all required fields exist
+        safe_response = {
+            "is_authenticated": health_status.get("is_authenticated", False),
+            "token_valid": health_status.get("token_valid", False), 
+            "token_expires_at": health_status.get("token_expires_at"),
+            "api_connectivity": health_status.get("api_connectivity", False),
+            "tata_api_status": health_status.get("tata_api_status", "unknown"),  # 🔧 Force this field
+            "last_successful_call": health_status.get("last_successful_call"),
+            "integration_status": health_status.get("integration_status", "failed"),
+            "health_score": health_status.get("health_score", 0),
+            "total_api_calls": health_status.get("total_api_calls", 0),
+            "failed_calls_24h": health_status.get("failed_calls_24h", 0),
+            "last_health_check": datetime.utcnow()
+        }
+        
+        print("SAFE RESPONSE CREATED:")
+        print(safe_response)
+        print("=" * 50)
+        
+        return TataIntegrationHealth(**safe_response)
+        
     except Exception as e:
         logger.error(f"Error checking Tata health: {str(e)}", exc_info=True)
         raise HTTPException(

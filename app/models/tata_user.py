@@ -148,8 +148,12 @@ class TataUserMappingCreate(BaseModel):
     @validator('tata_login_id')
     def validate_login_id(cls, v):
         if v is not None:
-            if not re.match(r'^[a-zA-Z0-9_]{3,20}$', v):
-                raise ValueError('Login ID must be 3-20 characters, alphanumeric and underscore only')
+            # Allow either alphanumeric+underscore format OR email format
+            alphanumeric_pattern = r'^[a-zA-Z0-9_]{3,20}$'
+            email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+            
+            if not (re.match(alphanumeric_pattern, v) or re.match(email_pattern, v)):
+                raise ValueError('Login ID must be either: 3-20 alphanumeric/underscore characters OR a valid email address')
         return v
 
 class TataUserMappingUpdate(BaseModel):

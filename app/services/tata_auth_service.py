@@ -83,7 +83,9 @@ class TataAuthService:
         except Exception as e:
             logger.warning(f"Failed to decrypt token: {e}")
             return encrypted_token
-    
+
+
+
     async def login(self, email: str, password: str) -> Dict[str, Any]:
         """
         Login to Tata Tele API and store encrypted tokens
@@ -106,7 +108,7 @@ class TataAuthService:
             
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(
-                    f"{self.base_url}/auth/login",
+                    f"{self.base_url}/v1/auth/login",
                     json=login_payload,
                     headers={"Content-Type": "application/json"}
                 )
@@ -117,7 +119,7 @@ class TataAuthService:
                     
                     if access_token:
                         # Calculate expiry time
-                        expires_at = datetime.utcnow() + timedelta(hours=1)  # Default 1 hour
+                        expires_at = datetime.utcnow() + timedelta(seconds=data.get("expires_in", 3600))
                         
                         # Encrypt and store token
                         encrypted_token = self._encrypt_token(access_token)
@@ -142,9 +144,11 @@ class TataAuthService:
                         
                         logger.info("Tata login successful")
                         return {
-                            "success": True,
-                            "message": "Login successful",
-                            "expires_at": expires_at
+                                "success": data.get("success", True),
+                                "access_token": access_token,  # Return actual token
+                                "token_type": data.get("token_type", "bearer"),
+                                "expires_in": data.get("expires_in", 3600),  # ← CORRECT: Model expects this
+                                "number_of_days_left": data.get("number_of_days_left")
                         }
                     else:
                         await self._log_event("login", "error", "No access token in response")
@@ -177,7 +181,9 @@ class TataAuthService:
                 "success": False,
                 "message": error_msg
             }
-    
+
+
+
     async def get_valid_token(self) -> Optional[str]:
         """
         Get a valid access token, refreshing if necessary
@@ -306,26 +312,27 @@ class TataAuthService:
             }
     
     async def get_health_status(self) -> Dict[str, Any]:
-        """
-        Get integration health status
-        """
+        """Get comprehensive health status of Tata integration"""
         try:
-            # 🔧 FIX: Check database availability
             db = self._get_db()
             if db is None:
                 return {
                     "is_authenticated": False,
                     "token_valid": False,
                     "api_connectivity": False,
-                    "integration_status": "database_unavailable",
-                    "health_score": 0
+                    "tata_api_status": "disconnected",
+                    "integration_status": "failed",
+                    "health_score": 0,
+                    "total_api_calls": 0,
+                    "failed_calls_24h": 0
                 }
             
             health_status = {
                 "is_authenticated": False,
                 "token_valid": False,
                 "api_connectivity": False,
-                "integration_status": "unknown",
+                "tata_api_status": "disconnected",
+                "integration_status": "disconnected",
                 "health_score": 0,
                 "total_api_calls": 0,
                 "failed_calls_24h": 0
@@ -337,16 +344,23 @@ class TataAuthService:
                 health_status["is_authenticated"] = True
                 health_status["token_valid"] = True
                 health_status["health_score"] += 40
-            
-            # Test API connectivity
-            try:
-                async with httpx.AsyncClient(timeout=5) as client:
-                    response = await client.get(f"{self.base_url}/health")
-                    if response.status_code == 200:
-                        health_status["api_connectivity"] = True
-                        health_status["health_score"] += 30
-            except:
-                pass
+                
+                # Test API connectivity with actual token
+                try:
+                    async with httpx.AsyncClient(timeout=10) as client:
+                        response = await client.get(
+                            f"{self.base_url}/users",
+                            headers={"Authorization": f"Bearer {token}"}
+                        )
+                        if response.status_code == 200:
+                            health_status["api_connectivity"] = True
+                            health_status["tata_api_status"] = "connected"
+                            health_status["health_score"] += 30
+                        else:
+                            health_status["tata_api_status"] = "error"
+                except Exception as e:
+                    health_status["tata_api_status"] = "timeout"
+                    logger.warning(f"API connectivity test failed: {e}")
             
             # Get integration statistics
             try:
@@ -360,19 +374,17 @@ class TataAuthService:
                     "timestamp": {"$gte": yesterday}
                 })
                 health_status["failed_calls_24h"] = failed_count
-                
                 health_status["health_score"] += 30
-                
             except Exception as e:
                 logger.warning(f"Failed to get integration statistics: {e}")
             
-            # Determine overall status
+            # Determine overall integration status using correct enum values
             if health_status["health_score"] >= 80:
-                health_status["integration_status"] = "healthy"
+                health_status["integration_status"] = "synced"
             elif health_status["health_score"] >= 50:
-                health_status["integration_status"] = "warning"
+                health_status["integration_status"] = "pending"
             else:
-                health_status["integration_status"] = "critical"
+                health_status["integration_status"] = "failed"
             
             return health_status
             
@@ -382,10 +394,14 @@ class TataAuthService:
                 "is_authenticated": False,
                 "token_valid": False,
                 "api_connectivity": False,
-                "integration_status": "error",
-                "health_score": 0
+                "tata_api_status": "error",
+                "integration_status": "failed",
+                "health_score": 0,
+                "total_api_calls": 0,
+                "failed_calls_24h": 0
             }
-    
+
+
     async def check_token_status(self) -> Dict[str, Any]:
         """
         Check current token status for debugging

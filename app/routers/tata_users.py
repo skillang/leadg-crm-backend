@@ -92,9 +92,14 @@ async def create_user_mapping(
         logger.info(f"Admin {current_user['email']} creating user mapping for CRM user {mapping_data.crm_user_id}")
         
         # Create mapping through service
+        user_id = (current_user.get("user_id") or 
+           current_user.get("_id") or 
+           current_user.get("id") or 
+           current_user.get("email"))
+        
         result = await tata_user_service.create_user_mapping(
-            mapping_data=mapping_data,
-            created_by=current_user["user_id"]
+            mapping_data=mapping_data.dict(),
+            created_by=str(user_id)
         )
         
         if not result["success"]:
