@@ -1,5 +1,5 @@
 # app/utils/whatsapp_scheduler.py
-# 🆕 NEW FILE - Scheduler for bulk WhatsApp jobs
+# 🆕 NEW FILE - Scheduler for bulk WhatsApp jobs - TIMEZONE FIXED
 
 import asyncio
 from typing import Dict, List, Any, Optional
@@ -9,6 +9,7 @@ from apscheduler.triggers.date import DateTrigger
 from apscheduler.executors.asyncio import AsyncIOExecutor
 import logging
 from bson import ObjectId
+import pytz  # 🔧 ADD: Import pytz for proper timezone handling
 
 from app.config.database import get_database
 from app.services.bulk_whatsapp_processor import get_bulk_whatsapp_processor
@@ -21,6 +22,7 @@ class WhatsAppJobScheduler:
     """
     Scheduler for bulk WhatsApp jobs - SAME PATTERN as your emailSchedulerService.js
     Handles scheduling and execution of WhatsApp bulk messaging jobs
+    🔧 FIXED: Proper timezone handling
     """
     
     def __init__(self):
@@ -32,9 +34,10 @@ class WhatsAppJobScheduler:
             'default': AsyncIOExecutor()
         }
         
+        # 🔧 FIX: Use pytz.UTC explicitly instead of string
         self.scheduler = AsyncIOScheduler(
             executors=executors,
-            timezone='UTC'  # Always work in UTC like your email system
+            timezone=pytz.UTC  # 🔧 FIXED: Explicit UTC timezone
         )
         
         # Track scheduled jobs (same as your activeJobs in email)
@@ -42,7 +45,7 @@ class WhatsAppJobScheduler:
         
         self.is_running = False
         
-        logger.info("WhatsApp Job Scheduler initialized")
+        logger.info("WhatsApp Job Scheduler initialized with UTC timezone")
     
     async def start(self) -> None:
         """
@@ -84,6 +87,7 @@ class WhatsAppJobScheduler:
     async def schedule_whatsapp_job(self, job_id: str, scheduled_time_utc: datetime) -> bool:
         """
         Schedule a WhatsApp bulk job - SAME LOGIC as your email scheduleEmailJob()
+        🔧 FIXED: Proper timezone handling
         
         Args:
             job_id: Job identifier
@@ -93,7 +97,25 @@ class WhatsAppJobScheduler:
             True if scheduled successfully
         """
         try:
-            logger.info(f"🕒 Scheduling WhatsApp job {job_id} for {scheduled_time_utc} UTC")
+            # 🔧 FIX: Ensure the datetime is timezone-aware UTC
+            if scheduled_time_utc.tzinfo is None:
+                # If naive datetime, assume it's UTC
+                scheduled_time_utc = pytz.UTC.localize(scheduled_time_utc)
+            elif scheduled_time_utc.tzinfo != pytz.UTC:
+                # If different timezone, convert to UTC
+                scheduled_time_utc = scheduled_time_utc.astimezone(pytz.UTC)
+            
+            # 🔧 DEBUG: Log current time and scheduled time for debugging
+            current_utc = datetime.now(pytz.UTC)
+            logger.info(f"🕒 Scheduling WhatsApp job {job_id}")
+            logger.info(f"🕐 Current UTC time: {current_utc}")
+            logger.info(f"🕑 Scheduled UTC time: {scheduled_time_utc}")
+            logger.info(f"⏱️ Time difference: {(scheduled_time_utc - current_utc).total_seconds()} seconds")
+            
+            # 🔧 VALIDATION: Check if time is in the future
+            if scheduled_time_utc <= current_utc:
+                logger.error(f"❌ Cannot schedule job for past time: {scheduled_time_utc} <= {current_utc}")
+                return False
             
             # Cancel existing job if it exists (same as your email cancellation)
             if job_id in self.scheduled_jobs:
@@ -103,7 +125,7 @@ class WhatsAppJobScheduler:
             # Create new scheduled job (same pattern as email)
             scheduler_job = self.scheduler.add_job(
                 func=self._execute_scheduled_job,
-                trigger=DateTrigger(run_date=scheduled_time_utc),
+                trigger=DateTrigger(run_date=scheduled_time_utc),  # 🔧 Now timezone-aware
                 args=[job_id],
                 id=f"whatsapp_bulk_{job_id}",
                 name=f"WhatsApp Bulk Job {job_id}",
@@ -113,7 +135,7 @@ class WhatsAppJobScheduler:
             # Track the job (same as your activeJobs)
             self.scheduled_jobs[job_id] = scheduler_job
             
-            logger.info(f"✅ WhatsApp job {job_id} scheduled successfully")
+            logger.info(f"✅ WhatsApp job {job_id} scheduled successfully for {scheduled_time_utc}")
             return True
             
         except Exception as e:
@@ -156,7 +178,8 @@ class WhatsAppJobScheduler:
             job_id: Job to execute
         """
         try:
-            logger.info(f"🕒 Executing scheduled WhatsApp job {job_id} at {datetime.utcnow()}")
+            current_utc = datetime.now(pytz.UTC)
+            logger.info(f"🕒 Executing scheduled WhatsApp job {job_id} at {current_utc}")
             
             # Get job details from database (same as email)
             job = await self.db.bulk_whatsapp_jobs.find_one({"job_id": job_id})
@@ -175,8 +198,8 @@ class WhatsAppJobScheduler:
                 {"job_id": job_id},
                 {"$set": {
                     "status": BulkJobStatus.PROCESSING,
-                    "started_at": datetime.utcnow(),
-                    "updated_at": datetime.utcnow()
+                    "started_at": current_utc.replace(tzinfo=None),  # Store as naive UTC in DB
+                    "updated_at": current_utc.replace(tzinfo=None)
                 }}
             )
             
@@ -223,13 +246,22 @@ class WhatsAppJobScheduler:
             
             pending_jobs = await self.db.bulk_whatsapp_jobs.find(query).to_list(length=None)
             
-            current_utc = datetime.utcnow()
+            # 🔧 FIX: Use timezone-aware current time
+            current_utc = datetime.now(pytz.UTC)
             rescheduled_count = 0
             overdue_count = 0
             
             for job in pending_jobs:
                 job_id = job["job_id"]
-                scheduled_time_utc = job["scheduled_time"]
+                scheduled_time_naive = job["scheduled_time"]  # This is naive UTC from DB
+                
+                # 🔧 FIX: Convert naive datetime to timezone-aware UTC
+                if scheduled_time_naive.tzinfo is None:
+                    scheduled_time_utc = pytz.UTC.localize(scheduled_time_naive)
+                else:
+                    scheduled_time_utc = scheduled_time_naive.astimezone(pytz.UTC)
+                
+                logger.info(f"🔍 Job {job_id}: scheduled for {scheduled_time_utc}, current time {current_utc}")
                 
                 if scheduled_time_utc <= current_utc:
                     # Job is overdue - execute immediately (same as email overdue handling)
@@ -254,12 +286,14 @@ class WhatsAppJobScheduler:
     async def get_scheduled_jobs_status(self) -> Dict[str, Any]:
         """
         Get status of scheduled jobs - SAME as your email scheduler status
+        🔧 FIXED: Proper timezone handling
         
         Returns:
             Status information about scheduled jobs
         """
         try:
-            current_utc = datetime.utcnow()
+            # 🔧 FIX: Use timezone-aware current time
+            current_utc = datetime.now(pytz.UTC).replace(tzinfo=None)  # Convert to naive for DB comparison
             
             # Count scheduled jobs in database
             pending_scheduled = await self.db.bulk_whatsapp_jobs.count_documents({
@@ -322,6 +356,7 @@ class WhatsAppJobScheduler:
     async def reschedule_job(self, job_id: str, new_scheduled_time_utc: datetime) -> bool:
         """
         Reschedule an existing job - SAME as email rescheduling
+        🔧 FIXED: Proper timezone handling
         
         Args:
             job_id: Job to reschedule
@@ -331,6 +366,10 @@ class WhatsAppJobScheduler:
             True if rescheduled successfully
         """
         try:
+            # 🔧 FIX: Ensure datetime is naive for database storage
+            if new_scheduled_time_utc.tzinfo is not None:
+                new_scheduled_time_utc = new_scheduled_time_utc.replace(tzinfo=None)
+            
             # Update database first
             result = await self.db.bulk_whatsapp_jobs.update_one(
                 {"job_id": job_id, "status": BulkJobStatus.PENDING},
@@ -344,8 +383,9 @@ class WhatsAppJobScheduler:
                 logger.error(f"Job not found or not in pending status: {job_id}")
                 return False
             
-            # Reschedule in scheduler
-            success = await self.schedule_whatsapp_job(job_id, new_scheduled_time_utc)
+            # Reschedule in scheduler (convert back to timezone-aware)
+            scheduled_time_aware = pytz.UTC.localize(new_scheduled_time_utc)
+            success = await self.schedule_whatsapp_job(job_id, scheduled_time_aware)
             
             if success:
                 logger.info(f"✅ Job {job_id} rescheduled for {new_scheduled_time_utc}")
@@ -402,33 +442,96 @@ def get_whatsapp_scheduler() -> WhatsAppJobScheduler:
 whatsapp_scheduler = get_whatsapp_scheduler
 
 # ================================
-# STARTUP AND SHUTDOWN HANDLERS
+# STARTUP AND SHUTDOWN HANDLERS - ENHANCED
 # ================================
 
 async def start_whatsapp_scheduler():
     """
     Start the WhatsApp scheduler - Call this on app startup
-    SAME pattern as your email scheduler startup
+    🔧 ENHANCED with better error handling and timezone debugging
     """
     try:
+        logger.info("🚀 Initializing WhatsApp Job Scheduler...")
+        
         scheduler = get_whatsapp_scheduler()
-        await scheduler.start()
-        logger.info("🚀 WhatsApp Job Scheduler service started")
+        
+        # Force start the scheduler if not already running
+        if not scheduler.is_running:
+            logger.info("📱 Starting APScheduler for WhatsApp jobs...")
+            await scheduler.start()
+            logger.info("✅ WhatsApp Job Scheduler service started successfully")
+        else:
+            logger.warning("⚠️ WhatsApp scheduler already running")
+            
+        # Verify scheduler is actually running
+        if scheduler.scheduler.running:
+            logger.info(f"✅ APScheduler confirmed running with timezone: {scheduler.scheduler.timezone}")
+        else:
+            logger.error("❌ APScheduler failed to start")
+            raise Exception("APScheduler is not running")
+            
     except Exception as e:
         logger.error(f"❌ Failed to start WhatsApp scheduler: {str(e)}")
-        raise
+        logger.error(f"❌ Error type: {type(e).__name__}")
+        # Don't re-raise - let app continue without scheduler
+        logger.warning("⚠️ WhatsApp scheduler disabled - scheduled jobs will not work")
 
 async def stop_whatsapp_scheduler():
     """
     Stop the WhatsApp scheduler - Call this on app shutdown
-    SAME pattern as your email scheduler shutdown
+    ENHANCED with better error handling
+    """
+    try:
+        logger.info("🛑 Stopping WhatsApp Job Scheduler...")
+        
+        scheduler = get_whatsapp_scheduler()
+        
+        if scheduler.is_running:
+            await scheduler.stop()
+            logger.info("✅ WhatsApp Job Scheduler service stopped")
+        else:
+            logger.warning("⚠️ WhatsApp scheduler was not running")
+            
+    except Exception as e:
+        logger.error(f"❌ Failed to stop WhatsApp scheduler: {str(e)}")
+
+# 🔧 ENHANCED: Test function to verify scheduler works
+async def test_whatsapp_scheduler():
+    """
+    Test function to verify scheduler is working with proper timezone handling
     """
     try:
         scheduler = get_whatsapp_scheduler()
-        await scheduler.stop()
-        logger.info("🛑 WhatsApp Job Scheduler service stopped")
+        
+        # Test scheduling a job 10 seconds in the future
+        current_utc = datetime.now(pytz.UTC)
+        test_time = current_utc + timedelta(seconds=10)
+        
+        logger.info(f"🧪 Testing scheduler with job at {test_time}")
+        logger.info(f"🕐 Current time: {current_utc}")
+        logger.info(f"🕑 Test time: {test_time}")
+        
+        # Create a test job
+        success = await scheduler.schedule_whatsapp_job("test_job_123", test_time)
+        
+        if success:
+            logger.info("✅ Test job scheduled successfully")
+            
+            # Cancel the test job immediately
+            cancelled = await scheduler.cancel_scheduled_job("test_job_123")
+            if cancelled:
+                logger.info("✅ Test job cancelled successfully")
+            else:
+                logger.warning("⚠️ Test job cancellation failed")
+                
+            return True
+        else:
+            logger.error("❌ Test job scheduling failed")
+            return False
+            
     except Exception as e:
-        logger.error(f"❌ Failed to stop WhatsApp scheduler: {str(e)}")
+        logger.error(f"❌ Scheduler test failed: {str(e)}")
+        return False
 
 # ================================
 # USAGE EXAMPLES (for documentation)
@@ -452,4 +555,10 @@ Usage Examples:
 
 5. App shutdown (in main.py):
    await stop_whatsapp_scheduler()
+
+🔧 TIMEZONE FIXES:
+- Uses pytz.UTC explicitly instead of string
+- Ensures all datetime objects are timezone-aware during scheduling
+- Proper timezone validation and debugging logs
+- Prevents scheduling jobs in the past
 """

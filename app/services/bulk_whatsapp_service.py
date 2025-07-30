@@ -1,5 +1,5 @@
 # app/services/bulk_whatsapp_service.py
-# 🔄 UPDATED FILE - Simplified to match email pattern
+# 🔄 UPDATED FILE - Simplified to match email pattern + SCHEDULER INTEGRATION
 
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
@@ -9,6 +9,9 @@ from fastapi import HTTPException
 
 from app.config.database import get_database
 from app.services.whatsapp_message_service import WhatsAppMessageService
+# 🆕 ADD: Import the scheduler
+from app.utils import timezone_helper
+from app.utils.whatsapp_scheduler import get_whatsapp_scheduler
 from app.models.bulk_whatsapp import (
     CreateBulkWhatsAppRequest, 
     BulkWhatsAppJob, 
@@ -39,6 +42,12 @@ class BulkWhatsAppService:
     def whatsapp_service(self):
         """Get WhatsApp service when needed (lazy initialization)"""
         return WhatsAppMessageService()
+    
+    # 🆕 ADD: Scheduler property
+    @property
+    def scheduler(self):
+        """Get WhatsApp scheduler when needed (lazy initialization)"""
+        return get_whatsapp_scheduler()
     
     async def create_bulk_job(
         self, 
@@ -137,6 +146,37 @@ class BulkWhatsAppService:
             
             # 6. Log activity for scheduling (SAME as email logging)
             await self._log_bulk_job_activity(job_doc, "bulk_whatsapp_job_created")
+            
+            # 🆕 CRITICAL FIX: Schedule the job if it's scheduled
+            if is_scheduled:
+                try:
+                    scheduler_success = await self.scheduler.schedule_whatsapp_job(job_id, scheduled_utc)
+                    if not scheduler_success:
+                        logger.error(f"Failed to schedule job {job_id} in scheduler")
+                        # Mark job as failed
+                        await self.db[self.collection_name].update_one(
+                            {"job_id": job_id},
+                            {"$set": {
+                                "status": BulkJobStatus.FAILED,
+                                "error_message": "Failed to schedule job execution",
+                                "updated_at": datetime.utcnow()
+                            }}
+                        )
+                        raise HTTPException(status_code=500, detail="Failed to schedule job execution")
+                    else:
+                        logger.info(f"✅ Job {job_id} successfully scheduled in APScheduler for {scheduled_utc}")
+                except Exception as scheduler_error:
+                    logger.error(f"Scheduler error for job {job_id}: {str(scheduler_error)}")
+                    # Mark job as failed
+                    await self.db[self.collection_name].update_one(
+                        {"job_id": job_id},
+                        {"$set": {
+                            "status": BulkJobStatus.FAILED,
+                            "error_message": f"Scheduler error: {str(scheduler_error)}",
+                            "updated_at": datetime.utcnow()
+                        }}
+                    )
+                    raise HTTPException(status_code=500, detail=f"Failed to schedule job: {str(scheduler_error)}")
             
             logger.info(f"Bulk WhatsApp job created: {job_id} with {len(recipients)} recipients")
             
@@ -306,7 +346,7 @@ class BulkWhatsAppService:
     
     async def cancel_bulk_job(self, job_id: str, current_user: Dict[str, Any], reason: str = None) -> Dict[str, Any]:
         """
-        Cancel bulk job - SAME as email cancellation
+        Cancel bulk job - SAME as email cancellation + SCHEDULER INTEGRATION
         
         Args:
             job_id: Job identifier
@@ -332,6 +372,18 @@ class BulkWhatsAppService:
             current_status = job.get("status")
             if current_status in [BulkJobStatus.COMPLETED, BulkJobStatus.FAILED, BulkJobStatus.CANCELLED]:
                 raise HTTPException(status_code=400, detail=f"Cannot cancel job with status: {current_status}")
+            
+            # 🆕 CRITICAL FIX: Cancel scheduled job if it's scheduled
+            if job.get("is_scheduled") and current_status == BulkJobStatus.PENDING:
+                try:
+                    scheduler_cancelled = await self.scheduler.cancel_scheduled_job(job_id)
+                    if scheduler_cancelled:
+                        logger.info(f"✅ Cancelled scheduled job {job_id} from APScheduler")
+                    else:
+                        logger.warning(f"Failed to cancel scheduled job {job_id} from APScheduler (may not exist)")
+                except Exception as scheduler_error:
+                    logger.error(f"Error cancelling scheduled job {job_id}: {str(scheduler_error)}")
+                    # Continue with database cancellation even if scheduler fails
             
             # Update job status
             update_data = {
@@ -364,6 +416,162 @@ class BulkWhatsAppService:
         except Exception as e:
             logger.error(f"Error cancelling bulk job {job_id}: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Failed to cancel job: {str(e)}")
+    
+    # 🆕 ADD: Reschedule job method
+    async def reschedule_bulk_job(
+        self, 
+        job_id: str, 
+        new_scheduled_time: datetime, 
+        current_user: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Reschedule an existing bulk job
+        
+        Args:
+            job_id: Job identifier
+            new_scheduled_time: New scheduled time in IST
+            current_user: Current authenticated user
+            
+        Returns:
+            Reschedule result
+        """
+        try:
+            # Get and validate job
+            job = await self.db[self.collection_name].find_one({"job_id": job_id})
+            
+            if not job:
+                raise HTTPException(status_code=404, detail="Bulk job not found")
+            
+            # Permission check
+            user_role = current_user.get("role")
+            if user_role != "admin" and job.get("created_by") != current_user.get("user_id"):
+                raise HTTPException(status_code=403, detail="Not authorized to reschedule this job")
+            
+            # Check if job can be rescheduled
+            if job.get("status") != BulkJobStatus.PENDING:
+                raise HTTPException(status_code=400, detail=f"Cannot reschedule job with status: {job.get('status')}")
+            
+            # Validate new time
+            is_valid, error_msg = TimezoneHelper.validate_future_time_ist(new_scheduled_time)
+            if not is_valid:
+                raise HTTPException(status_code=400, detail=error_msg)
+            
+            # Convert to UTC
+            new_scheduled_utc = TimezoneHelper.ist_to_utc(new_scheduled_time)
+            
+            # Reschedule in scheduler
+            try:
+                scheduler_success = await self.scheduler.reschedule_job(job_id, new_scheduled_utc)
+                if not scheduler_success:
+                    raise HTTPException(status_code=500, detail="Failed to reschedule job in scheduler")
+            except Exception as scheduler_error:
+                logger.error(f"Scheduler error rescheduling job {job_id}: {str(scheduler_error)}")
+                raise HTTPException(status_code=500, detail=f"Failed to reschedule job: {str(scheduler_error)}")
+            
+            # Update database
+            await self.db[self.collection_name].update_one(
+                {"job_id": job_id},
+                {"$set": {
+                    "scheduled_time": new_scheduled_utc,
+                    "updated_at": datetime.utcnow()
+                }}
+            )
+            
+            logger.info(f"Job {job_id} rescheduled for {new_scheduled_utc} UTC")
+            
+            # Format response
+            timezone_data = TimezoneHelper.format_scheduled_time_response(new_scheduled_utc)
+            
+            return {
+                "success": True,
+                "message": f"Job rescheduled for {timezone_data['scheduled_time_ist_display']}",
+                "job_id": job_id,
+                "new_scheduled_time_utc": new_scheduled_utc,
+                "new_scheduled_time_ist": timezone_data["scheduled_time_ist_display"]
+            }
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error rescheduling bulk job {job_id}: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to reschedule job: {str(e)}")
+    
+    async def list_bulk_jobs(
+        self, 
+        current_user: Dict[str, Any],
+        status_filter: Optional[str] = None,
+        limit: int = 50,
+        skip: int = 0
+    ) -> Dict[str, Any]:
+        """
+        List bulk jobs with filtering and pagination
+        
+        Args:
+            current_user: Current authenticated user
+            status_filter: Filter by job status
+            limit: Number of jobs to return
+            skip: Number of jobs to skip
+            
+        Returns:
+            List of bulk jobs with pagination info
+        """
+        try:
+            user_role = current_user.get("role")
+            
+            # Build query
+            query = {}
+            
+            # Permission check - non-admin users can only see their own jobs
+            if user_role != "admin":
+                query["created_by"] = current_user.get("user_id")
+            
+            # Status filter
+            if status_filter:
+                query["status"] = status_filter
+            
+            # Get total count
+            total_count = await self.db[self.collection_name].count_documents(query)
+            
+            # Get jobs with pagination
+            jobs_cursor = self.db[self.collection_name].find(query).sort("created_at", -1).skip(skip).limit(limit)
+            jobs = await jobs_cursor.to_list(length=None)
+            
+            # Format jobs for response
+            formatted_jobs = []
+            for job in jobs:
+                job_data = {
+                    "job_id": job["job_id"],
+                    "job_name": job["job_name"],
+                    "message_type": job["message_type"],
+                    "template_name": job.get("template_name"),
+                    "status": job["status"],
+                    "total_recipients": job.get("total_recipients", 0),
+                    "success_count": job.get("success_count", 0),
+                    "failed_count": job.get("failed_count", 0),
+                    "is_scheduled": job.get("is_scheduled", False),
+                    "created_at": job["created_at"],
+                    "created_by_name": job.get("created_by_name"),
+                    "completed_at": job.get("completed_at")
+                }
+                
+                # Add scheduled time if exists
+                if job.get("scheduled_time"):
+                    timezone_data = timezone_helper.format_scheduled_time_response(job["scheduled_time"])
+                    job_data.update(timezone_data)
+                
+                formatted_jobs.append(job_data)
+            
+            return {
+                "jobs": formatted_jobs,
+                "total_count": total_count,
+                "limit": limit,
+                "skip": skip,
+                "has_more": total_count > (skip + limit)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error listing bulk jobs: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to list jobs: {str(e)}")
     
     # ================================
     # PRIVATE HELPER METHODS (SIMPLIFIED)
@@ -421,7 +629,9 @@ class BulkWhatsAppService:
             "bulk_whatsapp_job_scheduled": f"Scheduled for bulk WhatsApp job: {job_name}",
             "bulk_whatsapp_job_cancelled": f"Bulk WhatsApp job cancelled: {job_name}",
             "bulk_whatsapp_sent": f"WhatsApp message sent via bulk job: {job_name}",
-            "bulk_whatsapp_failed": f"WhatsApp message failed in bulk job: {job_name}"
+            "bulk_whatsapp_failed": f"WhatsApp message failed in bulk job: {job_name}",
+            "bulk_whatsapp_completed": f"Bulk WhatsApp job completed: {job_name}",
+            "bulk_whatsapp_job_failed": f"Bulk WhatsApp job failed: {job_name}"
         }
         
         return descriptions.get(activity_type, f"Bulk WhatsApp activity: {activity_type}")

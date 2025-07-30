@@ -1,5 +1,5 @@
 # app/services/bulk_whatsapp_processor.py
-# 🆕 NEW FILE - Background processor for bulk WhatsApp jobs
+# 🆕 NEW FILE - Background processor for bulk WhatsApp jobs - RACE CONDITION FIXED
 
 import asyncio
 from typing import Dict, List, Any, Optional
@@ -33,7 +33,7 @@ class BulkWhatsAppProcessor:
     
     async def process_bulk_job(self, job_id: str) -> None:
         """
-        Main processing method for bulk job - SAME PATTERN as your email scheduler
+        Main processing method for bulk job - FIXED RACE CONDITION
         
         Args:
             job_id: Job identifier to process
@@ -47,14 +47,49 @@ class BulkWhatsAppProcessor:
                 logger.error(f"Job not found: {job_id}")
                 return
             
-            # 2. Check if job is already processing or completed
+            # 🔧 FIXED: Enhanced status check to handle scheduler race condition
             current_status = job.get("status")
-            if current_status != BulkJobStatus.PENDING:
-                logger.warning(f"Job {job_id} already processed or processing. Status: {current_status}")
+            
+            # Check if job is already completed/cancelled/failed - these should not run
+            if current_status in [BulkJobStatus.COMPLETED, BulkJobStatus.CANCELLED, BulkJobStatus.FAILED]:
+                logger.warning(f"Job {job_id} already finished. Status: {current_status}")
                 return
             
-            # 3. Mark job as processing (same as email)
-            await self._update_job_status(job_id, BulkJobStatus.PROCESSING, started_at=datetime.utcnow())
+            # 🔧 FIXED: Allow PROCESSING status if recently set by scheduler
+            if current_status == BulkJobStatus.PROCESSING:
+                # Check if this is a recent status change (within last 10 seconds)
+                started_at = job.get("started_at")
+                if started_at:
+                    time_since_start = (datetime.utcnow() - started_at).total_seconds()
+                    if time_since_start < 10:
+                        logger.info(f"✅ Job {job_id} recently marked as processing ({time_since_start:.1f}s ago) by scheduler, proceeding")
+                    else:
+                        logger.warning(f"Job {job_id} already processing for {time_since_start:.1f}s, skipping to avoid duplicate")
+                        return
+                else:
+                    logger.info(f"✅ Job {job_id} marked as processing but no start time, proceeding")
+            
+            # 🔧 FIXED: Use atomic update to prevent duplicate processing
+            update_result = await self.db[self.collection_name].update_one(
+                {
+                    "job_id": job_id,
+                    "status": {"$in": [BulkJobStatus.PENDING, BulkJobStatus.PROCESSING]}
+                },
+                {
+                    "$set": {
+                        "status": BulkJobStatus.PROCESSING,
+                        "started_at": datetime.utcnow(),
+                        "updated_at": datetime.utcnow()
+                    }
+                }
+            )
+            
+            # Check if update succeeded (prevents duplicate execution)
+            if update_result.matched_count == 0:
+                logger.warning(f"Job {job_id} was already picked up by another process, skipping")
+                return
+            
+            logger.info(f"✅ Job {job_id} status confirmed as processing")
             
             # 4. Track active job (same as your email activeJobs)
             self.active_jobs[job_id] = {

@@ -1,4 +1,5 @@
-# app/main.py - Updated with permissions router
+# app/main.py - Updated with WhatsApp scheduler startup fix
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -6,9 +7,10 @@ import logging
 import time
 
 from .config.settings import settings
+# 🔧 FIX: Import the correct scheduler functions
 from app.utils.whatsapp_scheduler import start_whatsapp_scheduler, stop_whatsapp_scheduler
 from .config.database import connect_to_mongo, close_mongo_connection
-from .routers import auth, leads, tasks, notes, documents, timeline, contacts, lead_categories, stages, statuses, course_levels, sources, whatsapp, emails, permissions, tata_auth, tata_calls, call_logs, tata_users ,bulk_whatsapp  # 🆕 Added permissions
+from .routers import auth, leads, tasks, notes, documents, timeline, contacts, lead_categories, stages, statuses, course_levels, sources, whatsapp, emails, permissions, tata_auth, tata_calls, call_logs, tata_users ,bulk_whatsapp
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -47,6 +49,15 @@ async def lifespan(app: FastAPI):
     await start_email_scheduler()
     logger.info("✅ Email scheduler started")
     
+    # 🔧 FIX: Start WhatsApp scheduler PROPERLY
+    try:
+        await start_whatsapp_scheduler()
+        logger.info("✅ WhatsApp scheduler started successfully")
+    except Exception as e:
+        logger.error(f"❌ Failed to start WhatsApp scheduler: {e}")
+        # Don't fail startup if WhatsApp scheduler fails
+        logger.warning("⚠️ Continuing without WhatsApp scheduler")
+    
     # 🆕 NEW: Initialize default permissions for existing users
     await initialize_user_permissions()
     logger.info("✅ User permissions initialized")
@@ -57,6 +68,14 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("🛑 Shutting down LeadG CRM API...")
+    
+    # 🔧 FIX: Stop WhatsApp scheduler PROPERLY
+    try:
+        await stop_whatsapp_scheduler()
+        logger.info("✅ WhatsApp scheduler stopped")
+    except Exception as e:
+        logger.error(f"❌ Error stopping WhatsApp scheduler: {e}")
+    
     await close_mongo_connection()
     logger.info("✅ Application shutdown complete")
 
@@ -208,7 +227,7 @@ async def initialize_user_permissions():
 app = FastAPI(
     title=settings.app_name,
     version=settings.version,
-    description="LeadG CRM - Customer Relationship Management API with Email Functionality and Granular Permissions",  # 🔄 Updated description
+    description="LeadG CRM - Customer Relationship Management API with Email Functionality and Granular Permissions",
     lifespan=lifespan,
     docs_url="/docs" if settings.debug else None,
     redoc_url="/redoc" if settings.debug else None,
@@ -223,14 +242,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.on_event("startup")
-async def startup_event():
-    await start_whatsapp_scheduler()
+# 🔧 REMOVE: Remove these old event handlers - lifespan handles everything now
+# @app.on_event("startup")
+# async def startup_event():
+#     await start_whatsapp_scheduler()
 
-@app.on_event("shutdown") 
-async def shutdown_event():
-    await stop_whatsapp_scheduler()
-    
+# @app.on_event("shutdown") 
+# async def shutdown_event():
+#     await stop_whatsapp_scheduler()
+
 # Request timing middleware
 @app.middleware("http")
 async def add_process_time_header(request: Request, call_next):
@@ -252,8 +272,7 @@ async def health_check():
         "status": "healthy",
         "message": "LeadG CRM API is running",
         "version": settings.version,
-        "modules": ["auth", "leads", "tasks", "notes", "documents", "timeline", "contacts", "stages", "statuses", "course-levels", "sources", "whatsapp", "emails", "permissions","tata-auth", "tata-calls", "call-logs", "tata-users"]  # 🆕 Added permissions
-
+        "modules": ["auth", "leads", "tasks", "notes", "documents", "timeline", "contacts", "stages", "statuses", "course-levels", "sources", "whatsapp", "emails", "permissions","tata-auth", "tata-calls", "call-logs", "tata-users", "bulk-whatsapp"]
     }
 
 # 🔄 UPDATED: Root endpoint with permissions endpoints
@@ -278,7 +297,8 @@ async def root():
             "lead-categories": "/lead-categories",
             "whatsapp": "/whatsapp",
             "emails": "/emails",
-            "permissions": "/permissions",  # 🆕 NEW
+            "permissions": "/permissions",
+            "bulk-whatsapp": "/bulk-whatsapp",
             "health": "/health"
         }
     }
@@ -403,6 +423,7 @@ app.include_router(
     prefix="/tata-users", 
     tags=["Tata User Sync"]
 )
+
 # Add this line with your existing router registrations
 app.include_router(
     bulk_whatsapp.router,

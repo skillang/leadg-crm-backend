@@ -7,6 +7,7 @@ import logging
 from bson import ObjectId
 
 
+
 from ..services.user_lead_array_service import user_lead_array_service
 from ..services.lead_assignment_service import lead_assignment_service
 from app.services import lead_category_service
@@ -1049,80 +1050,101 @@ async def create_lead(
 async def get_leads(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
-    lead_status: Optional[str] = Query(None),
+    lead_status: Optional[str] = Query(None),  # ✅ Changed from LeadStatus to str
     assigned_to: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
-    # 🆕 NEW: Multi-assignment filters
-    include_multi_assigned: bool = Query(False, description="Include multi-assigned leads"),
-    assigned_to_me: bool = Query(False, description="Include leads where I'm primary or co-assignee"),
+    # 🆕 NEW: Add the missing filter parameters
+    stage: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
+    source: Optional[str] = Query(None),
+    course_level: Optional[str] = Query(None),
+    created_from: Optional[str] = Query(None),
+    created_to: Optional[str] = Query(None),
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):
-    """Get leads with enhanced multi-assignment support"""
+    """
+    Get leads with comprehensive filtering support
+    """
     try:
         logger.info(f"Get leads requested by: {current_user.get('email')}")
         db = get_database()
         
         # Build query
         query = {}
-        user_role = current_user.get("role", "user")
-        user_email = current_user.get("email")
+        if current_user["role"] != "admin":
+            query["assigned_to"] = current_user["email"]
         
-        if user_role != "admin":
-            # Enhanced query for multi-assignment
-            if assigned_to_me:
-                query["$or"] = [
-                    {"assigned_to": user_email},
-                    {"co_assignees": user_email}
-                ]
-            else:
-                query["assigned_to"] = user_email
-        
-        # Handle status filtering with migration support
-        if lead_status:
-            possible_old_statuses = [k for k, v in OLD_TO_NEW_STATUS_MAPPING.items() if v == lead_status]
-            status_conditions = [{"status": lead_status}]
+        # 🆕 NEW: Handle stage filter
+        if stage:
+            query["stage"] = stage
+            
+        # 🆕 NEW: Handle status filter (prefer new 'status' over old 'lead_status')
+        if status:
+            query["status"] = status
+        elif lead_status:
+            # Handle old parameter for backward compatibility
+            possible_old_statuses = [k for k, v in OLD_TO_NEW_STATUS_MAPPING.items() if v == lead_status.value]
+            status_conditions = [{"status": lead_status.value}]
             if possible_old_statuses:
                 status_conditions.extend([{"status": old_status} for old_status in possible_old_statuses])
+            query["$or"] = status_conditions
             
+        # 🆕 NEW: Handle category filter
+        if category:
+            query["category"] = category
+            
+        # 🆕 NEW: Handle source filter
+        if source:
+            query["source"] = source
+            
+        # 🆕 NEW: Handle course_level filter
+        if course_level:
+            query["course_level"] = course_level
+            
+        # 🆕 NEW: Handle date range filter
+        if created_from or created_to:
+            date_query = {}
+            if created_from:
+                try:
+                    date_query["$gte"] = datetime.fromisoformat(created_from)
+                except ValueError:
+                    pass  # Skip invalid date
+            if created_to:
+                try:
+                    date_query["$lte"] = datetime.fromisoformat(created_to)
+                except ValueError:
+                    pass  # Skip invalid date
+            if date_query:
+                query["created_at"] = date_query
+
+        # Handle assigned_to filter (admin only)
+        if assigned_to and current_user["role"] == "admin":
             if "$or" in query:
-                query = {"$and": [query, {"$or": status_conditions}]}
+                # Combine with existing OR condition
+                query = {"$and": [{"assigned_to": assigned_to}, {"$or": query["$or"]}]}
             else:
-                query["$or"] = status_conditions
+                query["assigned_to"] = assigned_to
         
-        # Multi-assignment filter
-        if include_multi_assigned:
-            multi_condition = {"is_multi_assigned": True}
-            if "$and" in query:
-                query["$and"].append(multi_condition)
-            else:
-                query.update(multi_condition)
-        
-        if assigned_to and user_role == "admin":
-            assigned_condition = {
-                "$or": [
-                    {"assigned_to": assigned_to},
-                    {"co_assignees": assigned_to}
-                ]
-            }
-            if "$and" in query:
-                query["$and"].append(assigned_condition)
-            else:
-                query.update(assigned_condition)
-        
+        # Handle search
         if search:
             search_condition = {
                 "$or": [
                     {"name": {"$regex": search, "$options": "i"}},
                     {"email": {"$regex": search, "$options": "i"}},
                     {"lead_id": {"$regex": search, "$options": "i"}},
-                    {"contact_number": {"$regex": search, "$options": "i"}},  # Add this line
-                    {"phone_number": {"$regex": search, "$options": "i"}}     
+                    {"contact_number": {"$regex": search, "$options": "i"}},
+                    {"phone_number": {"$regex": search, "$options": "i"}}
                 ]
             }
             if "$and" in query:
                 query["$and"].append(search_condition)
+            elif "$or" in query:
+                query = {"$and": [{"$or": query["$or"]}, search_condition]}
             else:
                 query.update(search_condition)
+        
+        logger.info(f"Final query: {query}")  # 🔍 Debug log
         
         total = await db.leads.count_documents(query)
         skip = (page - 1) * limit
@@ -1139,7 +1161,7 @@ async def get_leads(
                 logger.error(f"Failed to process lead {lead.get('lead_id', 'unknown')}: {e}")
                 continue
         
-        # Convert ObjectIds before creating response model
+        # Convert ObjectIds before response
         final_leads = convert_objectid_to_str(processed_leads)
         
         logger.info(f"Successfully processed {len(final_leads)} leads out of {len(leads)} total")
@@ -1160,62 +1182,95 @@ async def get_leads(
             detail="Failed to retrieve leads"
         )
 
+
+
 @router.get("/my-leads", response_model=LeadListResponse)
 async def get_my_leads(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
-    lead_status: Optional[str] = Query(None),
+    lead_status: Optional[str] = Query(None),  # ✅ Changed from LeadStatus to str
     search: Optional[str] = Query(None),
-    # 🆕 NEW: Include co-assignments
-    include_co_assignments: bool = Query(True, description="Include leads where I'm a co-assignee"),
+    # 🆕 NEW: Add the missing filter parameters
+    stage: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
+    source: Optional[str] = Query(None),
+    course_level: Optional[str] = Query(None),
+    created_from: Optional[str] = Query(None),
+    created_to: Optional[str] = Query(None),
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):
-    """Get leads assigned to current user with enhanced multi-assignment support"""
+    """
+    Get leads assigned to current user with filtering support
+    """
     try:
         db = get_database()
-        user_email = current_user["email"]
+        query = {"assigned_to": current_user["email"]}
         
-        # Enhanced query for multi-assignment
-        if include_co_assignments:
-            query = {
-                "$or": [
-                    {"assigned_to": user_email},
-                    {"co_assignees": user_email}
-                ]
-            }
-        else:
-            query = {"assigned_to": user_email}
-        
-        # Handle status filtering with migration support
-        if lead_status:
-            possible_old_statuses = [k for k, v in OLD_TO_NEW_STATUS_MAPPING.items() if v == lead_status]
-            status_conditions = [{"status": lead_status}]
+        # 🆕 NEW: Add the same filtering logic as get_leads
+        if stage:
+            query["stage"] = stage
+            
+        if status:
+            query["status"] = status
+        elif lead_status:
+            possible_old_statuses = [k for k, v in OLD_TO_NEW_STATUS_MAPPING.items() if v == lead_status.value]
+            status_conditions = [{"status": lead_status.value}]
             if possible_old_statuses:
                 status_conditions.extend([{"status": old_status} for old_status in possible_old_statuses])
+            query["$or"] = status_conditions
             
-            query = {
-                "$and": [
-                    query,
-                    {"$or": status_conditions}
-                ]
-            }
+        if category:
+            query["category"] = category
+            
+        if source:
+            query["source"] = source
+            
+        if course_level:
+            query["course_level"] = course_level
+            
+        # Handle date range
+        if created_from or created_to:
+            date_query = {}
+            if created_from:
+                try:
+                    date_query["$gte"] = datetime.fromisoformat(created_from)
+                except ValueError:
+                    pass
+            if created_to:
+                try:
+                    date_query["$lte"] = datetime.fromisoformat(created_to)
+                except ValueError:
+                    pass
+            if date_query:
+                query["created_at"] = date_query
         
+        # Handle search
         if search:
             search_condition = {
                 "$or": [
                     {"name": {"$regex": search, "$options": "i"}},
                     {"email": {"$regex": search, "$options": "i"}},
                     {"lead_id": {"$regex": search, "$options": "i"}},
-                    {"contact_number": {"$regex": search, "$options": "i"}},  # Add this line
-                    {"phone_number": {"$regex": search, "$options": "i"}}     
+                    {"contact_number": {"$regex": search, "$options": "i"}},
+                    {"phone_number": {"$regex": search, "$options": "i"}}
                 ]
             }
-            query = {
-                "$and": [
-                    query,
-                    search_condition
-                ]
-            }
+            if "$or" in query:
+                query = {
+                    "$and": [
+                        {"assigned_to": current_user["email"]},
+                        {"$or": query["$or"]},
+                        search_condition
+                    ]
+                }
+            else:
+                query = {
+                    "$and": [
+                        {"assigned_to": current_user["email"]},
+                        search_condition
+                    ]
+                }
         
         total = await db.leads.count_documents(query)
         skip = (page - 1) * limit
