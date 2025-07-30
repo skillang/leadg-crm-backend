@@ -6,8 +6,9 @@ import logging
 import time
 
 from .config.settings import settings
+from app.utils.whatsapp_scheduler import start_whatsapp_scheduler, stop_whatsapp_scheduler
 from .config.database import connect_to_mongo, close_mongo_connection
-from .routers import auth, leads, tasks, notes, documents, timeline, contacts, lead_categories, stages, statuses, course_levels, sources, whatsapp, emails, permissions, tata_auth, tata_calls, call_logs, tata_users   # 🆕 Added permissions
+from .routers import auth, leads, tasks, notes, documents, timeline, contacts, lead_categories, stages, statuses, course_levels, sources, whatsapp, emails, permissions, tata_auth, tata_calls, call_logs, tata_users ,bulk_whatsapp  # 🆕 Added permissions
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -222,6 +223,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.on_event("startup")
+async def startup_event():
+    await start_whatsapp_scheduler()
+
+@app.on_event("shutdown") 
+async def shutdown_event():
+    await stop_whatsapp_scheduler()
+    
 # Request timing middleware
 @app.middleware("http")
 async def add_process_time_header(request: Request, call_next):
@@ -393,6 +402,12 @@ app.include_router(
     tata_users.router,
     prefix="/tata-users", 
     tags=["Tata User Sync"]
+)
+# Add this line with your existing router registrations
+app.include_router(
+    bulk_whatsapp.router,
+    prefix="/bulk-whatsapp", 
+    tags=["bulk-whatsapp"]
 )
 
 if __name__ == "__main__":

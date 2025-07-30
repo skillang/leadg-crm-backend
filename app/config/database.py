@@ -1,4 +1,4 @@
-# app/config/database.py - Enhanced with Multi-Assignment and Selective Round Robin Indexes + WhatsApp Support
+# app/config/database.py - Enhanced with Multi-Assignment and Selective Round Robin Indexes + WhatsApp Support + Bulk WhatsApp
 
 import motor.motor_asyncio
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
@@ -128,6 +128,11 @@ async def create_indexes():
         await db.leads.create_index([("unread_whatsapp_count", 1), ("last_whatsapp_activity", -1)])  # Unread messages by recent activity
         await db.leads.create_index([("whatsapp_message_count", 1), ("assigned_to", 1)])  # Message count per user
         
+        # 🆕 NEW: Phone number index for bulk WhatsApp targeting
+        await db.leads.create_index("phone_number")  # Essential for bulk WhatsApp recipient selection
+        await db.leads.create_index([("phone_number", 1), ("assigned_to", 1)])  # Phone + assignment for permission checks
+        await db.leads.create_index([("phone_number", 1), ("status", 1)])  # Phone + status for filtering
+        
         logger.info("✅ Enhanced Leads indexes with WhatsApp fields created")
         
         # ============================================================================
@@ -170,6 +175,59 @@ async def create_indexes():
         await whatsapp_messages_collection.create_index([("lead_id", 1), ("direction", 1), ("is_read", 1)])  # Unread per lead
         
         logger.info("✅ WhatsApp Messages indexes created")
+        
+        # ============================================================================
+        # 🆕 NEW: BULK WHATSAPP JOBS COLLECTION INDEXES
+        # ============================================================================
+        logger.info("📤 Creating Bulk WhatsApp Jobs collection indexes...")
+        
+        bulk_whatsapp_collection = db.bulk_whatsapp_jobs
+        
+        # Essential indexes for job management
+        await bulk_whatsapp_collection.create_index("job_id", unique=True)  # Unique job identifier
+        await bulk_whatsapp_collection.create_index("created_by")  # Permission-based job access
+        await bulk_whatsapp_collection.create_index("status")  # Filter jobs by status
+        await bulk_whatsapp_collection.create_index("created_at")  # Sort jobs by creation time
+        await bulk_whatsapp_collection.create_index("updated_at")  # Sort by last update
+        
+        # Scheduling indexes (CRITICAL for scheduler performance)
+        await bulk_whatsapp_collection.create_index("is_scheduled")  # Filter scheduled vs immediate jobs
+        await bulk_whatsapp_collection.create_index("scheduled_time")  # Sort by scheduled time
+        await bulk_whatsapp_collection.create_index([("is_scheduled", 1), ("scheduled_time", 1)])  # Scheduled jobs by time
+        await bulk_whatsapp_collection.create_index([("status", 1), ("is_scheduled", 1)])  # Pending scheduled jobs
+        
+        # Performance indexes for job listing and monitoring
+        await bulk_whatsapp_collection.create_index([("created_by", 1), ("created_at", -1)])  # User's jobs by date
+        await bulk_whatsapp_collection.create_index([("created_by", 1), ("status", 1)])  # User's jobs by status
+        await bulk_whatsapp_collection.create_index([("status", 1), ("created_at", -1)])  # Jobs by status and date
+        await bulk_whatsapp_collection.create_index([("status", 1), ("updated_at", -1)])  # Active jobs by update time
+        
+        # Job type and configuration indexes
+        await bulk_whatsapp_collection.create_index("message_type")  # Filter template vs text jobs
+        await bulk_whatsapp_collection.create_index("template_name")  # Find jobs using specific templates
+        await bulk_whatsapp_collection.create_index("target_type")  # Filter by targeting method
+        
+        # Progress and statistics indexes
+        await bulk_whatsapp_collection.create_index("total_recipients")  # Sort by job size
+        await bulk_whatsapp_collection.create_index("success_count")  # Sort by success rate
+        await bulk_whatsapp_collection.create_index("failed_count")  # Find failed jobs
+        await bulk_whatsapp_collection.create_index([("status", 1), ("success_count", 1)])  # Completed jobs by success
+        
+        # Time-based indexes for cleanup and analytics
+        await bulk_whatsapp_collection.create_index("started_at")  # Sort by execution start
+        await bulk_whatsapp_collection.create_index("completed_at")  # Sort by completion time
+        await bulk_whatsapp_collection.create_index("cancelled_at")  # Track cancelled jobs
+        
+        # Compound indexes for complex queries
+        await bulk_whatsapp_collection.create_index([("created_by", 1), ("message_type", 1), ("created_at", -1)])
+        await bulk_whatsapp_collection.create_index([("status", 1), ("is_scheduled", 1), ("scheduled_time", 1)])
+        await bulk_whatsapp_collection.create_index([("message_type", 1), ("status", 1), ("created_at", -1)])
+        
+        # Cleanup indexes (for old job removal)
+        await bulk_whatsapp_collection.create_index([("status", 1), ("completed_at", 1)])  # Old completed jobs
+        await bulk_whatsapp_collection.create_index([("status", 1), ("cancelled_at", 1)])  # Old cancelled jobs
+        
+        logger.info("✅ Bulk WhatsApp Jobs indexes created")
         
         # ============================================================================
         # LEAD_STAGES COLLECTION INDEXES
@@ -250,6 +308,10 @@ async def create_indexes():
         await db.lead_activities.create_index([("lead_id", 1), ("activity_type", 1)])
         await db.lead_activities.create_index([("activity_type", 1), ("is_system_generated", 1)])
         
+        # 🆕 NEW: Bulk WhatsApp activity tracking indexes
+        await db.lead_activities.create_index([("activity_type", 1), ("lead_id", 1)])  # Find bulk WhatsApp activities
+        await db.lead_activities.create_index([("lead_id", 1), ("activity_type", 1), ("created_at", -1)])  # Lead activity history
+        
         logger.info("✅ Enhanced Activities indexes created")
         
         # ============================================================================
@@ -313,7 +375,8 @@ async def create_indexes():
         
         logger.info("🎯 All enhanced database indexes created successfully!")
         logger.info("📱 WhatsApp chat functionality fully supported!")
-        logger.info("🚀 System optimized for multi-user assignment, selective round robin, dynamic course levels & sources, and WhatsApp integration!")
+        logger.info("📤 Bulk WhatsApp messaging fully optimized!")
+        logger.info("🚀 System optimized for multi-user assignment, selective round robin, dynamic course levels & sources, and complete WhatsApp integration!")
         
     except Exception as e:
         logger.error(f"❌ Error creating indexes: {e}")
@@ -321,7 +384,7 @@ async def create_indexes():
         logger.warning("⚠️ Continuing without optimal indexes - some queries may be slower")
 
 async def get_collection_stats():
-    """Get database collection statistics with enhanced metrics including WhatsApp"""
+    """Get database collection statistics with enhanced metrics including WhatsApp and Bulk WhatsApp"""
     try:
         db = get_database()
         
@@ -335,7 +398,8 @@ async def get_collection_stats():
             "lead_tasks",
             "lead_activities",
             "lead_counters",
-            "whatsapp_messages",  # NEW: WhatsApp messages collection
+            "whatsapp_messages",  # WhatsApp messages collection
+            "bulk_whatsapp_jobs",  # 🆕 NEW: Bulk WhatsApp jobs collection
             "token_blacklist",
             "user_sessions",
             # Future collections
@@ -361,19 +425,23 @@ async def get_collection_stats():
                     unassigned = await db[collection_name].count_documents({"assigned_to": None})
                     stats[f"{collection_name}_unassigned"] = unassigned
                     
-                    # NEW: WhatsApp activity stats
+                    # WhatsApp activity stats
                     with_whatsapp = await db[collection_name].count_documents({"whatsapp_message_count": {"$gt": 0}})
                     stats[f"{collection_name}_with_whatsapp"] = with_whatsapp
                     
                     unread_whatsapp = await db[collection_name].count_documents({"unread_whatsapp_count": {"$gt": 0}})
                     stats[f"{collection_name}_unread_whatsapp"] = unread_whatsapp
                     
+                    # 🆕 NEW: Phone number stats for bulk WhatsApp
+                    with_phone = await db[collection_name].count_documents({"phone_number": {"$exists": True, "$ne": "", "$ne": None}})
+                    stats[f"{collection_name}_with_phone"] = with_phone
+                    
                 elif collection_name == "users":
                     active_users = await db[collection_name].count_documents({"is_active": True})
                     stats[f"{collection_name}_active"] = active_users
                     
                 elif collection_name == "whatsapp_messages":
-                    # NEW: WhatsApp message stats
+                    # WhatsApp message stats
                     incoming = await db[collection_name].count_documents({"direction": "incoming"})
                     stats[f"{collection_name}_incoming"] = incoming
                     
@@ -382,6 +450,35 @@ async def get_collection_stats():
                     
                     unread = await db[collection_name].count_documents({"direction": "incoming", "is_read": False})
                     stats[f"{collection_name}_unread"] = unread
+                
+                # 🆕 NEW: Bulk WhatsApp jobs stats
+                elif collection_name == "bulk_whatsapp_jobs":
+                    # Job status breakdown
+                    pending = await db[collection_name].count_documents({"status": "pending"})
+                    stats[f"{collection_name}_pending"] = pending
+                    
+                    processing = await db[collection_name].count_documents({"status": "processing"})
+                    stats[f"{collection_name}_processing"] = processing
+                    
+                    completed = await db[collection_name].count_documents({"status": "completed"})
+                    stats[f"{collection_name}_completed"] = completed
+                    
+                    failed = await db[collection_name].count_documents({"status": "failed"})
+                    stats[f"{collection_name}_failed"] = failed
+                    
+                    # Scheduled vs immediate jobs
+                    scheduled = await db[collection_name].count_documents({"is_scheduled": True})
+                    stats[f"{collection_name}_scheduled"] = scheduled
+                    
+                    immediate = await db[collection_name].count_documents({"is_scheduled": False})
+                    stats[f"{collection_name}_immediate"] = immediate
+                    
+                    # Message type breakdown
+                    template_jobs = await db[collection_name].count_documents({"message_type": "template"})
+                    stats[f"{collection_name}_template"] = template_jobs
+                    
+                    text_jobs = await db[collection_name].count_documents({"message_type": "text"})
+                    stats[f"{collection_name}_text"] = text_jobs
                     
                 # Stats for course levels and sources
                 elif collection_name == "course_levels":
@@ -406,11 +503,11 @@ async def get_collection_stats():
         return {"error": str(e)}
 
 async def get_index_stats():
-    """Get index statistics for performance monitoring including WhatsApp collections"""
+    """Get index statistics for performance monitoring including WhatsApp and Bulk WhatsApp collections"""
     try:
         db = get_database()
         
-        collections = ["users", "leads", "lead_tasks", "lead_activities", "course_levels", "sources", "whatsapp_messages"]  # Added WhatsApp collection
+        collections = ["users", "leads", "lead_tasks", "lead_activities", "course_levels", "sources", "whatsapp_messages", "bulk_whatsapp_jobs"]  # Added bulk WhatsApp collection
         index_stats = {}
         
         for collection_name in collections:
@@ -444,6 +541,7 @@ async def init_database():
     if stats.get('leads', 0) > 0:
         logger.info(f"🎯 Leads: {stats.get('leads', 0)} total, {stats.get('leads_multi_assigned', 0)} multi-assigned, {stats.get('leads_unassigned', 0)} unassigned")
         logger.info(f"📱 WhatsApp: {stats.get('leads_with_whatsapp', 0)} leads with messages, {stats.get('leads_unread_whatsapp', 0)} with unread")
+        logger.info(f"📞 Bulk Ready: {stats.get('leads_with_phone', 0)} leads with phone numbers")
     
     if stats.get('users', 0) > 0:
         logger.info(f"👥 Users: {stats.get('users', 0)} total, {stats.get('users_active', 0)} active")
@@ -455,11 +553,18 @@ async def init_database():
     if stats.get('sources', 0) > 0:
         logger.info(f"📍 Sources: {stats.get('sources', 0)} total, {stats.get('sources_active', 0)} active")
     
-    # NEW: WhatsApp messages stats
+    # WhatsApp messages stats
     if stats.get('whatsapp_messages', 0) > 0:
         logger.info(f"💬 WhatsApp: {stats.get('whatsapp_messages', 0)} total messages, {stats.get('whatsapp_messages_incoming', 0)} incoming, {stats.get('whatsapp_messages_outgoing', 0)} outgoing")
         if stats.get('whatsapp_messages_unread', 0) > 0:
             logger.info(f"📬 Unread WhatsApp messages: {stats.get('whatsapp_messages_unread', 0)}")
+    
+    # 🆕 NEW: Bulk WhatsApp jobs stats
+    if stats.get('bulk_whatsapp_jobs', 0) > 0:
+        logger.info(f"📤 Bulk WhatsApp: {stats.get('bulk_whatsapp_jobs', 0)} total jobs")
+        logger.info(f"   ├─ Pending: {stats.get('bulk_whatsapp_jobs_pending', 0)}, Processing: {stats.get('bulk_whatsapp_jobs_processing', 0)}")
+        logger.info(f"   ├─ Completed: {stats.get('bulk_whatsapp_jobs_completed', 0)}, Failed: {stats.get('bulk_whatsapp_jobs_failed', 0)}")
+        logger.info(f"   └─ Scheduled: {stats.get('bulk_whatsapp_jobs_scheduled', 0)}, Immediate: {stats.get('bulk_whatsapp_jobs_immediate', 0)}")
 
 async def cleanup_database():
     """Cleanup database resources"""
@@ -492,6 +597,10 @@ async def test_database_connection():
         # Test WhatsApp collection if exists
         if "whatsapp_messages" in collections:
             logger.info("📱 WhatsApp messages collection available")
+        
+        # 🆕 NEW: Test bulk WhatsApp collection if exists
+        if "bulk_whatsapp_jobs" in collections:
+            logger.info("📤 Bulk WhatsApp jobs collection available")
         
         return True
         
