@@ -28,7 +28,131 @@ class WhatsAppMessageService:
         }
     
     # ============================================================================
-    # WEBHOOK PROCESSING (Core Functionality)
+    # 🆕 BULK MESSAGING METHODS (Missing methods that bulk processor needs)
+    # ============================================================================
+    
+    async def _make_whatsapp_request(self, endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Make authenticated request to WhatsApp API - INTERNAL METHOD"""
+        # Add authentication parameters
+        params.update({
+            "LicenseNumber": self.whatsapp_config["license_number"],
+            "APIKey": self.whatsapp_config["api_key"]
+        })
+        
+        url = f"{self.whatsapp_config['base_url']}/{endpoint}"
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url, params=params)
+                response.raise_for_status()
+                
+                # Parse response - handle both JSON and text responses
+                try:
+                    return response.json()
+                except:
+                    return {"status": "success", "message": response.text}
+                    
+        except Exception as e:
+            logger.error(f"WhatsApp API request failed: {str(e)}")
+            raise
+    
+    async def send_template_message(
+        self, 
+        contact: str, 
+        template_name: str, 
+        lead_name: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Send template message - PUBLIC METHOD for bulk processor
+        
+        Args:
+            contact: Phone number to send to
+            template_name: Template name to use
+            lead_name: Lead name for personalization
+            
+        Returns:
+            Result dictionary with success status
+        """
+        try:
+            logger.debug(f"Sending template {template_name} to {contact}")
+            
+            # Use the same pattern as your WhatsApp router
+            whatsapp_params = {
+                "Contact": contact,
+                "Template": template_name,
+                "Param": lead_name  # Single parameter (lead name)
+            }
+            
+            # Make API request using internal method
+            result = await self._make_whatsapp_request("sendtemplate.php", whatsapp_params)
+            
+            if result:
+                return {
+                    "success": True,
+                    "message_id": result.get("message_id", f"template_{int(datetime.utcnow().timestamp())}"),
+                    "data": result
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": "Failed to send template message"
+                }
+                
+        except Exception as e:
+            logger.error(f"Error sending template message: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    async def send_text_message(
+        self, 
+        contact: str, 
+        message: str
+    ) -> Dict[str, Any]:
+        """
+        Send text message - PUBLIC METHOD for bulk processor
+        
+        Args:
+            contact: Phone number to send to
+            message: Message content to send
+            
+        Returns:
+            Result dictionary with success status
+        """
+        try:
+            logger.debug(f"Sending text message to {contact}")
+            
+            # Use the same pattern as your WhatsApp router
+            whatsapp_params = {
+                "Contact": contact,
+                "Message": message
+            }
+            
+            # Make API request using internal method
+            result = await self._make_whatsapp_request("sendtextmessage.php", whatsapp_params)
+            
+            if result:
+                return {
+                    "success": True,
+                    "message_id": result.get("message_id", f"text_{int(datetime.utcnow().timestamp())}"),
+                    "data": result
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": "Failed to send text message"
+                }
+                
+        except Exception as e:
+            logger.error(f"Error sending text message: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    # ============================================================================
+    # WEBHOOK PROCESSING (Core Functionality) - EXISTING CODE
     # ============================================================================
     
     async def process_incoming_webhook(self, webhook_payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -230,7 +354,7 @@ class WhatsAppMessageService:
             }
     
     # ============================================================================
-    # CHAT MANAGEMENT (User-Facing Functions)
+    # CHAT MANAGEMENT (User-Facing Functions) - EXISTING CODE
     # ============================================================================
     
     async def get_chat_history(
@@ -510,7 +634,7 @@ class WhatsAppMessageService:
             raise Exception(f"Failed to mark messages as read: {str(e)}")
     
     # ============================================================================
-    # UTILITY & HELPER FUNCTIONS
+    # UTILITY & HELPER FUNCTIONS - EXISTING CODE
     # ============================================================================
     
     async def _find_lead_by_phone_number(self, phone_number: str) -> Optional[Dict[str, Any]]:
@@ -627,7 +751,7 @@ class WhatsAppMessageService:
             logger.error(f"Error logging WhatsApp activity: {str(e)}")
     
     async def _send_whatsapp_text_message(self, phone_number: str, message: str) -> Dict[str, Any]:
-        """Send text message via WhatsApp API"""
+        """Send text message via WhatsApp API - PRIVATE METHOD (existing)"""
         try:
             url = f"{self.whatsapp_config['base_url']}/sendtextmessage.php"
             params = {
@@ -660,7 +784,7 @@ class WhatsAppMessageService:
                 "error": str(e)
             }
     
-    # Webhook parsing helpers
+    # Webhook parsing helpers - EXISTING CODE
     def _extract_messages_from_webhook(self, payload: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extract messages from webhook payload - adjust based on actual format"""
         messages = []

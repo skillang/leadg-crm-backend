@@ -191,7 +191,10 @@ class BulkWhatsAppService:
             # Build query to get leads by IDs
             query = {
                 "lead_id": {"$in": lead_ids},
-                "phone_number": {"$exists": True, "$ne": "", "$ne": None}
+                "$or": [
+                    {"contact_number": {"$exists": True, "$ne": "", "$ne": None}},
+                    {"phone_number": {"$exists": True, "$ne": "", "$ne": None}}
+                ]
             }
             
             # 🔐 PERMISSION CHECK (SAME as your email system)
@@ -217,8 +220,9 @@ class BulkWhatsAppService:
             # Convert to recipients format (SAME as email recipients format)
             recipients = []
             for lead in leads:
-                # Validate phone number
-                phone = lead.get("phone_number", "")
+                # Get phone number from either field
+                phone = lead.get("contact_number") or lead.get("phone_number") or ""
+                
                 if not validate_phone_number(phone):
                     logger.warning(f"Skipping lead {lead.get('lead_id')} - invalid phone: {phone}")
                     continue
@@ -437,4 +441,4 @@ def get_bulk_whatsapp_service() -> BulkWhatsAppService:
     return _bulk_whatsapp_service
 
 # Helper function for easy import
-bulk_whatsapp_service = get_bulk_whatsapp_service
+bulk_whatsapp_service = get_bulk_whatsapp_service()
