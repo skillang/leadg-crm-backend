@@ -1,11 +1,16 @@
 # app/routers/tata_calls.py
-# Tata Click-to-Call Router - Core calling functionality from CRM
+# Enhanced Tata Calls Router - With Progressive Dialer Support
+# Core calling functionality from CRM + Progressive Bulk Calling
 
 from fastapi import APIRouter, HTTPException, status, Depends, Request
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import logging
 from datetime import datetime
 from bson import ObjectId
+
+# 🔧 FIX: Setup logging FIRST before using logger anywhere
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 from ..services.tata_call_service import tata_call_service
 from ..utils.dependencies import get_current_active_user, get_admin_user
@@ -14,11 +19,409 @@ from ..models.call_log import (
     SupportCallResponse, CallPermissionResponse, CallWebhookPayload
 )
 
-logger = logging.getLogger(__name__)
+# 🆕 NEW: Import Progressive Dialer Service (NOW logger is available)
+try:
+    from ..services.progressive_dialer_service import progressive_dialer_service
+    PROGRESSIVE_DIALER_AVAILABLE = True
+    logger.info("✅ Progressive Dialer service imported successfully")
+except ImportError as e:
+    PROGRESSIVE_DIALER_AVAILABLE = False
+    logger.warning(f"⚠️ Progressive Dialer not available: {e}")
+
 router = APIRouter()
 
 # ============================================================================
-# CLICK-TO-CALL ENDPOINTS
+# 🆕 NEW: PROGRESSIVE DIALER ENDPOINTS
+# ============================================================================
+
+@router.post("/start-progressive-dialer")
+async def start_progressive_dialer_session(
+    request: Dict[str, Any],
+    current_user: dict = Depends(get_current_active_user)
+):
+    """
+    🎯 Start Progressive Dialer Session - Multi-lead Sequential Calling
+    
+    - **Multi-lead Calling**: Select multiple leads for sequential calling
+    - **Agent Session**: Agent stays connected throughout the session  
+    - **Auto-dialing**: System automatically dials next lead after each call
+    - **Real-time Control**: Pause/resume/end session as needed
+    - **Lead Validation**: Ensures all leads have valid phone numbers
+    """
+    
+    if not PROGRESSIVE_DIALER_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Progressive Dialer service is not available"
+        )
+    
+    try:
+        lead_ids = request.get("lead_ids", [])
+        session_name = request.get("session_name", f"Progressive Session - {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+        
+        logger.info(f"User {current_user['email']} starting progressive dialer with {len(lead_ids)} leads")
+        
+        # Validation
+        if not lead_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="At least one lead ID is required"
+            )
+        
+        if len(lead_ids) > 50:  # Reasonable limit
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Maximum 50 leads allowed per session"
+            )
+        
+        # Check if user has calling enabled
+        if not current_user.get("calling_enabled"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Calling not enabled for your account. Please contact admin to set up Tata integration."
+            )
+        
+        # Start progressive dialer session
+        result = await progressive_dialer_service.start_progressive_dialer_session(
+            lead_ids=lead_ids,
+            current_user=current_user,
+            session_name=session_name
+        )
+        
+        if result.get("success"):
+            logger.info(f"✅ Progressive dialer started successfully: Session {result.get('session_id')}")
+            return {
+                "success": True,
+                "message": result.get("message"),
+                "session_id": result.get("session_id"),
+                "campaign_id": result.get("campaign_id"),
+                "total_leads": result.get("total_leads"),
+                "leads_preview": result.get("leads_preview", []),
+                "next_steps": [
+                    "1. Answer your phone when it rings to join the session",
+                    "2. Leads will be connected to you automatically one by one",
+                    "3. Use the session control endpoints to pause/resume/end as needed"
+                ],
+                "session_controls": {
+                    "status_endpoint": f"/api/v1/tata-calls/dialer-session/{result.get('session_id')}/status",
+                    "pause_endpoint": f"/api/v1/tata-calls/dialer-session/{result.get('session_id')}/pause",
+                    "end_endpoint": f"/api/v1/tata-calls/dialer-session/{result.get('session_id')}/end"
+                },
+                "started_at": datetime.utcnow()
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=result.get("message", "Failed to start progressive dialer")
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Progressive dialer endpoint error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal error starting progressive dialer: {str(e)}"
+        )
+
+@router.get("/dialer-session/{session_id}/status")
+async def get_dialer_session_status(
+    session_id: str,
+    current_user: dict = Depends(get_current_active_user)
+):
+    """
+    📊 Get Real-time Progressive Dialer Session Status
+    
+    - **Live Monitoring**: Real-time session progress and statistics
+    - **Call Status**: Current call information and duration
+    - **Progress Tracking**: Leads called, connected, remaining
+    - **Performance Metrics**: Success rates and call statistics
+    """
+    
+    if not PROGRESSIVE_DIALER_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Progressive Dialer service is not available"
+        )
+    
+    try:
+        user_id = str(current_user.get("user_id") or current_user.get("_id"))
+        
+        logger.info(f"User {current_user['email']} checking dialer session status: {session_id}")
+        
+        # Get session status
+        result = await progressive_dialer_service.get_session_status(
+            session_id=session_id,
+            user_id=user_id
+        )
+        
+        if result.get("success"):
+            return {
+                "success": True,
+                "session_id": session_id,
+                "status": result.get("status"),
+                "agent_status": result.get("agent_status"),
+                "current_call": result.get("current_call", {}),
+                "progress": result.get("progress", {}),
+                "session_duration": result.get("session_duration"),
+                "performance_metrics": {
+                    "total_leads": result.get("progress", {}).get("total_leads", 0),
+                    "leads_called": result.get("progress", {}).get("leads_called", 0),
+                    "leads_connected": result.get("progress", {}).get("leads_connected", 0),
+                    "leads_remaining": result.get("progress", {}).get("leads_remaining", 0),
+                    "success_rate": round(
+                        (result.get("progress", {}).get("leads_connected", 0) / 
+                         max(result.get("progress", {}).get("leads_called", 1), 1)) * 100, 2
+                    ) if result.get("progress", {}).get("leads_called", 0) > 0 else 0
+                },
+                "last_updated": result.get("last_updated"),
+                "checked_at": datetime.utcnow()
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=result.get("message", "Session not found")
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Session status error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get session status: {str(e)}"
+        )
+
+@router.post("/dialer-session/{session_id}/pause")
+async def pause_dialer_session(
+    session_id: str,
+    current_user: dict = Depends(get_current_active_user)
+):
+    """
+    ⏸️ Pause Progressive Dialer Session
+    
+    - **Session Control**: Temporarily pause the dialer session
+    - **Call Completion**: Current call will complete, no new calls will be initiated
+    - **Resume Ready**: Session can be resumed later
+    """
+    
+    if not PROGRESSIVE_DIALER_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Progressive Dialer service is not available"
+        )
+    
+    try:
+        user_id = str(current_user.get("user_id") or current_user.get("_id"))
+        
+        logger.info(f"User {current_user['email']} pausing dialer session: {session_id}")
+        
+        # Pause session
+        result = await progressive_dialer_service.control_session(
+            session_id=session_id,
+            action="pause",
+            user_id=user_id
+        )
+        
+        if result.get("success"):
+            return {
+                "success": True,
+                "message": "Progressive dialer session paused successfully",
+                "session_id": session_id,
+                "status": "paused",
+                "paused_at": datetime.utcnow(),
+                "note": "Current call will complete. No new calls will be initiated until resumed."
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=result.get("message", "Failed to pause session")
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Session pause error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to pause session: {str(e)}"
+        )
+
+@router.post("/dialer-session/{session_id}/resume")
+async def resume_dialer_session(
+    session_id: str,
+    current_user: dict = Depends(get_current_active_user)
+):
+    """
+    ▶️ Resume Progressive Dialer Session
+    
+    - **Session Control**: Resume paused dialer session
+    - **Continuation**: Continues calling remaining leads
+    - **State Preservation**: Maintains progress and statistics
+    """
+    
+    if not PROGRESSIVE_DIALER_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Progressive Dialer service is not available"
+        )
+    
+    try:
+        user_id = str(current_user.get("user_id") or current_user.get("_id"))
+        
+        logger.info(f"User {current_user['email']} resuming dialer session: {session_id}")
+        
+        # Resume session
+        result = await progressive_dialer_service.control_session(
+            session_id=session_id,
+            action="resume",
+            user_id=user_id
+        )
+        
+        if result.get("success"):
+            return {
+                "success": True,
+                "message": "Progressive dialer session resumed successfully",
+                "session_id": session_id,
+                "status": "active",
+                "resumed_at": datetime.utcnow(),
+                "note": "Dialer will continue with remaining leads."
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=result.get("message", "Failed to resume session")
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Session resume error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to resume session: {str(e)}"
+        )
+
+@router.post("/dialer-session/{session_id}/end")
+async def end_dialer_session(
+    session_id: str,
+    session_summary: Optional[Dict[str, Any]] = None,
+    current_user: dict = Depends(get_current_active_user)
+):
+    """
+    🛑 End Progressive Dialer Session
+    
+    - **Session Termination**: Completely end the dialer session
+    - **Final Summary**: Provides complete session statistics
+    - **Call Completion**: Current call will complete before ending
+    - **Data Preservation**: All call logs and statistics are saved
+    """
+    
+    if not PROGRESSIVE_DIALER_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Progressive Dialer service is not available"
+        )
+    
+    try:
+        user_id = str(current_user.get("user_id") or current_user.get("_id"))
+        
+        logger.info(f"User {current_user['email']} ending dialer session: {session_id}")
+        
+        # End session
+        result = await progressive_dialer_service.control_session(
+            session_id=session_id,
+            action="end",
+            user_id=user_id,
+            session_summary=session_summary
+        )
+        
+        if result.get("success"):
+            return {
+                "success": True,
+                "message": "Progressive dialer session ended successfully",
+                "session_id": session_id,
+                "status": "completed",
+                "ended_at": datetime.utcnow(),
+                "final_summary": result.get("final_summary", {}),
+                "session_statistics": result.get("session_statistics", {}),
+                "note": "All call data has been saved. Session is now closed."
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=result.get("message", "Failed to end session")
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Session end error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to end session: {str(e)}"
+        )
+
+@router.get("/dialer-sessions/my-sessions")
+async def get_my_dialer_sessions(
+    status: Optional[str] = None,
+    limit: int = 20,
+    current_user: dict = Depends(get_current_active_user)
+):
+    """
+    📋 Get My Progressive Dialer Sessions
+    
+    - **User Sessions**: Shows all dialer sessions for current user
+    - **Status Filtering**: Filter by active, paused, completed sessions
+    - **Session History**: View past session performance
+    """
+    
+    if not PROGRESSIVE_DIALER_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Progressive Dialer service is not available"
+        )
+    
+    try:
+        user_id = str(current_user.get("user_id") or current_user.get("_id"))
+        
+        logger.info(f"User {current_user['email']} fetching dialer sessions")
+        
+        # Get user's dialer sessions
+        result = await progressive_dialer_service.get_user_sessions(
+            user_id=user_id,
+            status_filter=status,
+            limit=limit
+        )
+        
+        if result.get("success"):
+            return {
+                "success": True,
+                "sessions": result.get("sessions", []),
+                "total_sessions": result.get("total_count", 0),
+                "active_sessions": result.get("active_count", 0),
+                "retrieved_at": datetime.utcnow()
+            }
+        else:
+            return {
+                "success": True,
+                "sessions": [],
+                "total_sessions": 0,
+                "active_sessions": 0,
+                "message": "No sessions found",
+                "retrieved_at": datetime.utcnow()
+            }
+            
+    except Exception as e:
+        logger.error(f"Error fetching user sessions: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch sessions: {str(e)}"
+        )
+
+# ============================================================================
+# EXISTING CLICK-TO-CALL ENDPOINTS - UNCHANGED
+# (All your existing endpoints remain exactly the same)
 # ============================================================================
 
 @router.post("/click-to-call", response_model=ClickToCallResponse)
@@ -157,7 +560,7 @@ async def initiate_support_call(
         )
 
 # ============================================================================
-# PERMISSION AND STATUS ENDPOINTS
+# PERMISSION AND STATUS ENDPOINTS - UNCHANGED
 # ============================================================================
 
 @router.get("/permissions/{user_id}", response_model=CallPermissionResponse)
@@ -256,7 +659,7 @@ async def get_call_status(
         )
 
 # ============================================================================
-# WEBHOOK ENDPOINTS
+# WEBHOOK ENDPOINTS - UNCHANGED
 # ============================================================================
 
 @router.post("/webhook")
@@ -312,7 +715,7 @@ async def handle_tata_webhook(
         )
 
 # ============================================================================
-# CALL MANAGEMENT ENDPOINTS
+# CALL MANAGEMENT ENDPOINTS - UNCHANGED
 # ============================================================================
 
 @router.post("/end/{call_id}")
@@ -404,7 +807,7 @@ async def get_my_active_calls(
         )
 
 # ============================================================================
-# ADMIN ENDPOINTS
+# ADMIN ENDPOINTS - UNCHANGED
 # ============================================================================
 
 @router.get("/admin/all-active-calls")
@@ -445,4 +848,4 @@ async def get_all_active_calls(
 # ============================================================================
 
 # Router tags and metadata for API documentation
-router.tags = ["Tata Calls"]
+router.tags = ["Tata Calls", "Progressive Dialer"]
