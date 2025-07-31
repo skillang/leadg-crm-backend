@@ -142,7 +142,10 @@ async def register_user(
             "calling_enabled": updated_user.get("calling_enabled", False),
             "routing_method": updated_user.get("routing_method"),
             "calling_status": updated_user.get("calling_status"),
-            "created_at": updated_user["created_at"].isoformat()
+            "created_at": updated_user["created_at"].isoformat(),
+            "last_login": user_data.get("last_login"),
+            "permissions": user_data.get("permissions", {}),
+
         }
         
         # Success message with call routing info
