@@ -596,6 +596,740 @@ async def debug_admin_users():
 # I'm keeping the complete file structure but showing key sections
 # =============================================================================
 
+@router.post("/departments", response_model=Dict[str, Any], status_code=status.HTTP_201_CREATED)
+async def create_department(
+    department_data: DepartmentCreate,
+    current_user: Dict[str, Any] = Depends(get_admin_user)  # Admin only
+):
+    """
+    Create a new custom department (Admin only)
+    All departments except 'admin' are created this way
+    """
+    try:
+        from ..models.user import DepartmentHelper
+        
+        db = get_database()
+        logger.info(f"Admin {current_user.get('email')} creating new department: {department_data.name}")
+        
+        # Check if department already exists (custom departments only, admin is always reserved)
+        if department_data.name == "admin":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot create department named 'admin' - it is reserved for system administration"
+            )
+        
+        # Check custom departments
+        existing_custom = await db.departments.find_one({"name": department_data.name})
+        if existing_custom:
+            if existing_custom.get("is_active", True):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Department '{department_data.name}' already exists"
+                )
+            else:
+                # Reactivate if it was deactivated
+                await db.departments.update_one(
+                    {"_id": existing_custom["_id"]},
+                    {
+                        "$set": {
+                            "is_active": True,
+                            "description": department_data.description,
+                            "updated_at": datetime.utcnow(),
+                            "reactivated_by": current_user.get("email")
+                        }
+                    }
+                )
+                return {
+                    "success": True,
+                    "message": f"Department '{department_data.name}' reactivated successfully",
+                    "department_id": str(existing_custom["_id"]),
+                    "action": "reactivated"
+                }
+        
+        # Create new department
+        department_doc = {
+            "name": department_data.name,
+            "display_name": department_data.name.replace('-', ' ').title(),
+            "description": department_data.description,
+            "is_active": department_data.is_active,
+            "is_predefined": False,  # All created departments are custom
+            "created_at": datetime.utcnow(),
+            "created_by": current_user.get("email"),
+            "updated_at": datetime.utcnow()
+        }
+        
+        result = await db.departments.insert_one(department_doc)
+        department_id = str(result.inserted_id)
+        
+        logger.info(f"✅ Custom department created: {department_data.name} by {current_user.get('email')}")
+        
+        return {
+            "success": True,
+            "message": f"Department '{department_data.name}' created successfully",
+            "department": {
+                "id": department_id,
+                "name": department_data.name,
+                "display_name": department_doc["display_name"],
+                "description": department_data.description,
+                "is_predefined": False,
+                "is_active": True
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating department: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create department: {str(e)}"
+        )
+
+# 🚀 NEW: Bulk department creation endpoint
+@router.post("/departments/bulk", response_model=Dict[str, Any], status_code=status.HTTP_201_CREATED)
+async def create_departments_bulk(
+    departments_list: List[DepartmentCreate],
+    current_user: Dict[str, Any] = Depends(get_admin_user)  # Admin only
+):
+    """
+    Create multiple departments at once (Admin only)
+    Useful for initial setup or migrating from other systems
+    """
+    try:
+        db = get_database()
+        logger.info(f"Admin {current_user.get('email')} creating {len(departments_list)} departments in bulk")
+        
+        created_departments = []
+        failed_departments = []
+        
+        for dept_data in departments_list:
+            try:
+                # Check if department already exists
+                if dept_data.name == "admin":
+                    failed_departments.append({
+                        "name": dept_data.name,
+                        "error": "Cannot create 'admin' department - it is reserved"
+                    })
+                    continue
+                
+                existing = await db.departments.find_one({"name": dept_data.name})
+                if existing and existing.get("is_active", True):
+                    failed_departments.append({
+                        "name": dept_data.name,
+                        "error": "Department already exists"
+                    })
+                    continue
+                
+                # Create department
+                department_doc = {
+                    "name": dept_data.name,
+                    "display_name": dept_data.name.replace('-', ' ').title(),
+                    "description": dept_data.description,
+                    "is_active": dept_data.is_active,
+                    "is_predefined": False,
+                    "created_at": datetime.utcnow(),
+                    "created_by": current_user.get("email"),
+                    "updated_at": datetime.utcnow()
+                }
+                
+                result = await db.departments.insert_one(department_doc)
+                
+                created_departments.append({
+                    "id": str(result.inserted_id),
+                    "name": dept_data.name,
+                    "display_name": department_doc["display_name"],
+                    "description": dept_data.description
+                })
+                
+            except Exception as e:
+                failed_departments.append({
+                    "name": dept_data.name,
+                    "error": str(e)
+                })
+        
+        return {
+            "success": True,
+            "message": f"Bulk department creation completed",
+            "created_count": len(created_departments),
+            "failed_count": len(failed_departments),
+            "created_departments": created_departments,
+            "failed_departments": failed_departments
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in bulk department creation: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create departments in bulk: {str(e)}"
+        )
+
+# 🚀 NEW: Setup starter departments endpoint
+@router.post("/departments/setup-starter", response_model=Dict[str, Any])
+async def setup_starter_departments(
+    current_user: Dict[str, Any] = Depends(get_admin_user)  # Admin only
+):
+    """
+    Create a basic set of common departments for new installations
+    Only works if no custom departments exist yet
+    """
+    try:
+        from ..models.user import DepartmentSetupHelper
+        
+        db = get_database()
+        logger.info(f"Admin {current_user.get('email')} setting up starter departments")
+        
+        # Check if any custom departments already exist
+        existing_count = await db.departments.count_documents({})
+        
+        if existing_count > 0:
+            existing_depts = await db.departments.find({}, {"name": 1}).to_list(None)
+            dept_names = [dept["name"] for dept in existing_depts]
+            
+            return {
+                "success": False,
+                "message": "Starter departments not created - custom departments already exist",
+                "existing_departments": dept_names,
+                "suggestion": "Use the regular 'Create Department' endpoint to add more departments"
+            }
+        
+        # Create starter departments
+        starter_departments = [
+            {
+                "name": "sales",
+                "display_name": "Sales",
+                "description": "Sales and business development",
+                "is_active": True,
+                "is_predefined": False,
+                "created_at": datetime.utcnow(),
+                "created_by": current_user.get("email")
+            },
+            {
+                "name": "marketing",
+                "display_name": "Marketing", 
+                "description": "Marketing and lead generation",
+                "is_active": True,
+                "is_predefined": False,
+                "created_at": datetime.utcnow(),
+                "created_by": current_user.get("email")
+            },
+            {
+                "name": "support",
+                "display_name": "Support",
+                "description": "Customer support and assistance",
+                "is_active": True,
+                "is_predefined": False,
+                "created_at": datetime.utcnow(),
+                "created_by": current_user.get("email")
+            },
+            {
+                "name": "operations",
+                "display_name": "Operations",
+                "description": "Business operations and processes",
+                "is_active": True,
+                "is_predefined": False,
+                "created_at": datetime.utcnow(),
+                "created_by": current_user.get("email")
+            },
+            {
+                "name": "hr",
+                "display_name": "HR",
+                "description": "Human resources management",
+                "is_active": True,
+                "is_predefined": False,
+                "created_at": datetime.utcnow(),
+                "created_by": current_user.get("email")
+            }
+        ]
+        
+        # Insert starter departments
+        result = await db.departments.insert_many(starter_departments)
+        
+        created_names = [dept["name"] for dept in starter_departments]
+        
+        logger.info(f"✅ Created {len(starter_departments)} starter departments: {created_names}")
+        
+        return {
+            "success": True,
+            "message": f"Created {len(starter_departments)} starter departments",
+            "created_departments": created_names,
+            "note": "You can now create users with these departments or add more departments as needed"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error setting up starter departments: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to setup starter departments: {str(e)}"
+        )
+
+
+@router.post("/departments", response_model=Dict[str, Any], status_code=status.HTTP_201_CREATED)
+async def create_department(
+    department_data: DepartmentCreate,
+    current_user: Dict[str, Any] = Depends(get_admin_user)  # Admin only
+):
+    """
+    Create a new custom department (Admin only)
+    """
+    try:
+        from ..models.user import DepartmentHelper, DepartmentType
+        
+        db = get_database()
+        logger.info(f"Admin {current_user.get('email')} creating new department: {department_data.name}")
+        
+        # Check if department already exists (predefined or custom)
+        # Check predefined departments
+        predefined_names = ["admin", "sales", "pre_sales", "hr", "documents"]
+        if department_data.name in predefined_names:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Department '{department_data.name}' already exists as a predefined department"
+            )
+        
+        # Check custom departments
+        existing_custom = await db.departments.find_one({"name": department_data.name})
+        if existing_custom:
+            if existing_custom.get("is_active", True):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Department '{department_data.name}' already exists"
+                )
+            else:
+                # Reactivate if it was deactivated
+                await db.departments.update_one(
+                    {"_id": existing_custom["_id"]},
+                    {
+                        "$set": {
+                            "is_active": True,
+                            "description": department_data.description,
+                            "updated_at": datetime.utcnow(),
+                            "reactivated_by": current_user.get("email")
+                        }
+                    }
+                )
+                return {
+                    "success": True,
+                    "message": f"Department '{department_data.name}' reactivated successfully",
+                    "department_id": str(existing_custom["_id"]),
+                    "action": "reactivated"
+                }
+        
+        # Create new department
+        department_doc = {
+            "name": department_data.name,
+            "display_name": department_data.name.replace('-', ' ').title(),
+            "description": department_data.description,
+            "is_active": department_data.is_active,
+            "is_predefined": False,
+            "created_at": datetime.utcnow(),
+            "created_by": current_user.get("email"),
+            "updated_at": datetime.utcnow()
+        }
+        
+        result = await db.departments.insert_one(department_doc)
+        department_id = str(result.inserted_id)
+        
+        logger.info(f"✅ Custom department created: {department_data.name} by {current_user.get('email')}")
+        
+        return {
+            "success": True,
+            "message": f"Department '{department_data.name}' created successfully",
+            "department": {
+                "id": department_id,
+                "name": department_data.name,
+                "display_name": department_doc["display_name"],
+                "description": department_data.description,
+                "is_predefined": False,
+                "is_active": True
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating department: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create department: {str(e)}"
+        )
+
+
+
+@router.put("/users/{user_id}/departments", response_model=Dict[str, Any])
+async def update_user_departments(
+    user_id: str,
+    departments_data: Dict[str, Union[str, List[str]]],
+    current_user: Dict[str, Any] = Depends(get_admin_user)  # Admin only
+):
+    """
+    Update user departments (Admin only)
+    Supports both single department (for admin) and multiple departments (for users)
+    """
+    try:
+        from ..models.user import DepartmentHelper
+        
+        db = get_database()
+        
+        # Validate user exists
+        target_user = await db.users.find_one({"_id": ObjectId(user_id)})
+        if not target_user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        
+        new_departments = departments_data.get("departments")
+        if new_departments is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Departments field is required"
+            )
+        
+        # Convert to list for validation
+        if isinstance(new_departments, str):
+            dept_list = [new_departments]
+        else:
+            dept_list = new_departments
+        
+        # Validate all departments exist
+        invalid_departments = []
+        for dept in dept_list:
+            if not await DepartmentHelper.is_department_valid(dept):
+                invalid_departments.append(dept)
+        
+        if invalid_departments:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid departments: {invalid_departments}. Use GET /departments to see available departments."
+            )
+        
+        # 🔥 Normalize departments based on user role
+        user_role = target_user.get("role", "user")
+        normalized_departments = DepartmentHelper.normalize_departments(
+            new_departments, 
+            user_role
+        )
+        
+        # Update user
+        update_result = await db.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {
+                "$set": {
+                    "departments": normalized_departments,
+                    "updated_at": datetime.utcnow(),
+                    "departments_updated_by": current_user.get("email")
+                }
+            }
+        )
+        
+        if update_result.modified_count == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No changes made to user departments"
+            )
+        
+        logger.info(f"Admin {current_user.get('email')} updated departments for user {target_user.get('email')}: {normalized_departments}")
+        
+        return {
+            "success": True,
+            "message": f"Departments updated for user {target_user.get('email')}",
+            "user": {
+                "id": user_id,
+                "email": target_user.get("email"),
+                "name": f"{target_user.get('first_name', '')} {target_user.get('last_name', '')}".strip(),
+                "role": user_role,
+                "old_departments": target_user.get("departments", []),
+                "new_departments": normalized_departments
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating user departments: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update user departments: {str(e)}"
+        )
+
+@router.get("/departments/{department_name}/users", response_model=Dict[str, Any])
+async def get_department_users(
+    department_name: str,
+    current_user: Dict[str, Any] = Depends(get_admin_user)  # Admin only
+):
+    """
+    Get all users in a specific department (Admin only)
+    """
+    try:
+        from ..models.user import DepartmentHelper
+        
+        db = get_database()
+        
+        # Validate department exists
+        if not await DepartmentHelper.is_department_valid(department_name):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Department '{department_name}' not found"
+            )
+        
+        # Get users in this department
+        users_cursor = db.users.find(
+            {
+                "$or": [
+                    {"departments": department_name},  # String format (admin)
+                    {"departments": {"$in": [department_name]}}  # Array format (users)
+                ],
+                "is_active": True
+            },
+            {
+                "hashed_password": 0  # Exclude password
+            }
+        )
+        
+        users = await users_cursor.to_list(None)
+        
+        # Process users for response
+        department_users = []
+        for user in users:
+            departments = user.get("departments", [])
+            department_users.append({
+                "id": str(user["_id"]),
+                "email": user["email"],
+                "name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+                "role": user.get("role", "user"),
+                "departments": departments,
+                "assigned_leads_count": user.get("total_assigned_leads", 0),
+                "created_at": user.get("created_at"),
+                "last_login": user.get("last_login")
+            })
+        
+        return {
+            "success": True,
+            "department": department_name,
+            "users": department_users,
+            "total_users": len(department_users)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting department users: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get department users"
+        )
+
+@router.delete("/departments/{department_id}", response_model=Dict[str, Any])
+async def deactivate_department(
+    department_id: str,
+    current_user: Dict[str, Any] = Depends(get_admin_user)  # Admin only
+):
+    """
+    Deactivate a custom department (Admin only)
+    Note: Cannot delete predefined departments, only custom ones
+    """
+    try:
+        db = get_database()
+        
+        # Find the department
+        department = await db.departments.find_one({"_id": ObjectId(department_id)})
+        if not department:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Department not found"
+            )
+        
+        if department.get("is_predefined", False):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot deactivate predefined departments"
+            )
+        
+        # Check if any users are using this department
+        user_count = await db.users.count_documents({
+            "$or": [
+                {"departments": department["name"]},
+                {"departments": {"$in": [department["name"]]}}
+            ],
+            "is_active": True
+        })
+        
+        if user_count > 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot deactivate department '{department['name']}'. {user_count} users are currently assigned to this department. Please reassign users first."
+            )
+        
+        # Deactivate department
+        await db.departments.update_one(
+            {"_id": ObjectId(department_id)},
+            {
+                "$set": {
+                    "is_active": False,
+                    "deactivated_at": datetime.utcnow(),
+                    "deactivated_by": current_user.get("email")
+                }
+            }
+        )
+        
+        logger.info(f"Admin {current_user.get('email')} deactivated department: {department['name']}")
+        
+        return {
+            "success": True,
+            "message": f"Department '{department['name']}' deactivated successfully",
+            "department_id": department_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deactivating department: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to deactivate department"
+        )
+    
+# Add this endpoint to app/routers/auth.py
+
+@router.delete("/users/{user_id}")
+async def delete_user(
+    user_id: str,
+    current_user: Dict[str, Any] = Depends(get_admin_user)  # Admin only
+):
+    """
+    Delete a user (Admin only)
+    - Prevents self-deletion and deleting last admin
+    - Reassigns user's leads to the admin performing deletion
+    - Updates tasks to maintain data integrity
+    - Soft deletes user (marks inactive)
+    """
+    try:
+        db = get_database()
+        
+        # Find user by ID or email (flexible lookup)
+        user_query = {"$or": [{"email": user_id}]}
+        if ObjectId.is_valid(user_id):
+            user_query["$or"].append({"_id": ObjectId(user_id)})
+        
+        user_to_delete = await db.users.find_one(user_query)
+        
+        if not user_to_delete:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        
+        user_email = user_to_delete["email"]
+        user_name = f"{user_to_delete.get('first_name', '')} {user_to_delete.get('last_name', '')}".strip()
+        current_admin_email = current_user.get("email")
+        
+        # Security checks
+        if user_email == current_admin_email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You cannot delete your own account"
+            )
+        
+        # Prevent deletion of last admin
+        if user_to_delete.get("role") == "admin":
+            admin_count = await db.users.count_documents({"role": "admin", "is_active": True})
+            if admin_count <= 1:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Cannot delete the last admin user. Create another admin first."
+                )
+        
+        logger.info(f"Admin {current_admin_email} deleting user: {user_email}")
+        
+        # Step 1: Reassign leads to the deleting admin
+        assigned_leads = await db.leads.count_documents({"assigned_to": user_email})
+        if assigned_leads > 0:
+            await db.leads.update_many(
+                {"assigned_to": user_email},
+                {
+                    "$set": {
+                        "assigned_to": current_admin_email,
+                        "assigned_to_name": f"{current_user.get('first_name', '')} {current_user.get('last_name', '')}".strip(),
+                        "reassignment_reason": f"User {user_email} was deleted",
+                        "updated_at": datetime.utcnow()
+                    }
+                }
+            )
+            logger.info(f"Reassigned {assigned_leads} leads to {current_admin_email}")
+        
+        # Step 2: Update tasks - preserve data but mark user as deleted
+        tasks_assigned = await db.lead_tasks.count_documents({"assigned_to": user_email})
+        if tasks_assigned > 0:
+            await db.lead_tasks.update_many(
+                {"assigned_to": user_email},
+                {
+                    "$set": {
+                        "assigned_to": None,
+                        "assigned_to_name": f"[Deleted User: {user_name}]",
+                        "updated_at": datetime.utcnow()
+                    }
+                }
+            )
+        
+        tasks_created = await db.lead_tasks.count_documents({"created_by": str(user_to_delete["_id"])})
+        if tasks_created > 0:
+            await db.lead_tasks.update_many(
+                {"created_by": str(user_to_delete["_id"])},
+                {
+                    "$set": {
+                        "created_by_name": f"[Deleted User: {user_name}]",
+                        "updated_at": datetime.utcnow()
+                    }
+                }
+            )
+        
+        # Step 3: Soft delete user (mark as inactive)
+        deletion_result = await db.users.update_one(
+            {"_id": user_to_delete["_id"]},
+            {
+                "$set": {
+                    "is_active": False,
+                    "deleted_at": datetime.utcnow(),
+                    "deleted_by": current_admin_email,
+                    "email_backup": user_email,
+                    "email": f"[DELETED]_{user_email}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+                }
+            }
+        )
+        
+        if deletion_result.modified_count == 0:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to delete user"
+            )
+        
+        logger.info(f"✅ User {user_email} successfully deleted by {current_admin_email}")
+        
+        return {
+            "success": True,
+            "message": f"User {user_email} has been successfully deleted",
+            "deleted_user": {
+                "email": user_email,
+                "name": user_name,
+                "role": user_to_delete.get("role")
+            },
+            "summary": {
+                "leads_reassigned": assigned_leads,
+                "tasks_updated": tasks_assigned + tasks_created,
+                "reassigned_to": current_admin_email
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting user {user_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete user: {str(e)}"
+        )
+
+
 @router.post("/refresh", response_model=RefreshTokenResponse)
 async def refresh_token(
     request: RefreshTokenRequest,
