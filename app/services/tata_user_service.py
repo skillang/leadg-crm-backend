@@ -1,5 +1,5 @@
 # app/services/tata_user_service.py
-# Enhanced Tata User Service with Auto-Sync on Login
+# 🔧 FIXED: Enhanced Tata User Service with Auto-Sync on Login
 # Handles user synchronization between LeadG CRM and Tata Tele system
 
 import logging
@@ -336,11 +336,12 @@ class TataUserService:
         user_phone: str
     ) -> bool:
         """
-        Create or update user mapping with matched Tata agent data
+        🔧 FIXED: Create or update user mapping with matched Tata agent data
         """
         try:
             db = self._get_db()
-            if not db:
+            if db is None:  # 🔧 FIXED: Use 'is None'
+                logger.warning("Database not available for mapping creation")
                 return False
             
             mapping_data = {
@@ -395,11 +396,12 @@ class TataUserService:
         agent_id: str = None
     ) -> bool:
         """
-        Update user record with calling status and Tata information
+        🔧 FIXED: Update user record with calling status and Tata information
         """
         try:
             db = self._get_db()
-            if not db:
+            if db is None:  # 🔧 FIXED: Use 'is None'
+                logger.warning("Database not available for user status update")
                 return False
             
             update_data = {
@@ -437,7 +439,8 @@ class TataUserService:
         """
         try:
             db = self._get_db()
-            if not db:
+            if db is None:
+                logger.warning("Database not available for user mapping lookup")
                 return None
             
             mapping = await db.tata_user_mappings.find_one({"crm_user_id": user_id})
@@ -510,8 +513,9 @@ class TataUserService:
         """Log synchronization events for auditing"""
         try:
             db = self._get_db()
-            if not db:
-                return
+            if db is None:  # 🔧 FIXED: Use 'is None'
+                logger.warning("Database not available for sync event logging")
+                return None
                 
             log_entry = TataIntegrationLog(
                 event_type=event_type,
@@ -540,8 +544,9 @@ class TataUserService:
         """Log detailed audit events"""
         try:
             db = self._get_db()
-            if not db:
-                return
+            if db is None:  # 🔧 FIXED: Use 'is None'
+                logger.warning("Database not available for audit event logging")
+                return None
                 
             audit_log = UserSyncAuditLog(
                 operation_type=operation_type,
@@ -563,7 +568,7 @@ class TataUserService:
         """Validate if CRM user can be synced to Tata"""
         try:
             db = self._get_db()
-            if not db:
+            if db is None:  # 🔧 FIXED: Use 'is None'
                 return UserValidationResult(
                     is_valid=False,
                     crm_user_id=crm_user_id,
@@ -722,7 +727,7 @@ class TataUserService:
         try:
             # Use lazy database initialization
             db = self._get_db()
-            if db is None:
+            if db is None:  # 🔧 FIXED: Use 'is None'
                 return {"success": False, "message": "Database not available"}
 
             crm_user_id = mapping_data["crm_user_id"]
@@ -945,7 +950,7 @@ class TataUserService:
         """Sync single user to Tata system"""
         try:
             db = self._get_db()
-            if not db:
+            if db is None:  # 🔧 FIXED: Use 'is None'
                 return UserSyncResult(
                     crm_user_id=crm_user_id,
                     sync_status=SyncStatus.FAILED,
@@ -1172,7 +1177,7 @@ class TataUserService:
         """Sync multiple users in bulk"""
         try:
             db = self._get_db()
-            if not db:
+            if db is None:  # 🔧 FIXED: Use 'is None'
                 return BulkUserSyncResponse(
                     total_requested=0,
                     successful=0,
@@ -1311,7 +1316,7 @@ class TataUserService:
         try:
             # Use lazy database initialization
             db = self._get_db()
-            if db is None:
+            if db is None:  # 🔧 FIXED: Use 'is None'
                 return {"success": False, "message": "Database not available"}
             
             # Check if CRM user exists
@@ -1385,7 +1390,8 @@ class TataUserService:
         """
         try:
             db = self._get_db()
-            if db is None:
+            if db is None:  # 🔧 FIXED: Use 'is None'
+                logger.warning("Database not available for user mappings")
                 return []
             
             # Build query

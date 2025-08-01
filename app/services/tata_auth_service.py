@@ -84,26 +84,20 @@ class TataAuthService:
             logger.warning(f"Failed to decrypt token: {e}")
             return encrypted_token
 
-
-
-    async def login(self, email: str, password: str) -> Dict[str, Any]:
+    async def login(self, email: str = None, password: str = None) -> Dict[str, Any]:
         """
-        Login to Tata Tele API and store encrypted tokens
+        🔧 FIXED: Login to Tata Tele API and store encrypted tokens
         """
         try:
-            logger.info(f"Attempting Tata login for email: {email}")
+            # Use settings if no params provided
+            login_email = email or self.settings.tata_email
+            login_password = password or self.settings.tata_password
             
-            # 🔧 FIX: Check database availability
-            db = self._get_db()
-            if db is None:
-                return {
-                    "success": False,
-                    "message": "Database not available yet. Please try again."
-                }
+            logger.info(f"Attempting Tata login for email: {login_email}")
             
             login_payload = {
-                "email": email,
-                "password": password
+                "email": login_email,
+                "password": login_password
             }
             
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -124,30 +118,35 @@ class TataAuthService:
                         # Encrypt and store token
                         encrypted_token = self._encrypt_token(access_token)
                         
-                        # Store in database
-                        token_doc = {
-                            "user_id": "system",  # System-wide token
-                            "access_token": encrypted_token,
-                            "expires_at": expires_at,
-                            "created_at": datetime.utcnow()
-                        }
-                        
-                        # Upsert token document
-                        await db.tata_tokens.update_one(
-                            {"user_id": "system"},
-                            {"$set": token_doc},
-                            upsert=True
-                        )
+                        # Store in database (if available)
+                        db = self._get_db()
+                        if db is not None:  # 🔧 FIXED: Use 'is not None'
+                            token_doc = {
+                                "user_id": "system",  # System-wide token
+                                "access_token": encrypted_token,
+                                "expires_at": expires_at,
+                                "created_at": datetime.utcnow()
+                            }
+                            
+                            # Upsert token document
+                            await db.tata_tokens.update_one(
+                                {"user_id": "system"},
+                                {"$set": token_doc},
+                                upsert=True
+                            )
+                        else:
+                            logger.warning("Database not available, token stored in memory only")
                         
                         # Log successful login
                         await self._log_event("login", "success", "Tata login successful")
                         
-                        logger.info("Tata login successful")
+                        logger.info("✅ Tata login successful")
                         return {
                                 "success": data.get("success", True),
                                 "access_token": access_token,  # Return actual token
                                 "token_type": data.get("token_type", "bearer"),
-                                "expires_in": data.get("expires_in", 3600),  # ← CORRECT: Model expects this
+                                "expires_in": data.get("expires_in", 3600),
+                                "expires_at": expires_at,
                                 "number_of_days_left": data.get("number_of_days_left")
                         }
                     else:
@@ -157,7 +156,7 @@ class TataAuthService:
                             "message": "No access token received"
                         }
                 else:
-                    error_msg = f"Login failed with status {response.status_code}"
+                    error_msg = f"Login failed with status {response.status_code}: {response.text}"
                     await self._log_event("login", "error", error_msg)
                     logger.warning(error_msg)
                     return {
@@ -182,37 +181,38 @@ class TataAuthService:
                 "message": error_msg
             }
 
-
-
     async def get_valid_token(self) -> Optional[str]:
         """
-        Get a valid access token, refreshing if necessary
+        🔧 FIXED: Get a valid access token, refreshing if necessary
         """
         try:
-            # 🔧 FIX: Check database availability
             db = self._get_db()
             if db is None:
-                logger.warning("Database not available for token retrieval")
+                logger.warning("Database not available for token retrieval, attempting fresh login")
+                # Try to login fresh if no database yet
+                login_result = await self.login()
+                if login_result["success"]:
+                    return login_result.get("access_token")
                 return None
             
             # Find stored token
             token_doc = await db.tata_tokens.find_one({"user_id": "system"})
             
             if not token_doc:
-                logger.warning("No stored Tata token found")
+                logger.warning("No stored Tata token found, attempting fresh login")
+                login_result = await self.login()
+                if login_result["success"]:
+                    return login_result.get("access_token")
                 return None
             
             # Check if token is expired or expiring soon (5 minute buffer)
             expires_at = token_doc.get("expires_at")
             if expires_at and expires_at <= datetime.utcnow() + timedelta(minutes=5):
-                logger.info("Token expired or expiring soon, refresh needed")
-                refresh_result = await self.refresh_token()
-                if not refresh_result["success"]:
-                    return None
-                # Get the refreshed token
-                token_doc = await db.tata_tokens.find_one({"user_id": "system"})
-                if not token_doc:
-                    return None
+                logger.info("Token expired or expiring soon, attempting fresh login")
+                login_result = await self.login()
+                if login_result["success"]:
+                    return login_result.get("access_token")
+                return None
             
             # Decrypt and return token
             encrypted_token = token_doc.get("access_token")
@@ -223,14 +223,20 @@ class TataAuthService:
             
         except Exception as e:
             logger.error(f"Error getting valid token: {e}")
+            # Try fresh login as fallback
+            try:
+                login_result = await self.login()
+                if login_result["success"]:
+                    return login_result.get("access_token")
+            except:
+                pass
             return None
     
     async def refresh_token(self) -> Dict[str, Any]:
         """
-        Refresh the access token
+        🔧 FIXED: Refresh the access token
         """
         try:
-            # 🔧 FIX: Check database availability
             db = self._get_db()
             if db is None:
                 return {
@@ -238,18 +244,12 @@ class TataAuthService:
                     "message": "Database not available yet. Please try again."
                 }
             
-            # For now, we'll implement a simple re-login
-            # In a real implementation, you'd use the refresh token endpoint
-            logger.info("Token refresh requested - implementing re-login")
+            # Implement fresh login as refresh mechanism
+            logger.info("Token refresh requested - implementing fresh login")
             
-            # Get stored credentials (if available)
-            # For security, we don't store passwords, so this would need to be handled differently
-            # For now, return failure requiring manual login
-            
-            return {
-                "success": False,
-                "message": "Token refresh requires manual re-login"
-            }
+            # Perform fresh login
+            login_result = await self.login()
+            return login_result
             
         except Exception as e:
             error_msg = f"Token refresh error: {str(e)}"
@@ -265,7 +265,6 @@ class TataAuthService:
         Logout from Tata API and clear stored tokens
         """
         try:
-            # 🔧 FIX: Check database availability
             db = self._get_db()
             if db is None:
                 return {
@@ -281,7 +280,7 @@ class TataAuthService:
                 try:
                     async with httpx.AsyncClient(timeout=self.timeout) as client:
                         await client.post(
-                            f"{self.base_url}/auth/logout",
+                            f"{self.base_url}/v1/auth/logout",
                             headers={
                                 "Authorization": f"Bearer {current_token}",
                                 "Content-Type": "application/json"
@@ -349,7 +348,7 @@ class TataAuthService:
                 try:
                     async with httpx.AsyncClient(timeout=10) as client:
                         response = await client.get(
-                            f"{self.base_url}/users",
+                            f"{self.base_url}/v1/users",
                             headers={"Authorization": f"Bearer {token}"}
                         )
                         if response.status_code == 200:
@@ -401,13 +400,11 @@ class TataAuthService:
                 "failed_calls_24h": 0
             }
 
-
     async def check_token_status(self) -> Dict[str, Any]:
         """
         Check current token status for debugging
         """
         try:
-            # 🔧 FIX: Check database availability
             db = self._get_db()
             if db is None:
                 return {
@@ -458,7 +455,6 @@ class TataAuthService:
         Log integration events
         """
         try:
-            # 🔧 FIX: Check database availability
             db = self._get_db()
             if db is None:
                 # If database not available, just log to console
