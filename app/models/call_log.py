@@ -62,8 +62,46 @@ class CallOutcome(str, Enum):
 # TATA TELE API REQUEST MODELS
 # ============================================================================
 
+# 🆕 NEW: Simplified request model for frontend (only lead_id required)
+class ClickToCallRequestSimple(BaseModel):
+    """Simplified request model for click-to-call - frontend only sends lead_id"""
+    lead_id: str = Field(..., description="Lead ID to call (required)")
+    notes: Optional[str] = Field(None, max_length=1000, description="Optional call notes")
+    call_purpose: Optional[str] = Field(None, max_length=100, description="Purpose of the call")
+    priority: CallPriority = Field(default=CallPriority.NORMAL, description="Call priority")
+    
+    @validator('lead_id')
+    def validate_lead_id(cls, v):
+        if not v or not v.strip():
+            raise ValueError('Lead ID is required')
+        # Accept any lead ID format - let database lookup handle validation
+        return v.strip()
+    
+    @validator('notes')
+    def validate_notes(cls, v):
+        if v is not None and len(v.strip()) == 0:
+            return None  # Convert empty string to None
+        return v.strip() if v else None
+    
+    @validator('call_purpose')
+    def validate_call_purpose(cls, v):
+        if v is not None and len(v.strip()) == 0:
+            return None  # Convert empty string to None
+        return v.strip() if v else None
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "lead_id": "LEAD_12345",
+                "notes": "Follow-up call regarding course inquiry",
+                "call_purpose": "Sales Follow-up",
+                "priority": "normal"
+            }
+        }
+
+# 🔄 EXISTING: Original complex request model (keep for backward compatibility)
 class ClickToCallRequest(BaseModel):
-    """Request model for Tata Click-to-Call API"""
+    """Request model for Tata Click-to-Call API (full parameters)"""
     lead_id: Optional[str] = Field(None, description="Lead ID for tracking")
     notes: Optional[str] = Field(None, description="Call notes")
     agent_number: str = Field(..., description="Smartflo agent number")
@@ -135,6 +173,7 @@ class CallLogUpdate(BaseModel):
     tata_call_id: Optional[str] = Field(None, description="Call ID from Tata system")
     ended_at: Optional[datetime] = Field(None, description="Call end timestamp")
     answered_at: Optional[datetime] = Field(None, description="Call answer timestamp")
+    initiated_at: Optional[datetime] = Field(None, description="Call initiation timestamp")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Additional call metadata")
 
     @validator('call_duration')
@@ -178,6 +217,60 @@ class CallLogResponse(BaseModel):
     lead_name: Optional[str] = Field(None, description="Lead name")
     lead_email: Optional[str] = Field(None, description="Lead email")
     lead_status: Optional[str] = Field(None, description="Current lead status")
+
+# ============================================================================
+# RESPONSE MODELS
+# ============================================================================
+
+class ClickToCallResponse(BaseModel):
+    """Response model for click-to-call initiation"""
+    success: bool = Field(..., description="Call initiation success")
+    message: str = Field(..., description="Response message")
+    call_id: Optional[str] = Field(None, description="Internal call log ID")
+    tata_call_id: Optional[str] = Field(None, description="Tata API call ID")
+    call_status: str = Field(..., description="Current call status")
+    estimated_connection_time: int = Field(default=30, description="Estimated connection time in seconds")
+    initiated_at: datetime = Field(..., description="Call initiation timestamp")
+    caller_number: Optional[str] = Field(None, description="Caller's number")
+    destination_number: str = Field(..., description="Destination number")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "message": "Call initiated successfully",
+                "call_id": "60d5ecb74b24a8001f5e4b23",
+                "tata_call_id": "TC123456789",
+                "call_status": "ringing",
+                "estimated_connection_time": 30,
+                "initiated_at": "2024-01-15T10:30:00Z",
+                "caller_number": "+917965083165",
+                "destination_number": "+919087924334"
+            }
+        }
+
+class SupportCallResponse(BaseModel):
+    """Response model for support call requests"""
+    success: bool = Field(..., description="Support request success")
+    message: str = Field(..., description="Response message")
+    support_call_id: str = Field(..., description="Support call ID")
+    ticket_number: Optional[str] = Field(None, description="Support ticket number")
+    priority: str = Field(..., description="Assigned priority")
+    estimated_callback_time: int = Field(..., description="Estimated callback time in seconds")
+    support_agent_info: Optional[Dict[str, Any]] = Field(None, description="Assigned support agent info")
+    submitted_at: datetime = Field(..., description="Support request timestamp")
+
+class CallPermissionResponse(BaseModel):
+    """Response model for call permissions check"""
+    user_id: str = Field(..., description="User ID")
+    can_make_calls: bool = Field(..., description="Whether user can make calls")
+    has_tata_mapping: bool = Field(..., description="Whether user has Tata mapping")
+    tata_agent_id: Optional[str] = Field(None, description="Tata agent ID if mapped")
+    call_limit_remaining: Optional[int] = Field(None, description="Remaining call limit")
+    daily_call_count: int = Field(default=0, description="Calls made today")
+    permission_errors: List[str] = Field(default=[], description="Permission error messages")
+    last_call_time: Optional[datetime] = Field(None, description="Last call timestamp")
+    checked_at: datetime = Field(..., description="Permission check timestamp")
 
 # ============================================================================
 # CALL ANALYTICS AND REPORTING MODELS
@@ -260,6 +353,16 @@ class CallHistoryResponse(BaseModel):
     total_pages: int = Field(..., description="Total number of pages")
     has_more: bool = Field(..., description="Whether there are more pages")
     analytics: Optional[CallAnalytics] = Field(None, description="Analytics for filtered calls")
+
+class CallLogListResponse(BaseModel):
+    """Response model for call log lists with pagination"""
+    calls: List[CallLogResponse] = Field(..., description="List of call logs")
+    total_count: int = Field(..., description="Total number of calls matching filter")
+    limit: int = Field(..., description="Records per page")
+    offset: int = Field(..., description="Number of records skipped")
+    has_more: bool = Field(..., description="Whether there are more records")
+    filters_applied: Dict[str, Any] = Field(..., description="Applied filters")
+    retrieved_at: datetime = Field(..., description="Data retrieval timestamp")
 
 class CallSummaryReport(BaseModel):
     """Summary report model for call activities"""
@@ -369,8 +472,8 @@ class BulkCallRequest(BaseModel):
     @validator('lead_ids')
     def validate_lead_ids(cls, v):
         for lead_id in v:
-            if not re.match(r'^LD-\d+$', lead_id):
-                raise ValueError(f'Invalid lead ID format: {lead_id}')
+            if not lead_id or not lead_id.strip():
+                raise ValueError(f'Lead ID cannot be empty: {lead_id}')
         return v
 
 class BulkCallResponse(BaseModel):
@@ -410,7 +513,7 @@ class CallExportResponse(BaseModel):
     message: str = Field(..., description="Export status message")
 
 # ============================================================================
-# SYSTEM HEALTH MODEL (Add this to your call_log.py)
+# SYSTEM HEALTH AND MONITORING MODELS
 # ============================================================================
 
 class CallSystemHealth(BaseModel):
@@ -433,42 +536,6 @@ class CallSystemHealth(BaseModel):
         if v not in allowed_statuses:
             raise ValueError(f'Overall status must be one of: {allowed_statuses}')
         return v
-# MISSING RESPONSE MODELS (Add these to your call_log.py)
-
-class ClickToCallResponse(BaseModel):
-    """Response model for click-to-call initiation"""
-    success: bool = Field(..., description="Call initiation success")
-    message: str = Field(..., description="Response message")
-    call_id: Optional[str] = Field(None, description="Internal call log ID")
-    tata_call_id: Optional[str] = Field(None, description="Tata API call ID")
-    call_status: str = Field(..., description="Current call status")
-    estimated_connection_time: int = Field(..., description="Estimated connection time in seconds")
-    initiated_at: datetime = Field(..., description="Call initiation timestamp")
-    caller_number: Optional[str] = Field(None, description="Caller's number")
-    destination_number: str = Field(..., description="Destination number")
-
-class SupportCallResponse(BaseModel):
-    """Response model for support call requests"""
-    success: bool = Field(..., description="Support request success")
-    message: str = Field(..., description="Response message")
-    support_call_id: str = Field(..., description="Support call ID")
-    ticket_number: Optional[str] = Field(None, description="Support ticket number")
-    priority: str = Field(..., description="Assigned priority")
-    estimated_callback_time: int = Field(..., description="Estimated callback time in seconds")
-    support_agent_info: Optional[Dict[str, Any]] = Field(None, description="Assigned support agent info")
-    submitted_at: datetime = Field(..., description="Support request timestamp")
-
-class CallPermissionResponse(BaseModel):
-    """Response model for call permissions check"""
-    user_id: str = Field(..., description="User ID")
-    can_make_calls: bool = Field(..., description="Whether user can make calls")
-    has_tata_mapping: bool = Field(..., description="Whether user has Tata mapping")
-    tata_agent_id: Optional[str] = Field(None, description="Tata agent ID if mapped")
-    call_limit_remaining: Optional[int] = Field(None, description="Remaining call limit")
-    daily_call_count: int = Field(default=0, description="Calls made today")
-    permission_errors: List[str] = Field(default=[], description="Permission error messages")
-    last_call_time: Optional[datetime] = Field(None, description="Last call timestamp")
-    checked_at: datetime = Field(..., description="Permission check timestamp")
 
 class CallWebhookPayload(BaseModel):
     """Webhook payload from Tata Tele API"""
@@ -477,14 +544,29 @@ class CallWebhookPayload(BaseModel):
     status: Optional[str] = Field(None, description="Call status")
     timestamp: datetime = Field(..., description="Event timestamp")
     data: Optional[Dict[str, Any]] = Field(None, description="Additional event data")
-# Add this to your call_log.py file
 
-class CallLogListResponse(BaseModel):
-    """Response model for call log lists with pagination"""
-    calls: List[CallLogResponse] = Field(..., description="List of call logs")
-    total_count: int = Field(..., description="Total number of calls matching filter")
-    limit: int = Field(..., description="Records per page")
-    offset: int = Field(..., description="Number of records skipped")
-    has_more: bool = Field(..., description="Whether there are more records")
-    filters_applied: Dict[str, Any] = Field(..., description="Applied filters")
-    retrieved_at: datetime = Field(..., description="Data retrieval timestamp")
+# ============================================================================
+# VALIDATION MODELS
+# ============================================================================
+
+class CallValidationRequest(BaseModel):
+    """Request model for validating call parameters before making a call"""
+    lead_id: str = Field(..., description="Lead ID to validate")
+    user_id: Optional[str] = Field(None, description="User ID to validate calling permissions")
+    
+    @validator('lead_id')
+    def validate_lead_id(cls, v):
+        if not v or not v.strip():
+            raise ValueError('Lead ID is required')
+        return v.strip()
+
+class CallValidationResponse(BaseModel):
+    """Response model for call validation"""
+    can_call: bool = Field(..., description="Whether call can be made")
+    validation_errors: List[str] = Field(default=[], description="Validation error messages")
+    lead_found: bool = Field(..., description="Whether lead exists")
+    lead_phone: Optional[str] = Field(None, description="Lead phone number if found")
+    user_can_call: bool = Field(..., description="Whether user has calling permissions")
+    user_agent_id: Optional[str] = Field(None, description="User's Tata agent ID")
+    estimated_setup_time: int = Field(default=10, description="Estimated call setup time in seconds")
+    recommendations: List[str] = Field(default=[], description="Recommendations for successful calling")

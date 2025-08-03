@@ -1,6 +1,6 @@
 # app/routers/tata_calls.py
-# Enhanced Tata Calls Router - With Progressive Dialer Support
-# Core calling functionality from CRM + Progressive Bulk Calling
+# Enhanced Tata Calls Router - With Progressive Dialer Support + Simplified Click-to-Call
+# Core calling functionality from CRM + Progressive Bulk Calling + Auto-fetch functionality
 
 from fastapi import APIRouter, HTTPException, status, Depends, Request
 from typing import Dict, Any, Optional, List
@@ -15,8 +15,9 @@ logger = logging.getLogger(__name__)
 from ..services.tata_call_service import tata_call_service
 from ..utils.dependencies import get_current_active_user, get_admin_user
 from ..models.call_log import (
-    ClickToCallRequest, ClickToCallResponse, SupportCallRequest,
-    SupportCallResponse, CallPermissionResponse, CallWebhookPayload
+    ClickToCallRequest, ClickToCallRequestSimple, ClickToCallResponse, 
+    SupportCallRequest, SupportCallResponse, CallPermissionResponse, 
+    CallWebhookPayload, CallValidationRequest, CallValidationResponse
 )
 
 # 🆕 NEW: Import Progressive Dialer Service (NOW logger is available)
@@ -29,6 +30,181 @@ except ImportError as e:
     logger.warning(f"⚠️ Progressive Dialer not available: {e}")
 
 router = APIRouter()
+
+# ============================================================================
+# 🆕 NEW: SIMPLIFIED CLICK-TO-CALL ENDPOINT (AUTO-FETCH)
+# ============================================================================
+
+@router.post("/click-to-call-simple", response_model=ClickToCallResponse)
+async def initiate_click_to_call_simple(
+    call_request: ClickToCallRequestSimple,
+    current_user: dict = Depends(get_current_active_user)
+):
+    """
+    🎯 Simplified Click-to-Call - Only Lead ID Required
+    
+    **Auto-fetch Features:**
+    - **Lead Phone**: Automatically fetches phone number from lead data
+    - **User Agent**: Automatically uses user's Tata sync data  
+    - **No Manual Input**: Frontend only needs to send lead_id
+    - **Smart Validation**: Pre-validates lead and user before calling
+    
+    **Usage:**
+    ```json
+    {
+        "lead_id": "LEAD_12345",
+        "notes": "Follow-up call regarding course inquiry",
+        "call_purpose": "Sales Follow-up"
+    }
+    ```
+    """
+    try:
+        logger.info(f"🎯 User {current_user['email']} initiating simplified click-to-call for lead {call_request.lead_id}")
+        
+        # Validate request
+        if not call_request.lead_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Lead ID is required"
+            )
+        
+        # Extract user_id with fallbacks (same pattern as other endpoints)
+        user_id = str(current_user.get("user_id") or current_user.get("_id") or current_user.get("id"))
+        
+        # 🆕 Use the new simplified service method
+        success, result = await tata_call_service.initiate_click_to_call_simple(
+            lead_id=call_request.lead_id,
+            current_user=current_user,
+            notes=call_request.notes,
+            call_purpose=call_request.call_purpose
+        )
+        
+        # Handle response
+        if not success:
+            error_detail = result.get("message", "Call initiation failed")
+            
+            # Provide specific error messages for common issues
+            if "phone not found" in error_detail.lower():
+                error_detail = f"No phone number found for lead {call_request.lead_id}. Please add a phone number to the lead."
+            elif "not synchronized" in error_detail.lower():
+                error_detail = "Your account is not synchronized with the calling system. Please contact admin to enable calling."
+            elif "agent id not found" in error_detail.lower():
+                error_detail = "Calling not configured for your account. Please contact admin for setup."
+            
+            logger.warning(f"❌ Click-to-call failed for {call_request.lead_id}: {error_detail}")
+            
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error_detail
+            )
+        
+        # Success response
+        logger.info(f"✅ Simplified click-to-call initiated successfully for lead {call_request.lead_id}")
+        
+        return ClickToCallResponse(
+            success=True,
+            message="Call initiated successfully",
+            call_id=result.get("call_id"),
+            tata_call_id=result.get("tata_call_id"),
+            call_status=result.get("status", "initiated"),
+            estimated_connection_time=30,
+            initiated_at=datetime.utcnow(),
+            caller_number=result.get("caller_number"),
+            destination_number=result.get("destination_number")
+        )
+        
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions as-is
+    except Exception as e:
+        logger.error(f"❌ Error in simplified click-to-call: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal error initiating call: {str(e)}"
+        )
+
+# ============================================================================
+# 🆕 NEW: CALL VALIDATION ENDPOINT
+# ============================================================================
+
+@router.post("/validate-call", response_model=CallValidationResponse)
+async def validate_call_parameters(
+    validation_request: CallValidationRequest,
+    current_user: dict = Depends(get_current_active_user)
+):
+    """
+    🔍 Validate Call Parameters Before Making Call
+    
+    **Pre-call Validation:**
+    - **Lead Exists**: Checks if lead exists and has phone number
+    - **User Permissions**: Validates user can make calls
+    - **Tata Sync**: Confirms user is synchronized with Tata system
+    - **Recommendations**: Provides setup recommendations if needed
+    
+    **Usage:**
+    ```json
+    {
+        "lead_id": "LEAD_12345"
+    }
+    ```
+    """
+    try:
+        logger.info(f"🔍 User {current_user['email']} validating call for lead {validation_request.lead_id}")
+        
+        user_id = str(current_user.get("user_id") or current_user.get("_id"))
+        validation_errors = []
+        recommendations = []
+        
+        # 1. Check if lead exists and has phone
+        lead_phone = await tata_call_service._get_lead_phone_number(validation_request.lead_id)
+        lead_found = lead_phone is not None
+        
+        if not lead_found:
+            validation_errors.append(f"Lead {validation_request.lead_id} not found")
+        elif not lead_phone:
+            validation_errors.append(f"Lead {validation_request.lead_id} has no phone number")
+            recommendations.append("Add a phone number to the lead before calling")
+        
+        # 2. Check user calling permissions
+        user_agent_data = await tata_call_service._get_user_agent_data(user_id)
+        user_can_call = user_agent_data.get("can_make_calls", False)
+        user_agent_id = user_agent_data.get("tata_agent_id")
+        
+        if not user_can_call:
+            validation_errors.append("User is not synchronized with calling system")
+            recommendations.append("Contact admin to set up calling permissions")
+        
+        if not user_agent_id:
+            validation_errors.append("No Tata agent ID found for user")
+            recommendations.append("Complete Tata system synchronization")
+        
+        # 3. Overall validation result
+        can_call = len(validation_errors) == 0
+        
+        if can_call:
+            recommendations.append("All validations passed - ready to make call")
+        
+        logger.info(f"🔍 Call validation for {validation_request.lead_id}: {'✅ PASS' if can_call else '❌ FAIL'}")
+        
+        return CallValidationResponse(
+            can_call=can_call,
+            validation_errors=validation_errors,
+            lead_found=lead_found,
+            lead_phone=lead_phone,
+            user_can_call=user_can_call,
+            user_agent_id=user_agent_id,
+            estimated_setup_time=10 if can_call else 0,
+            recommendations=recommendations
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Error validating call: {str(e)}")
+        return CallValidationResponse(
+            can_call=False,
+            validation_errors=[f"Validation failed: {str(e)}"],
+            lead_found=False,
+            user_can_call=False,
+            recommendations=["Contact support for assistance"]
+        )
 
 # ============================================================================
 # 🆕 NEW: PROGRESSIVE DIALER ENDPOINTS
@@ -420,8 +596,7 @@ async def get_my_dialer_sessions(
         )
 
 # ============================================================================
-# EXISTING CLICK-TO-CALL ENDPOINTS - UNCHANGED
-# (All your existing endpoints remain exactly the same)
+# EXISTING CLICK-TO-CALL ENDPOINTS - UNCHANGED (BACKWARD COMPATIBILITY)
 # ============================================================================
 
 @router.post("/click-to-call", response_model=ClickToCallResponse)
@@ -430,15 +605,17 @@ async def initiate_click_to_call(
     current_user: dict = Depends(get_current_active_user)
 ):
     """
-    Initiate click-to-call from CRM to customer
+    📞 Legacy Click-to-Call (Complex Parameters) - BACKWARD COMPATIBILITY
     
     - **Authentication Required**: User must be logged in
     - **Permission Check**: Validates user has access to the lead
     - **User Mapping**: Checks if user is mapped to Tata system
     - **Auto-logging**: Automatically logs call to lead timeline
+    
+    **Note**: Use `/click-to-call-simple` for easier integration
     """
     try:
-        logger.info(f"User {current_user['email']} initiating click-to-call to {call_request.destination_number}")
+        logger.info(f"User {current_user['email']} initiating legacy click-to-call to {call_request.destination_number}")
         
         # Validate request
         if not call_request.destination_number:
@@ -848,4 +1025,4 @@ async def get_all_active_calls(
 # ============================================================================
 
 # Router tags and metadata for API documentation
-router.tags = ["Tata Calls", "Progressive Dialer"]
+router.tags = ["Tata Calls", "Progressive Dialer", "Simplified Calling"]
