@@ -11,7 +11,7 @@ from bson import ObjectId
 # 🔧 FIX: Setup logging FIRST before using logger anywhere
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
+from ..services.tata_user_service import tata_user_service
 from ..services.tata_call_service import tata_call_service
 from ..utils.dependencies import get_current_active_user, get_admin_user
 from ..models.call_log import (
@@ -164,12 +164,24 @@ async def validate_call_parameters(
             validation_errors.append(f"Lead {validation_request.lead_id} has no phone number")
             recommendations.append("Add a phone number to the lead before calling")
         
-        # 2. Check user calling permissions
-        user_agent_data = await tata_call_service._get_user_agent_data(user_id)
-        user_can_call = user_agent_data.get("can_make_calls", False)
-        user_agent_id = user_agent_data.get("tata_agent_id")
+        # 2. Check user calling permissions using TataUserService
+        # 🔧 FIXED: Use tata_user_service instead of tata_call_service
+        user_mapping = await tata_user_service.get_user_mapping(user_id)
         
-        if not user_can_call:
+        user_can_call = False
+        user_agent_id = None
+        
+        if user_mapping:
+            user_can_call = user_mapping.get("can_make_calls", False)
+            user_agent_id = user_mapping.get("tata_agent_id")
+            
+            # Additional check for caller ID or DID
+            caller_id = user_mapping.get("tata_caller_id") or user_mapping.get("tata_did_number")
+            if not caller_id and user_can_call:
+                validation_errors.append("User has no caller ID configured")
+                recommendations.append("Contact admin to configure caller ID/DID")
+                user_can_call = False
+        else:
             validation_errors.append("User is not synchronized with calling system")
             recommendations.append("Contact admin to set up calling permissions")
         
@@ -177,7 +189,15 @@ async def validate_call_parameters(
             validation_errors.append("No Tata agent ID found for user")
             recommendations.append("Complete Tata system synchronization")
         
-        # 3. Overall validation result
+        # 3. Alternative: Check if user has agent number (from call service)
+        # if user_can_call:
+        #     agent_number = await tata_call_service._get_user_agent_number(user_id)
+        #     if not agent_number:
+        #         validation_errors.append("No agent number configured for calls")
+        #         recommendations.append("Contact admin to configure agent calling number")
+        #         user_can_call = False
+        
+        # 4. Overall validation result
         can_call = len(validation_errors) == 0
         
         if can_call:
@@ -192,7 +212,7 @@ async def validate_call_parameters(
             lead_phone=lead_phone,
             user_can_call=user_can_call,
             user_agent_id=user_agent_id,
-            estimated_setup_time=10 if can_call else 0,
+            estimated_setup_time=0 if can_call else 10,  # 🔧 FIXED: 0 for ready, 10 for setup needed
             recommendations=recommendations
         )
         
@@ -205,7 +225,7 @@ async def validate_call_parameters(
             user_can_call=False,
             recommendations=["Contact support for assistance"]
         )
-
+    
 # ============================================================================
 # 🆕 NEW: PROGRESSIVE DIALER ENDPOINTS
 # ============================================================================
