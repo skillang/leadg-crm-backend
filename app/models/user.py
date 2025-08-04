@@ -168,11 +168,18 @@ class UserResponse(BaseModel):
     assigned_leads: List[str] = Field(default_factory=list)
     total_assigned_leads: int = Field(default=0)
     
-    # Smartflo integration fields
+    # Smartflo integration fields (existing)
     extension_number: Optional[str] = Field(None)
     smartflo_agent_id: Optional[str] = Field(None)
     smartflo_user_id: Optional[str] = Field(None)
     calling_status: CallingStatus = Field(CallingStatus.PENDING)
+    
+    # 🆕 NEW: Additional calling fields for /auth/me endpoint
+    calling_enabled: Optional[bool] = Field(default=False, description="Whether calling is enabled for user")
+    tata_extension: Optional[str] = Field(None, description="TATA extension number")
+    tata_agent_id: Optional[str] = Field(None, description="TATA agent ID")
+    sync_status: Optional[str] = Field(default="unknown", description="TATA sync status")
+    ready_to_call: Optional[bool] = Field(default=False, description="Whether user is ready to make calls")
 
     @validator('department_list', always=True)
     def compute_department_list(cls, v, values):
@@ -180,8 +187,40 @@ class UserResponse(BaseModel):
         departments = values.get('departments', [])
         if isinstance(departments, str):
             return [departments]
-        return departments if departments else []
+        return departments if isinstance(departments, list) else []
 
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "id": "60f1b2a3c4d5e6f7g8h9i0j1",
+                "email": "user@example.com",
+                "username": "johndoe",
+                "first_name": "John",
+                "last_name": "Doe",
+                "role": "user",
+                "is_active": True,
+                "phone": "+1-555-123-4567",
+                "departments": ["sales", "marketing"],
+                "department_list": ["sales", "marketing"],
+                "permissions": {
+                    "can_create_single_lead": True,
+                    "can_create_bulk_leads": False
+                },
+                "created_at": "2025-01-15T10:30:00Z",
+                "last_login": "2025-01-15T15:45:00Z",
+                "assigned_leads": ["LD-1001", "LD-1002"],
+                "total_assigned_leads": 2,
+                "extension_number": "+917965083165",
+                "smartflo_agent_id": "0506197500004",
+                "calling_status": "pending",
+                "calling_enabled": True,
+                "tata_extension": "+917965083165",
+                "tata_agent_id": "0506197500004",
+                "sync_status": "already_synced",
+                "ready_to_call": True
+            }
+        }
+        
 class UserUpdate(BaseModel):
     """User update model"""
     first_name: Optional[str] = None

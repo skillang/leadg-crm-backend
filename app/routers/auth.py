@@ -378,13 +378,24 @@ async def get_current_user_info(
                 department_list = []
                 departments_field = [] if current_user.get("role") == "user" else "admin"
         elif old_department is not None:
-            # Old format - convert old department field
+            # 🔥 FIX: Handle both string and list formats for old_department
             if current_user.get("role") == "admin":
                 departments_field = "admin"  # Admin gets string
                 department_list = ["admin"]
             else:
-                departments_field = [old_department.lower()]  # User gets array
-                department_list = [old_department.lower()]
+                # ✅ FIXED: Check if old_department is string or list
+                if isinstance(old_department, str):
+                    # Single string department
+                    departments_field = [old_department.lower()]
+                    department_list = [old_department.lower()]
+                elif isinstance(old_department, list):
+                    # List of departments - apply .lower() to each string in the list
+                    departments_field = [dept.lower() if isinstance(dept, str) else dept for dept in old_department]
+                    department_list = [dept.lower() if isinstance(dept, str) else dept for dept in old_department]
+                else:
+                    # Fallback if department is neither string nor list
+                    departments_field = []
+                    department_list = []
         else:
             # No department field at all - set defaults
             if current_user.get("role") == "admin":
@@ -394,6 +405,22 @@ async def get_current_user_info(
                 departments_field = []
                 department_list = []
         
+        # 🔥 NEW: Extract calling status information
+        calling_enabled = current_user.get("calling_enabled", False)
+        tata_extension = current_user.get("tata_extension")
+        tata_agent_id = current_user.get("tata_agent_id")  
+        sync_status = current_user.get("tata_sync_status", "unknown")
+        calling_status = current_user.get("calling_status", "pending")
+        
+        # 🔥 FIX: Ensure boolean conversion for ready_to_call
+        ready_to_call = bool(
+            calling_enabled and 
+            sync_status in ["already_synced", "synced"] and
+            tata_extension and 
+            tata_agent_id
+        )
+        
+        # 🔥 FIX: Use explicit parameter names to avoid order issues
         return UserResponse(
             id=str(current_user["_id"]),
             email=current_user["email"],
@@ -401,26 +428,26 @@ async def get_current_user_info(
             first_name=current_user["first_name"],
             last_name=current_user["last_name"],
             role=current_user["role"],
-            is_active=current_user["is_active"],
-            phone=current_user.get("phone"),
+            is_active=current_user.get("is_active", True),
+            phone=current_user.get("phone", ""),
             departments=departments_field,
             department_list=department_list,
-            created_at=current_user["created_at"],
+            permissions=current_user.get("permissions", {}),
+            created_at=current_user.get("created_at"),
             last_login=current_user.get("last_login"),
             assigned_leads=current_user.get("assigned_leads", []),
             total_assigned_leads=current_user.get("total_assigned_leads", 0),
-            
-            # 🆕 NEW: Include Tata calling fields
-            calling_enabled=current_user.get("calling_enabled", False),
-            tata_extension=current_user.get("tata_extension"),
-            tata_agent_id=current_user.get("tata_agent_id"),
-            tata_sync_status=current_user.get("tata_sync_status", "pending"),
-            
-            # Legacy fields (if still needed)
-            extension_number=current_user.get("extension_number"),
-            smartflo_agent_id=current_user.get("smartflo_agent_id"),
-            smartflo_user_id=current_user.get("smartflo_user_id"),
-            calling_status=current_user.get("calling_status", "pending")
+            # Existing calling fields
+            extension_number=tata_extension,
+            smartflo_agent_id=tata_agent_id,
+            smartflo_user_id=current_user.get("tata_user_id"),
+            calling_status=calling_status,
+            # 🆕 NEW: Additional calling fields with explicit names
+            calling_enabled=calling_enabled,
+            tata_extension=tata_extension,
+            tata_agent_id=tata_agent_id,
+            sync_status=sync_status,
+            ready_to_call=ready_to_call
         )
         
     except Exception as e:
