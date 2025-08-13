@@ -5,6 +5,8 @@ from typing import Dict, Any
 import logging
 from bson import ObjectId
 
+from app.services.communication_service import CommunicationService
+
 from ..config.database import get_database
 from ..services.zepto_client import zepto_client
 
@@ -191,6 +193,11 @@ class EmailSchedulerService:
                 # Single lead activity
                 lead_id = email_doc.get("lead_id")
                 if lead_id:
+                    if success:
+                        await CommunicationService.log_email_communication(
+                            lead_id=lead_id,
+                            template_key=email_doc.get("template_key")
+                        )
                     activity = {
                         "_id": ObjectId(),
                         "lead_id": lead_id,
@@ -213,6 +220,11 @@ class EmailSchedulerService:
                 # Bulk email activities
                 lead_ids = email_doc.get("lead_ids", [])
                 for lead_id in lead_ids:
+                    if success:
+                        await CommunicationService.log_email_communication(
+                            lead_id=lead_id,
+                            template_key=email_doc.get("template_key")
+                        )
                     activity = {
                         "_id": ObjectId(),
                         "lead_id": lead_id,

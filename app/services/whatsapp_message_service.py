@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 from bson import ObjectId
 import httpx
 
+from app.services.communication_service import CommunicationService
+
 from ..config.database import get_database
 from ..config.settings import settings
 from ..models.whatsapp_message import (
@@ -285,7 +287,8 @@ class WhatsAppMessageService:
                 increment_total=True,
                 increment_unread=True
             )
-            
+            await CommunicationService.log_whatsapp_communication(lead["lead_id"])
+
             # Log activity in lead timeline
             await self._log_whatsapp_activity(
                 lead["lead_id"],
@@ -701,7 +704,8 @@ class WhatsAppMessageService:
             
             update_fields = {
                 "last_whatsapp_activity": datetime.utcnow(),
-                "last_whatsapp_message": message_content[:200]  # Preview
+                "last_whatsapp_message": message_content[:200],  # Preview,
+                "last_contacted": datetime.utcnow()
             }
             
             if increment_total:

@@ -6,6 +6,7 @@ import logging
 import asyncio
 
 from ..config.database import get_database
+from app.services.communication_service import CommunicationService
 from ..config.settings import settings
 from ..models.email import (
     EmailRequest, BulkEmailRequest, EmailResponse, 
@@ -521,6 +522,14 @@ class EmailService:
                 # Single lead activity
                 lead_id = email_doc.lead_id
                 recipient = email_doc.recipients[0]
+
+                # Update last_contacted if email was successful
+                if send_result["success"]:
+                    await CommunicationService.log_email_communication(
+                        lead_id=lead_id,
+                        email_subject=email_doc.template_key,
+                        template_key=email_doc.template_key
+                    )
                 
                 activity = {
                     "_id": ObjectId(),
@@ -544,6 +553,11 @@ class EmailService:
             else:
                 # Bulk email activities (one per lead)
                 for lead_id in email_doc.lead_ids:
+                    if send_result["success"]:
+                        await CommunicationService.log_email_communication(
+                            lead_id=lead_id,
+                            template_key=email_doc.template_key
+                        )
                     activity = {
                         "_id": ObjectId(),
                         "lead_id": lead_id,

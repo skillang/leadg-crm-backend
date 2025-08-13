@@ -9,7 +9,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, Tuple, List
 from bson import ObjectId
-
+from app.services.communication_service import CommunicationService
 from ..config.database import get_database
 from ..config.settings import get_settings
 from ..models.call_log import (
@@ -471,6 +471,13 @@ class TataCallService:
             db = self._get_db()
             if db is None:
                 return
+            
+            if activity_type in ["call_initiated", "call_completed", "call_connected"]:
+                await CommunicationService.log_phone_communication(
+                    lead_id=lead_id,
+                    call_duration=metadata.get("call_duration") if metadata else None,
+                    call_status=metadata.get("call_status") if metadata else None
+                )
             
             activity = {
                 "_id": ObjectId(),

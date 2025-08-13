@@ -6,6 +6,7 @@ from typing import Optional, Dict, List, Any
 import httpx
 import logging
 from datetime import datetime
+from app.services.communication_service import CommunicationService
 from ..utils.dependencies import get_current_user
 from ..config.settings import settings
 from ..config.database import get_database
@@ -660,13 +661,15 @@ async def store_outgoing_message(
             {
                 "$set": {
                     "last_whatsapp_activity": datetime.utcnow(),
-                    "last_whatsapp_message": message_content[:100]
+                    "last_whatsapp_message": message_content[:100],
+                    "last_contacted": datetime.utcnow()  # Add this line
                 },
                 "$inc": {
                     "whatsapp_message_count": 1
                 }
             }
         )
+        await CommunicationService.log_whatsapp_communication(lead.get("lead_id"))
         
         logger.info(f"✅ Stored outgoing message for lead {lead.get('lead_id')}")
         
