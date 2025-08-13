@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from typing import List, Dict, Any
 import logging
 
+from app.decorators.timezone_decorator import convert_dates_to_ist
+
 from ..models.lead_category import LeadCategoryCreate, LeadCategoryUpdate, LeadCategoryResponse
 from ..services.lead_category_service import lead_category_service
 from ..utils.dependencies import get_current_active_user, get_admin_user
@@ -89,6 +91,7 @@ async def update_lead_category(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.get("/dropdown")
+@convert_dates_to_ist()
 async def get_categories_for_dropdown(
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):

@@ -5,9 +5,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta, date
 import logging
 from bson import ObjectId
-
-
-
+from app.decorators.timezone_decorator import convert_lead_dates, convert_dates_to_ist
 from ..services.user_lead_array_service import user_lead_array_service
 from ..services.lead_assignment_service import lead_assignment_service
 from app.services import lead_category_service
@@ -851,6 +849,7 @@ def get_field_change_description(field_name: str, old_value: any, new_value: any
 # ============================================================================
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
+@convert_lead_dates()
 async def create_lead(
     lead_data: dict,
     force_create: bool = Query(False, description="Create lead even if duplicates exist"),
@@ -1047,6 +1046,7 @@ async def create_lead(
         )
 
 @router.get("/", response_model=LeadListResponse)
+@convert_lead_dates()  # <-- ADD THIS LINE
 async def get_leads(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
@@ -1185,6 +1185,7 @@ async def get_leads(
 
 
 @router.get("/my-leads", response_model=LeadListResponse)
+@convert_lead_dates()
 async def get_my_leads(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
@@ -1307,6 +1308,7 @@ async def get_my_leads(
         )
 
 @router.get("/stats", response_model=LeadStatsResponse)
+@convert_dates_to_ist()
 async def get_lead_stats(
     # 🆕 NEW: Include multi-assignment stats
     include_multi_assignment_stats: bool = Query(True, description="Include multi-assignment statistics"),
@@ -1409,6 +1411,7 @@ async def get_lead_stats(
         )
 
 @router.get("/{lead_id}")
+@convert_lead_dates()
 async def get_lead(
     lead_id: str,
     current_user: Dict[str, Any] = Depends(get_current_active_user)
@@ -1982,6 +1985,7 @@ async def bulk_create_leads(
 # ============================================================================
 
 @router.get("/my-leads-fast")
+@convert_lead_dates()
 async def get_my_leads_fast(
     # 🆕 NEW: Include co-assignments in fast lookup
     include_co_assignments: bool = Query(True, description="Include leads where I'm a co-assignee"),

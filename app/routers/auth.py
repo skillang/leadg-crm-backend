@@ -8,6 +8,8 @@ import logging
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase as Database
 
+from app.decorators.timezone_decorator import convert_user_dates
+
 # 🔧 FIX: Setup logging FIRST before using logger anywhere
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -354,6 +356,7 @@ async def logout_user(
         )
 
 @router.get("/me", response_model=UserResponse)
+@convert_user_dates()
 async def get_current_user_info(
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):
@@ -554,6 +557,7 @@ async def create_emergency_admin(user_data: UserCreate):
         )
 
 @router.get("/debug-admin-users")
+@convert_user_dates()
 async def debug_admin_users():
     """
     🔍 TEMPORARY DIAGNOSTIC: Show existing admin users (emails only for security)
@@ -1202,6 +1206,7 @@ async def update_user_departments(
         )
 
 @router.get("/departments/{department_name}/users", response_model=Dict[str, Any])
+@convert_user_dates()
 async def get_department_users(
     department_name: str,
     current_user: Dict[str, Any] = Depends(get_admin_user)  # Admin only

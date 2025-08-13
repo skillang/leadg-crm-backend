@@ -5,6 +5,8 @@ from datetime import datetime
 import logging
 from bson import ObjectId
 
+from app.decorators.timezone_decorator import convert_dates_to_ist
+
 from ..config.database import get_database
 from ..utils.dependencies import get_current_active_user, get_admin_user
 from ..models.note import (
@@ -97,6 +99,7 @@ async def create_note(
         )
 
 @router.get("/leads/{lead_id}/notes", response_model=NoteListResponse)
+@convert_dates_to_ist()
 async def get_lead_notes(
     lead_id: str,
     page: int = Query(1, ge=1),
@@ -160,6 +163,7 @@ async def get_lead_notes(
         )
 
 @router.get("/leads/{lead_id}/notes/stats", response_model=NoteStatsResponse)
+@convert_dates_to_ist()
 async def get_lead_note_stats(
     lead_id: str,
     current_user: Dict[str, Any] = Depends(get_current_active_user)
@@ -205,6 +209,7 @@ async def get_lead_note_stats(
         )
 
 @router.get("/{note_id}")
+@convert_dates_to_ist()
 async def get_note(
     note_id: str,
     current_user: Dict[str, Any] = Depends(get_current_active_user)

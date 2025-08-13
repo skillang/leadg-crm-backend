@@ -5,6 +5,7 @@ import logging
 from datetime import datetime
 
 # Fixed imports - only import what exists
+from app.decorators.timezone_decorator import convert_dates_to_ist
 from app.models.contact import (
     ContactCreate, 
     ContactUpdate, 
@@ -52,6 +53,7 @@ async def create_contact(
         )
 
 @router.get("/leads/{lead_id}/contacts")
+@convert_dates_to_ist()
 async def get_lead_contacts(
     lead_id: str,
     current_user: Dict[str, Any] = Depends(get_current_user)
@@ -103,6 +105,7 @@ async def set_primary_contact(
         )
 
 @router.get("/{contact_id}")
+@convert_dates_to_ist()
 async def get_contact(
     contact_id: str,
     current_user: Dict[str, Any] = Depends(get_current_user)
@@ -185,6 +188,7 @@ async def delete_contact(
 # =====================================================================
 
 @router.get("/debug/test")
+@convert_dates_to_ist()
 async def debug_test():
     """
     Debug endpoint to test contact service availability and database connectivity.
@@ -206,6 +210,7 @@ async def debug_test():
         }
 
 @router.get("/debug/test-method")
+@convert_dates_to_ist()
 async def test_contact_method():
     """
     Debug endpoint to test method existence.
@@ -231,6 +236,7 @@ async def test_contact_method():
 # =====================================================================
 
 @router.get("/health")
+@convert_dates_to_ist()
 async def health_check():
     """
     Simple health check endpoint for monitoring.
@@ -259,6 +265,7 @@ async def health_check():
 # =====================================================================
 
 @router.get("/stats")
+@convert_dates_to_ist()
 async def get_contact_statistics(
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):

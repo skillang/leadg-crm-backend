@@ -2,6 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
+from app.decorators.timezone_decorator import convert_activity_dates, convert_dates_to_ist
 from app.utils.dependencies import get_current_user
 from app.config.database import get_database
 from bson import ObjectId
@@ -114,6 +115,7 @@ async def get_activity_types_for_lead(db, lead_id: str):
         return []
 
 @router.get("/leads/{lead_id}")
+@convert_dates_to_ist(['timestamp', 'created_at', 'updated_at'])
 async def get_lead_timeline(
     lead_id: str,
     current_user: dict = Depends(get_current_user),
@@ -171,8 +173,12 @@ async def get_lead_timeline(
         # Get activities with sorting (newest first)
         activities = []
         async for activity in db.lead_activities.find(query).sort("created_at", -1).skip(skip).limit(limit):
-            formatted_activity = format_timeline_activity(activity)
-            activities.append(formatted_activity)
+            # Don't format dates manually - let decorator handle it
+            clean_activity = convert_objectid_to_str(activity)
+            # Add timestamp field if it doesn't exist (use created_at)
+            if 'timestamp' not in clean_activity and 'created_at' in clean_activity:
+                clean_activity['timestamp'] = clean_activity['created_at']
+            activities.append(clean_activity)
         
         return {
             "success": True,
@@ -205,6 +211,7 @@ async def get_lead_timeline(
         raise HTTPException(status_code=500, detail=f"Timeline fetch failed: {str(e)}")
 
 @router.get("/leads/{lead_id}/stats")
+@convert_activity_dates()
 async def get_timeline_stats(
     lead_id: str,
     current_user: dict = Depends(get_current_user),
@@ -279,6 +286,7 @@ async def get_timeline_stats(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/activity-types")
+@convert_dates_to_ist()
 async def get_timeline_activity_types():
     """
     Get available activity types for timeline filtering
@@ -312,7 +320,8 @@ def format_timeline_activity(activity: dict) -> dict:
         "description": activity["description"],
         "created_by_name": activity.get("created_by_name", "Unknown User"),
         "created_by_id": str(activity["created_by"]) if activity.get("created_by") else None,
-        "created_at": created_at.isoformat(),
+        "timestamp": created_at,  # ← Let the decorator handle this
+        "created_at": created_at,  # ← Let the decorator handle this
         "date_display": format_date_display(created_at),
         "time_display": format_time_display(created_at),
         "is_system_generated": activity.get("is_system_generated", True),

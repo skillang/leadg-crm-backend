@@ -8,6 +8,8 @@ import logging
 from datetime import datetime
 from bson import ObjectId
 
+from app.decorators.timezone_decorator import convert_dates_to_ist
+
 # 🔧 FIX: Setup logging FIRST before using logger anywhere
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -1008,6 +1010,7 @@ async def get_my_active_calls(
 # ============================================================================
 
 @router.get("/admin/all-active-calls")
+@convert_dates_to_ist()
 async def get_all_active_calls(
     current_user: dict = Depends(get_admin_user)  # Admin only
 ):

@@ -3,6 +3,8 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from typing import List, Dict, Any
 import logging
+
+from app.decorators.timezone_decorator import convert_dates_to_ist
 from ..config.database import get_database
 from bson import ObjectId
 from datetime import datetime
@@ -19,6 +21,7 @@ router = APIRouter(tags=["sources"])
 # ============================================================================
 
 @router.get("/", response_model=SourceListResponse)
+@convert_dates_to_ist()
 async def get_all_sources(
     include_lead_count: bool = Query(False, description="Include lead count for each source"),
     active_only: bool = Query(True, description="Only return active sources"),
@@ -57,6 +60,7 @@ async def get_all_sources(
         )
 
 @router.get("/suggestions", response_model=Dict[str, Any])
+@convert_dates_to_ist()
 async def get_source_suggestions(
     partial_name: str = Query("", description="Partial name to filter suggestions"),
     current_user: Dict[str, Any] = Depends(get_admin_user)
@@ -200,6 +204,7 @@ async def get_active_sources(
         )
 
 @router.get("/{source_id}", response_model=SourceResponse)
+@convert_dates_to_ist()
 async def get_source_by_id(
     source_id: str,
     current_user: Dict[str, Any] = Depends(get_current_active_user)

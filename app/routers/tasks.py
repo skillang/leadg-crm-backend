@@ -5,6 +5,8 @@ from datetime import datetime, timedelta
 import logging
 from bson import ObjectId
 
+from app.decorators.timezone_decorator import convert_dates_to_ist, convert_task_dates
+
 from ..config.database import get_database
 from ..utils.dependencies import get_current_active_user, get_admin_user
 from ..models.task import (
@@ -105,6 +107,7 @@ async def create_task(
         )
 
 @router.get("/leads/{lead_id}/tasks", response_model=TaskListResponse)
+@convert_task_dates()
 async def get_lead_tasks(
     lead_id: str,
     status_filter: Optional[str] = Query(None, description="Filter by status: pending, overdue, due_today, completed, all"),
@@ -153,6 +156,7 @@ async def get_lead_tasks(
         )
 
 @router.get("/leads/{lead_id}/tasks/stats", response_model=TaskStatsResponse)
+@convert_dates_to_ist()
 async def get_lead_task_stats(
     lead_id: str,
     current_user: Dict[str, Any] = Depends(get_current_active_user)
@@ -198,6 +202,7 @@ async def get_lead_task_stats(
         )
 
 @router.get("/{task_id}")
+@convert_task_dates()
 async def get_task(
     task_id: str,
     current_user: Dict[str, Any] = Depends(get_current_active_user)
@@ -414,6 +419,7 @@ async def delete_task(
         )
 
 @router.get("/my-tasks", response_model=TaskListResponse)
+@convert_task_dates()
 async def get_my_tasks(
     status_filter: Optional[str] = Query(None, description="Filter by status: pending, overdue, due_today, completed, all"),
     current_user: Dict[str, Any] = Depends(get_current_active_user)
@@ -454,6 +460,7 @@ async def get_my_tasks(
         )
 
 @router.get("/tasks/assignable-users")
+@convert_dates_to_ist()
 async def get_assignable_users_for_tasks(
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):

@@ -7,6 +7,7 @@ from bson import ObjectId
 import io
 import logging
 
+from app.decorators.timezone_decorator import convert_dates_to_ist
 from app.services.document_service import DocumentService
 from app.models.document import (
     DocumentCreate, DocumentResponse, DocumentListResponse, 
@@ -27,16 +28,19 @@ def get_document_service() -> DocumentService:
 # =====================================
 
 @router.get("/types/list")
+@convert_dates_to_ist()
 async def get_document_types():
     """Get list of available document types for frontend dropdowns"""
     return {"document_types": [{"value": dt.value, "label": dt.value} for dt in DocumentType]}
 
 @router.get("/status/list") 
+@convert_dates_to_ist()
 async def get_document_statuses():
     """Get list of available document statuses for frontend filters"""
     return {"statuses": [{"value": ds.value, "label": ds.value} for ds in DocumentStatus]}
 
 @router.get("/debug/test")
+@convert_dates_to_ist()
 async def debug_test():
     """Test endpoint to verify router is working"""
     return {"message": "Document router is working!", "timestamp": datetime.utcnow()}
