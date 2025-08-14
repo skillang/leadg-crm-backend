@@ -1,4 +1,4 @@
-# app/config/settings.py - Updated with Email (ZeptoMail) and Tata Tele configuration
+# app/config/settings.py - Updated with Email (ZeptoMail), Tata Tele, and Skillang Integration configuration
 from pydantic_settings import BaseSettings
 from typing import List
 import secrets
@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     email_rate_limit: int = 100
     min_schedule_minutes: int = 5
     max_schedule_days: int = 30
+
+    # 🆕 SKILLANG INTEGRATION SETTINGS
+    skillang_integration_enabled: bool = True
+    skillang_api_key: str = "skillang-secure-api-key-2024"
+    system_user_email: str = "system@skillang.com"
+    skillang_frontend_domain: str = "https://skillang.com"
 
     # 🆕 NEW: Tata Tele Integration Settings
     tata_api_base_url: str = "https://api-smartflo.tatateleservices.com"
@@ -164,6 +170,16 @@ class Settings(BaseSettings):
             self.min_schedule_minutes = int(os.getenv("MIN_SCHEDULE_MINUTES"))
         if os.getenv("MAX_SCHEDULE_DAYS"):
             self.max_schedule_days = int(os.getenv("MAX_SCHEDULE_DAYS"))
+
+        # 🆕 SKILLANG INTEGRATION ENVIRONMENT VARIABLES
+        if os.getenv("SKILLANG_INTEGRATION_ENABLED"):
+            self.skillang_integration_enabled = os.getenv("SKILLANG_INTEGRATION_ENABLED").lower() == "true"
+        if os.getenv("SKILLANG_API_KEY"):
+            self.skillang_api_key = os.getenv("SKILLANG_API_KEY")
+        if os.getenv("SYSTEM_USER_EMAIL"):
+            self.system_user_email = os.getenv("SYSTEM_USER_EMAIL")
+        if os.getenv("SKILLANG_FRONTEND_DOMAIN"):
+            self.skillang_frontend_domain = os.getenv("SKILLANG_FRONTEND_DOMAIN")
         
         # 🆕 NEW: TATA TELE ENVIRONMENT VARIABLES
         if os.getenv("TATA_API_BASE_URL"):
@@ -296,6 +312,20 @@ class Settings(BaseSettings):
             "rate_limit": self.email_rate_limit,
             "min_schedule_minutes": self.min_schedule_minutes,
             "max_schedule_days": self.max_schedule_days
+        }
+
+    # 🆕 NEW: Skillang integration configuration helper
+    def is_skillang_configured(self) -> bool:
+        """Check if Skillang integration is properly configured"""
+        return bool(self.skillang_integration_enabled) and bool(self.skillang_api_key)
+
+    def get_skillang_config(self) -> dict:
+        """Get Skillang configuration dictionary"""
+        return {
+            "integration_enabled": self.skillang_integration_enabled,
+            "api_key": self.skillang_api_key,
+            "system_user_email": self.system_user_email,
+            "frontend_domain": self.skillang_frontend_domain
         }
     
     # 🆕 NEW: Tata Tele configuration helper

@@ -1,4 +1,4 @@
-# app/main.py - Updated with Real-time WhatsApp Support
+# app/main.py - Updated with Real-time WhatsApp Support and Skillang Integration
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,8 +10,9 @@ from .config.settings import settings
 # 🔧 FIX: Import the correct scheduler functions
 from app.utils.whatsapp_scheduler import start_whatsapp_scheduler, stop_whatsapp_scheduler
 from .config.database import connect_to_mongo, close_mongo_connection
-from .routers import auth, leads, tasks, notes, documents, timeline, contacts, lead_categories, stages, statuses, course_levels, sources, whatsapp, emails, permissions, tata_auth, tata_calls, call_logs, tata_users ,bulk_whatsapp ,realtime, notifications
+from .routers import auth, leads, tasks, notes, documents, timeline, contacts, lead_categories, stages, statuses, course_levels, sources, whatsapp, emails, permissions, tata_auth, tata_calls, call_logs, tata_users ,bulk_whatsapp ,realtime, notifications, integrations
 # 🆕 NEW: Import realtime router for SSE functionality
+# 🆕 NEW: Import integrations router for Skillang integration
 
 
 logging.basicConfig(
@@ -50,6 +51,10 @@ async def lifespan(app: FastAPI):
     # 🆕 NEW: Start email scheduler
     await start_email_scheduler()
     logger.info("✅ Email scheduler started")
+    
+    # 🆕 NEW: Check Skillang integration configuration
+    await check_skillang_integration()
+    logger.info("✅ Skillang integration configuration checked")
     
     # 🔧 FIX: Start WhatsApp scheduler PROPERLY
     try:
@@ -195,6 +200,23 @@ async def check_email_configuration():
     except Exception as e:
         logger.warning(f"Error checking email configuration: {e}")
 
+# 🆕 NEW: Check Skillang integration configuration function
+async def check_skillang_integration():
+    """Check Skillang integration configuration on startup"""
+    try:
+        if settings.is_skillang_configured():
+            skillang_config = settings.get_skillang_config()
+            logger.info("🔗 Skillang integration configuration found")
+            logger.info(f"   Frontend domain: {skillang_config['frontend_domain']}")
+            logger.info(f"   System user: {skillang_config['system_user_email']}")
+            logger.info("🚀 Skillang form integration enabled")
+        else:
+            logger.warning("🔗 Skillang integration not configured - integration disabled")
+            logger.info("   To enable: Set SKILLANG_INTEGRATION_ENABLED and SKILLANG_API_KEY in .env")
+            
+    except Exception as e:
+        logger.warning(f"Error checking Skillang integration configuration: {e}")
+
 # 🆕 NEW: Initialize user permissions function
 async def initialize_user_permissions():
     """Initialize default permissions for existing users who don't have permissions field"""
@@ -278,16 +300,16 @@ async def cleanup_realtime_connections():
 app = FastAPI(
     title=settings.app_name,
     version=settings.version,
-    description="LeadG CRM - Customer Relationship Management API with Real-time WhatsApp, Email Functionality and Granular Permissions",
+    description="LeadG CRM - Customer Relationship Management API with Real-time WhatsApp, Email Functionality, Granular Permissions and Skillang Integration",
     lifespan=lifespan,
     docs_url="/docs" if settings.debug else None,
     redoc_url="/redoc" if settings.debug else None,
 )
 
-# Add CORS middleware for frontend communication
+# 🆕 UPDATED: Add CORS middleware with Skillang domain support
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.get_allowed_origins(),
+    allow_origins=settings.get_allowed_origins() + [settings.skillang_frontend_domain],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["*"],
@@ -316,17 +338,17 @@ async def add_process_time_header(request: Request, call_next):
         logger.error(f"Request failed: {request.method} {request.url} - Error: {str(e)}", exc_info=True)
         raise
 
-# 🔄 UPDATED: Health check with real-time module
+# 🔄 UPDATED: Health check with Skillang integration module
 @app.get("/health")
 async def health_check():
     return {
         "status": "healthy",
         "message": "LeadG CRM API is running",
         "version": settings.version,
-        "modules": ["auth", "leads", "tasks", "notes", "documents", "timeline", "contacts", "stages", "statuses", "course-levels", "sources", "whatsapp", "realtime", "emails", "permissions","tata-auth", "tata-calls", "call-logs", "tata-users", "bulk-whatsapp"]
+        "modules": ["auth", "leads", "tasks", "notes", "documents", "timeline", "contacts", "stages", "statuses", "course-levels", "sources", "whatsapp", "realtime", "emails", "permissions","tata-auth", "tata-calls", "call-logs", "tata-users", "bulk-whatsapp", "integrations"]
     }
 
-# 🔄 UPDATED: Root endpoint with real-time endpoints
+# 🔄 UPDATED: Root endpoint with integrations endpoint
 @app.get("/")
 async def root():
     return {
@@ -351,6 +373,7 @@ async def root():
             "emails": "/emails",
             "permissions": "/permissions",
             "bulk-whatsapp": "/bulk-whatsapp",
+            "integrations": "/integrations",
             "health": "/health"
         }
     }
@@ -489,11 +512,19 @@ app.include_router(
     prefix="/bulk-whatsapp", 
     tags=["bulk-whatsapp"]
 )
+
 app.include_router(
     notifications.router,
     prefix="/notifications", 
     tags=["Notifications"]
 )  # ✅ Add this line
+
+# 🆕 NEW: Add integrations router for Skillang integration
+app.include_router(
+    integrations.router,
+    prefix="/integrations",
+    tags=["Integrations"]
+)
 
 if __name__ == "__main__":
     import uvicorn
