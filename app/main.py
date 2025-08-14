@@ -1,4 +1,4 @@
-# app/main.py - Updated with WhatsApp scheduler startup fix
+# app/main.py - Updated with Real-time WhatsApp Support
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,7 +10,9 @@ from .config.settings import settings
 # 🔧 FIX: Import the correct scheduler functions
 from app.utils.whatsapp_scheduler import start_whatsapp_scheduler, stop_whatsapp_scheduler
 from .config.database import connect_to_mongo, close_mongo_connection
-from .routers import auth, leads, tasks, notes, documents, timeline, contacts, lead_categories, stages, statuses, course_levels, sources, whatsapp, emails, permissions, tata_auth, tata_calls, call_logs, tata_users ,bulk_whatsapp
+from .routers import auth, leads, tasks, notes, documents, timeline, contacts, lead_categories, stages, statuses, course_levels, sources, whatsapp, emails, permissions, tata_auth, tata_calls, call_logs, tata_users ,bulk_whatsapp ,realtime, notifications
+# 🆕 NEW: Import realtime router for SSE functionality
+
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -62,6 +64,10 @@ async def lifespan(app: FastAPI):
     await initialize_user_permissions()
     logger.info("✅ User permissions initialized")
     
+    # 🆕 NEW: Initialize real-time WhatsApp service integration
+    await initialize_realtime_whatsapp_service()
+    logger.info("✅ Real-time WhatsApp service initialized")
+    
     logger.info("✅ Application startup complete")
     
     yield
@@ -75,6 +81,10 @@ async def lifespan(app: FastAPI):
         logger.info("✅ WhatsApp scheduler stopped")
     except Exception as e:
         logger.error(f"❌ Error stopping WhatsApp scheduler: {e}")
+    
+    # 🆕 NEW: Cleanup real-time connections
+    await cleanup_realtime_connections()
+    logger.info("✅ Real-time connections cleaned up")
     
     await close_mongo_connection()
     logger.info("✅ Application shutdown complete")
@@ -223,11 +233,52 @@ async def initialize_user_permissions():
     except Exception as e:
         logger.warning(f"Error initializing user permissions: {e}")
 
+# 🆕 NEW: Initialize real-time WhatsApp service integration
+async def initialize_realtime_whatsapp_service():
+    """Initialize real-time WhatsApp service with dependency injection"""
+    try:
+        # Import real-time manager and WhatsApp service
+        from .services.realtime_service import realtime_manager
+        from .services.whatsapp_message_service import whatsapp_message_service
+        
+        # Inject real-time manager into WhatsApp service
+        whatsapp_message_service.set_realtime_manager(realtime_manager)
+        
+        logger.info("🔗 Real-time manager injected into WhatsApp service")
+        logger.info("📱 Real-time WhatsApp notifications enabled")
+        
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to initialize real-time WhatsApp service: {e}")
+        logger.info("📱 WhatsApp will work without real-time notifications")
+
+# 🆕 NEW: Cleanup real-time connections on shutdown
+async def cleanup_realtime_connections():
+    """Cleanup all real-time connections on application shutdown"""
+    try:
+        from .services.realtime_service import realtime_manager
+        
+        # Get total active connections before cleanup
+        total_connections = sum(len(connections) for connections in realtime_manager.user_connections.values())
+        
+        if total_connections > 0:
+            logger.info(f"🧹 Cleaning up {total_connections} active real-time connections")
+            
+            # Clear all connections
+            realtime_manager.user_connections.clear()
+            realtime_manager.user_unread_leads.clear()
+            
+            logger.info("✅ All real-time connections cleaned up")
+        else:
+            logger.info("🧹 No active real-time connections to cleanup")
+            
+    except Exception as e:
+        logger.warning(f"⚠️ Error during real-time connections cleanup: {e}")
+
 # Create FastAPI application
 app = FastAPI(
     title=settings.app_name,
     version=settings.version,
-    description="LeadG CRM - Customer Relationship Management API with Email Functionality and Granular Permissions",
+    description="LeadG CRM - Customer Relationship Management API with Real-time WhatsApp, Email Functionality and Granular Permissions",
     lifespan=lifespan,
     docs_url="/docs" if settings.debug else None,
     redoc_url="/redoc" if settings.debug else None,
@@ -265,17 +316,17 @@ async def add_process_time_header(request: Request, call_next):
         logger.error(f"Request failed: {request.method} {request.url} - Error: {str(e)}", exc_info=True)
         raise
 
-# 🔄 UPDATED: Health check with permissions module
+# 🔄 UPDATED: Health check with real-time module
 @app.get("/health")
 async def health_check():
     return {
         "status": "healthy",
         "message": "LeadG CRM API is running",
         "version": settings.version,
-        "modules": ["auth", "leads", "tasks", "notes", "documents", "timeline", "contacts", "stages", "statuses", "course-levels", "sources", "whatsapp", "emails", "permissions","tata-auth", "tata-calls", "call-logs", "tata-users", "bulk-whatsapp"]
+        "modules": ["auth", "leads", "tasks", "notes", "documents", "timeline", "contacts", "stages", "statuses", "course-levels", "sources", "whatsapp", "realtime", "emails", "permissions","tata-auth", "tata-calls", "call-logs", "tata-users", "bulk-whatsapp"]
     }
 
-# 🔄 UPDATED: Root endpoint with permissions endpoints
+# 🔄 UPDATED: Root endpoint with real-time endpoints
 @app.get("/")
 async def root():
     return {
@@ -296,6 +347,7 @@ async def root():
             "sources": "/sources",
             "lead-categories": "/lead-categories",
             "whatsapp": "/whatsapp",
+            "realtime": "/realtime",
             "emails": "/emails",
             "permissions": "/permissions",
             "bulk-whatsapp": "/bulk-whatsapp",
@@ -386,6 +438,13 @@ app.include_router(
     tags=["WhatsApp"]
 )
 
+# 🆕 NEW: Add real-time router for SSE functionality
+app.include_router(
+    realtime.router,
+    prefix="/realtime",
+    tags=["Real-time Notifications"]
+)
+
 # Add emails router
 app.include_router(
     emails.router,
@@ -430,6 +489,11 @@ app.include_router(
     prefix="/bulk-whatsapp", 
     tags=["bulk-whatsapp"]
 )
+app.include_router(
+    notifications.router,
+    prefix="/notifications", 
+    tags=["Notifications"]
+)  # ✅ Add this line
 
 if __name__ == "__main__":
     import uvicorn

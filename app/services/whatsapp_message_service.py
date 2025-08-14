@@ -1,4 +1,4 @@
-# app/services/whatsapp_message_service.py - WhatsApp Message Business Logic Service
+# app/services/whatsapp_message_service.py - FIXED IMPORTS
 
 import logging
 from typing import Dict, Any, List, Optional, Tuple
@@ -10,17 +10,27 @@ from app.services.communication_service import CommunicationService
 
 from ..config.database import get_database
 from ..config.settings import settings
-from ..models.whatsapp_message import (
-    WhatsAppMessage, WhatsAppMessageCreate, WebhookIncomingMessage,
-    WebhookStatusUpdate, ChatHistoryResponse, ActiveChatsResponse,
-    ActiveChatResponse, WhatsAppMessageResponse, SendMessageResponse,
-    MessageDirection, MessageType, MessageStatus, WhatsAppStatistics
+
+# ✅ FIXED: Use only schemas import (remove the models import)
+from ..schemas.whatsapp_chat import (
+    SendChatMessageRequest, MarkMessagesReadRequest, ChatHistoryRequest,
+    ActiveChatsRequest, WebhookPayloadRequest, WebhookProcessingResponse,
+    ChatHistoryResponse, ActiveChatsResponse, SendMessageResponse,
+    MarkReadResponse, WhatsAppErrorResponse, MessageResponse,
+    ActiveChatItem,  # ✅ Use ActiveChatItem instead of ActiveChatResponse
+    RealtimeNotification, NewMessageNotification
 )
+
+# ✅ Keep these from models for basic types
+from ..models.whatsapp_message import (
+    MessageDirection, MessageType, MessageStatus
+)
+
 
 logger = logging.getLogger(__name__)
 
 class WhatsAppMessageService:
-    """Service class for WhatsApp message operations following LeadG CRM patterns"""
+    """Service class for WhatsApp message operations with real-time capabilities"""
     
     def __init__(self):
         self.whatsapp_config = {
@@ -28,139 +38,20 @@ class WhatsAppMessageService:
             "license_number": settings.whatsapp_license_number,
             "api_key": settings.whatsapp_api_key
         }
+        # Real-time manager will be injected later to avoid circular imports
+        self.realtime_manager = None
+    
+    def set_realtime_manager(self, realtime_manager):
+        """Set real-time manager instance (dependency injection)"""
+        self.realtime_manager = realtime_manager
     
     # ============================================================================
-    # 🆕 BULK MESSAGING METHODS (Missing methods that bulk processor needs)
-    # ============================================================================
-    
-    async def _make_whatsapp_request(self, endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Make authenticated request to WhatsApp API - INTERNAL METHOD"""
-        # Add authentication parameters
-        params.update({
-            "LicenseNumber": self.whatsapp_config["license_number"],
-            "APIKey": self.whatsapp_config["api_key"]
-        })
-        
-        url = f"{self.whatsapp_config['base_url']}/{endpoint}"
-        
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(url, params=params)
-                response.raise_for_status()
-                
-                # Parse response - handle both JSON and text responses
-                try:
-                    return response.json()
-                except:
-                    return {"status": "success", "message": response.text}
-                    
-        except Exception as e:
-            logger.error(f"WhatsApp API request failed: {str(e)}")
-            raise
-    
-    async def send_template_message(
-        self, 
-        contact: str, 
-        template_name: str, 
-        lead_name: str = ""
-    ) -> Dict[str, Any]:
-        """
-        Send template message - PUBLIC METHOD for bulk processor
-        
-        Args:
-            contact: Phone number to send to
-            template_name: Template name to use
-            lead_name: Lead name for personalization
-            
-        Returns:
-            Result dictionary with success status
-        """
-        try:
-            logger.debug(f"Sending template {template_name} to {contact}")
-            
-            # Use the same pattern as your WhatsApp router
-            whatsapp_params = {
-                "Contact": contact,
-                "Template": template_name,
-                "Param": lead_name  # Single parameter (lead name)
-            }
-            
-            # Make API request using internal method
-            result = await self._make_whatsapp_request("sendtemplate.php", whatsapp_params)
-            
-            if result:
-                return {
-                    "success": True,
-                    "message_id": result.get("message_id", f"template_{int(datetime.utcnow().timestamp())}"),
-                    "data": result
-                }
-            else:
-                return {
-                    "success": False,
-                    "error": "Failed to send template message"
-                }
-                
-        except Exception as e:
-            logger.error(f"Error sending template message: {str(e)}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
-    
-    async def send_text_message(
-        self, 
-        contact: str, 
-        message: str
-    ) -> Dict[str, Any]:
-        """
-        Send text message - PUBLIC METHOD for bulk processor
-        
-        Args:
-            contact: Phone number to send to
-            message: Message content to send
-            
-        Returns:
-            Result dictionary with success status
-        """
-        try:
-            logger.debug(f"Sending text message to {contact}")
-            
-            # Use the same pattern as your WhatsApp router
-            whatsapp_params = {
-                "Contact": contact,
-                "Message": message
-            }
-            
-            # Make API request using internal method
-            result = await self._make_whatsapp_request("sendtextmessage.php", whatsapp_params)
-            
-            if result:
-                return {
-                    "success": True,
-                    "message_id": result.get("message_id", f"text_{int(datetime.utcnow().timestamp())}"),
-                    "data": result
-                }
-            else:
-                return {
-                    "success": False,
-                    "error": "Failed to send text message"
-                }
-                
-        except Exception as e:
-            logger.error(f"Error sending text message: {str(e)}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
-    
-    # ============================================================================
-    # WEBHOOK PROCESSING (Core Functionality) - EXISTING CODE
+    # 🆕 ENHANCED WEBHOOK PROCESSING WITH REAL-TIME BROADCASTING
     # ============================================================================
     
     async def process_incoming_webhook(self, webhook_payload: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Process incoming webhook from mydreamstechnology
-        This is the core function that handles incoming messages and status updates
+        ENHANCED: Process incoming webhook with real-time notifications
         """
         try:
             logger.info(f"Processing WhatsApp webhook: {webhook_payload}")
@@ -170,23 +61,26 @@ class WhatsAppMessageService:
             errors = []
             
             # Extract messages and statuses from webhook payload
-            # Note: Adjust this parsing based on actual mydreamstechnology webhook format
             messages = self._extract_messages_from_webhook(webhook_payload)
             statuses = self._extract_statuses_from_webhook(webhook_payload)
             
-            # Process incoming messages
+            # Process incoming messages with real-time broadcasting
             for message_data in messages:
                 try:
                     result = await self._process_single_incoming_message(message_data, webhook_payload)
                     if result["success"]:
                         processed_messages.append(result)
+                        
+                        # 🆕 NEW: Instantly broadcast incoming message notification
+                        if result.get("message") and result["message"]["direction"] == "incoming":
+                            await self._broadcast_incoming_message_notification(result["message"])
                     else:
                         errors.append(result)
                 except Exception as e:
                     logger.error(f"Error processing message {message_data}: {str(e)}")
                     errors.append({"error": str(e), "message_data": message_data})
             
-            # Process status updates
+            # Process status updates (existing logic)
             for status_data in statuses:
                 try:
                     result = await self._process_message_status_update(status_data)
@@ -219,7 +113,9 @@ class WhatsAppMessageService:
             }
     
     async def _process_single_incoming_message(self, message_data: Dict[str, Any], raw_webhook: Dict[str, Any]) -> Dict[str, Any]:
-        """Process a single incoming message and store in database"""
+        """
+        ENHANCED: Process incoming message and return structured data for real-time broadcasting
+        """
         try:
             db = get_database()
             
@@ -280,12 +176,13 @@ class WhatsAppMessageService:
             # Store message in database
             result = await db.whatsapp_messages.insert_one(message_doc)
             
-            # Update lead's WhatsApp activity
+            # Update lead's WhatsApp activity with unread status
             await self._update_lead_whatsapp_activity(
                 lead["lead_id"],
                 content,
                 increment_total=True,
-                increment_unread=True
+                increment_unread=True,
+                set_unread_status=True  # 🆕 NEW: Mark lead as having unread messages
             )
             await CommunicationService.log_whatsapp_communication(lead["lead_id"])
 
@@ -297,12 +194,26 @@ class WhatsAppMessageService:
             
             logger.info(f"Processed incoming message for lead {lead['lead_id']}")
             
+            # 🆕 NEW: Return structured message data for real-time broadcasting
             return {
                 "success": True,
                 "action": "created",
                 "message_id": message_id,
                 "lead_id": lead["lead_id"],
-                "internal_id": str(result.inserted_id)
+                "internal_id": str(result.inserted_id),
+                "message": {  # 🆕 NEW: Structured message data
+                    "id": str(result.inserted_id),
+                    "message_id": message_id,
+                    "lead_id": lead["lead_id"],
+                    "lead_name": lead["name"],
+                    "phone_number": from_number,
+                    "direction": "incoming",
+                    "message_type": self._normalize_message_type(message_type),
+                    "content": content,
+                    "timestamp": timestamp.isoformat(),
+                    "status": MessageStatus.DELIVERED,
+                    "is_read": False
+                }
             }
             
         except Exception as e:
@@ -311,6 +222,379 @@ class WhatsAppMessageService:
                 "success": False,
                 "error": str(e),
                 "message_data": message_data
+            }
+    
+    # ============================================================================
+    # 🆕 NEW: REAL-TIME BROADCASTING METHODS
+    # ============================================================================
+    
+    async def _broadcast_incoming_message_notification(self, message_data: Dict[str, Any]):
+        """
+        🆕 NEW: Instantly broadcast incoming message to authorized users via SSE
+        """
+        try:
+            if not self.realtime_manager:
+                logger.warning("Real-time manager not available, skipping broadcast")
+                return
+            
+            lead_id = message_data["lead_id"]
+            
+            # Get users authorized to see this lead
+            authorized_users = await self._get_authorized_users_for_lead(lead_id)
+            
+            # Create real-time notification
+            notification = {
+                "type": "new_whatsapp_message",
+                "lead_id": lead_id,
+                "lead_name": message_data.get("lead_name"),
+                "message_preview": message_data["content"][:50] + "..." if len(message_data["content"]) > 50 else message_data["content"],
+                "timestamp": message_data["timestamp"],
+                "direction": message_data["direction"],
+                "message_id": message_data["message_id"]
+            }
+            
+            # Instantly notify all authorized users
+            await self.realtime_manager.notify_new_message(lead_id, notification, authorized_users)
+            
+            logger.info(f"🔔 Real-time notification sent to {len(authorized_users)} users for lead {lead_id}")
+            
+        except Exception as e:
+            logger.error(f"Error broadcasting message notification: {str(e)}")
+    
+    async def _get_authorized_users_for_lead(self, lead_id: str) -> List[Dict[str, Any]]:
+        """
+        🆕 NEW: Get users who should be notified about this lead's messages
+        """
+        try:
+            db = get_database()
+            
+            # Get lead details
+            lead = await db.leads.find_one({"lead_id": lead_id})
+            if not lead:
+                return []
+            
+            users_to_notify = []
+            
+            # Add assigned user (if any)
+            if lead.get("assigned_to"):
+                assigned_user = await db.users.find_one({"email": lead["assigned_to"]})
+                if assigned_user:
+                    users_to_notify.append({
+                        "email": assigned_user["email"],
+                        "name": assigned_user.get("name", "Unknown"),
+                        "role": assigned_user.get("role", "user")
+                    })
+            
+            # Add co-assignees (if any)
+            co_assignees = lead.get("co_assignees", [])
+            for co_assignee_email in co_assignees:
+                co_assignee_user = await db.users.find_one({"email": co_assignee_email})
+                if co_assignee_user and co_assignee_user not in users_to_notify:
+                    users_to_notify.append({
+                        "email": co_assignee_user["email"],
+                        "name": co_assignee_user.get("name", "Unknown"),
+                        "role": co_assignee_user.get("role", "user")
+                    })
+            
+            # Add all admin users (they can see all leads)
+            admin_users = await db.users.find({"role": "admin"}).to_list(None)
+            for admin in admin_users:
+                admin_data = {
+                    "email": admin["email"],
+                    "name": admin.get("name", "Unknown"),
+                    "role": admin.get("role", "admin")
+                }
+                if admin_data not in users_to_notify:
+                    users_to_notify.append(admin_data)
+            
+            return users_to_notify
+            
+        except Exception as e:
+            logger.error(f"Error getting authorized users for lead {lead_id}: {str(e)}")
+            return []
+    
+    # ============================================================================
+    # 🆕 ENHANCED: MARK AS READ WITH REAL-TIME UPDATES
+    # ============================================================================
+    
+    async def mark_messages_as_read(
+        self, 
+        lead_id: str, 
+        message_ids: List[str], 
+        current_user: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        ENHANCED: Mark messages as read with real-time icon state updates
+        """
+        try:
+            db = get_database()
+            
+            # Check lead access
+            await self._check_lead_access(lead_id, current_user)
+            
+            # Mark messages as read
+            update_result = await db.whatsapp_messages.update_many(
+                {
+                    "lead_id": lead_id,
+                    "message_id": {"$in": message_ids},
+                    "direction": MessageDirection.INCOMING,
+                    "is_read": False
+                },
+                {
+                    "$set": {
+                        "is_read": True,
+                        "read_at": datetime.utcnow(),
+                        "read_by_user_id": str(current_user.get("_id") or current_user.get("id"))
+                    }
+                }
+            )
+            
+            # Update lead's unread count and status
+            if update_result.modified_count > 0:
+                new_unread_count = await db.whatsapp_messages.count_documents({
+                    "lead_id": lead_id,
+                    "direction": MessageDirection.INCOMING,
+                    "is_read": False
+                })
+                
+                # Update lead with new unread count and status
+                lead_update = {
+                    "unread_whatsapp_count": new_unread_count,
+                    "whatsapp_has_unread": new_unread_count > 0
+                }
+                
+                await db.leads.update_one(
+                    {"lead_id": lead_id},
+                    {"$set": lead_update}
+                )
+                
+                # 🆕 NEW: Broadcast read status update to real-time manager
+                if self.realtime_manager:
+                    await self.realtime_manager.mark_lead_as_read(
+                        current_user["email"], 
+                        lead_id
+                    )
+            
+            return {
+                "success": True,
+                "marked_as_read": update_result.modified_count,
+                "message_ids": message_ids,
+                "new_unread_count": new_unread_count if update_result.modified_count > 0 else 0
+            }
+            
+        except Exception as e:
+            logger.error(f"Error marking messages as read: {str(e)}")
+            raise Exception(f"Failed to mark messages as read: {str(e)}")
+    
+    async def mark_lead_as_read(self, lead_id: str, current_user: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        🆕 NEW: Mark entire lead conversation as read (for modal open auto-read)
+        """
+        try:
+            db = get_database()
+            
+            # Check lead access
+            await self._check_lead_access(lead_id, current_user)
+            
+            # Mark all unread incoming messages as read
+            update_result = await db.whatsapp_messages.update_many(
+                {
+                    "lead_id": lead_id,
+                    "direction": MessageDirection.INCOMING,
+                    "is_read": False
+                },
+                {
+                    "$set": {
+                        "is_read": True,
+                        "read_at": datetime.utcnow(),
+                        "read_by_user_id": str(current_user.get("_id") or current_user.get("id"))
+                    }
+                }
+            )
+            
+            # Update lead status - no unread messages
+            await db.leads.update_one(
+                {"lead_id": lead_id},
+                {
+                    "$set": {
+                        "unread_whatsapp_count": 0,
+                        "whatsapp_has_unread": False
+                    }
+                }
+            )
+            
+            # 🆕 NEW: Broadcast read status to real-time manager
+            if self.realtime_manager:
+                await self.realtime_manager.mark_lead_as_read(
+                    current_user["email"], 
+                    lead_id
+                )
+            
+            return {
+                "success": True,
+                "lead_id": lead_id,
+                "marked_messages": update_result.modified_count,
+                "icon_state": "grey"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error marking lead as read: {str(e)}")
+            raise Exception(f"Failed to mark lead as read: {str(e)}")
+    
+    # ============================================================================
+    # 🆕 ENHANCED: LEAD WHATSAPP ACTIVITY UPDATE
+    # ============================================================================
+    
+    async def _update_lead_whatsapp_activity(
+        self, 
+        lead_id: str, 
+        message_content: str, 
+        increment_total: bool = False,
+        increment_unread: bool = False,
+        set_unread_status: bool = False  # 🆕 NEW parameter
+    ):
+        """
+        ENHANCED: Update lead's WhatsApp activity with unread status management
+        """
+        try:
+            db = get_database()
+            
+            update_fields = {
+                "last_whatsapp_activity": datetime.utcnow(),
+                "last_whatsapp_message": message_content[:200],  # Preview
+                "last_contacted": datetime.utcnow()
+            }
+            
+            # 🆕 NEW: Set unread status for incoming messages
+            if set_unread_status:
+                update_fields["whatsapp_has_unread"] = True
+            
+            if increment_total:
+                update_fields["$inc"] = update_fields.get("$inc", {})
+                update_fields["$inc"]["whatsapp_message_count"] = 1
+            
+            if increment_unread:
+                update_fields["$inc"] = update_fields.get("$inc", {})
+                update_fields["$inc"]["unread_whatsapp_count"] = 1
+            
+            # Separate $set and $inc operations
+            set_fields = {k: v for k, v in update_fields.items() if k != "$inc"}
+            inc_fields = update_fields.get("$inc", {})
+            
+            update_query = {"$set": set_fields}
+            if inc_fields:
+                update_query["$inc"] = inc_fields
+            
+            await db.leads.update_one({"lead_id": lead_id}, update_query)
+            
+        except Exception as e:
+            logger.error(f"Error updating lead WhatsApp activity: {str(e)}")
+    
+    # ============================================================================
+    # EXISTING METHODS (KEEP AS-IS) - Bulk messaging, chat history, etc.
+    # ============================================================================
+    
+    async def _make_whatsapp_request(self, endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Make authenticated request to WhatsApp API - INTERNAL METHOD"""
+        # Add authentication parameters
+        params.update({
+            "LicenseNumber": self.whatsapp_config["license_number"],
+            "APIKey": self.whatsapp_config["api_key"]
+        })
+        
+        url = f"{self.whatsapp_config['base_url']}/{endpoint}"
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url, params=params)
+                response.raise_for_status()
+                
+                # Parse response - handle both JSON and text responses
+                try:
+                    return response.json()
+                except:
+                    return {"status": "success", "message": response.text}
+                    
+        except Exception as e:
+            logger.error(f"WhatsApp API request failed: {str(e)}")
+            raise
+    
+    async def send_template_message(
+        self, 
+        contact: str, 
+        template_name: str, 
+        lead_name: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Send template message - PUBLIC METHOD for bulk processor
+        """
+        try:
+            logger.debug(f"Sending template {template_name} to {contact}")
+            
+            whatsapp_params = {
+                "Contact": contact,
+                "Template": template_name,
+                "Param": lead_name  # Single parameter (lead name)
+            }
+            
+            # Make API request using internal method
+            result = await self._make_whatsapp_request("sendtemplate.php", whatsapp_params)
+            
+            if result:
+                return {
+                    "success": True,
+                    "message_id": result.get("message_id", f"template_{int(datetime.utcnow().timestamp())}"),
+                    "data": result
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": "Failed to send template message"
+                }
+                
+        except Exception as e:
+            logger.error(f"Error sending template message: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    async def send_text_message(
+        self, 
+        contact: str, 
+        message: str
+    ) -> Dict[str, Any]:
+        """
+        Send text message - PUBLIC METHOD for bulk processor
+        """
+        try:
+            logger.debug(f"Sending text message to {contact}")
+            
+            whatsapp_params = {
+                "Contact": contact,
+                "Message": message
+            }
+            
+            # Make API request using internal method
+            result = await self._make_whatsapp_request("sendtextmessage.php", whatsapp_params)
+            
+            if result:
+                return {
+                    "success": True,
+                    "message_id": result.get("message_id", f"text_{int(datetime.utcnow().timestamp())}"),
+                    "data": result
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": "Failed to send text message"
+                }
+                
+        except Exception as e:
+            logger.error(f"Error sending text message: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e)
             }
     
     async def _process_message_status_update(self, status_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -355,11 +639,6 @@ class WhatsAppMessageService:
                 "error": str(e),
                 "status_data": status_data
             }
-    
-    # ============================================================================
-    # CHAT MANAGEMENT (User-Facing Functions) - EXISTING CODE
-    # ============================================================================
-    
     async def get_chat_history(
         self, 
         lead_id: str, 
@@ -384,10 +663,10 @@ class WhatsAppMessageService:
             # Convert to response format
             formatted_messages = []
             for msg in messages:
-                formatted_messages.append(WhatsAppMessageResponse(
+                # ✅ FIXED: Use MessageResponse instead of WhatsAppMessageResponse
+                formatted_messages.append(MessageResponse(
                     id=str(msg["_id"]),
                     message_id=msg["message_id"],
-                    lead_id=msg["lead_id"],
                     direction=msg["direction"],
                     message_type=msg["message_type"],
                     content=msg["content"],
@@ -420,20 +699,19 @@ class WhatsAppMessageService:
                 total_messages=total_messages,
                 unread_count=unread_count,
                 last_activity=last_activity,
-                pagination={                    # ADD THIS LINE
-                    "total": total_messages,    # ADD THIS LINE
-                    "page": 1,                  # ADD THIS LINE
-                    "limit": 50,               # ADD THIS LINE
-                    "has_next": False,         # ADD THIS LINE
-                    "has_prev": False          # ADD THIS LINE
+                pagination={
+                    "total": total_messages,
+                    "page": 1,
+                    "limit": 50,
+                    "has_next": False,
+                    "has_prev": False
                 }      
             )
             
         except Exception as e:
             logger.error(f"Error fetching chat history for lead {lead_id}: {str(e)}")
             raise Exception(f"Failed to fetch chat history: {str(e)}")
-    
-    
+
     async def send_and_store_message(
         self, 
         lead_id: str, 
@@ -490,25 +768,28 @@ class WhatsAppMessageService:
                 f"Sent WhatsApp message: {message_content[:100]}"
             )
             
+            # ✅ FIXED: Include the missing 'sent_by' field
             return SendMessageResponse(
                 success=True,
                 message_id=message_doc["message_id"],
                 lead_id=lead_id,
                 content=message_content,
                 timestamp=message_doc["timestamp"],
-                status=MessageStatus.SENT
+                status=MessageStatus.SENT,
+                sent_by=current_user.get("email", "unknown@user.com")  # ✅ Added missing field
             )
             
         except Exception as e:
             logger.error(f"Error sending message to lead {lead_id}: {str(e)}")
             raise Exception(f"Failed to send message: {str(e)}")
-    
+        
+        
     async def get_active_chats(
         self, 
         current_user: Dict[str, Any], 
         limit: int = 50
     ) -> ActiveChatsResponse:
-        """Get list of leads with recent WhatsApp activity"""
+        """Get list of leads with recent WhatsApp activity - FIXED VERSION"""
         try:
             db = get_database()
             
@@ -543,12 +824,12 @@ class WhatsAppMessageService:
                     sort=[("timestamp", -1)]
                 )
                 
+                # Convert to response format
                 last_message = None
                 if last_message_doc:
-                    last_message = WhatsAppMessageResponse(
+                    last_message = MessageResponse(
                         id=str(last_message_doc["_id"]),
                         message_id=last_message_doc["message_id"],
-                        lead_id=last_message_doc["lead_id"],
                         direction=last_message_doc["direction"],
                         message_type=last_message_doc["message_type"],
                         content=last_message_doc["content"],
@@ -561,7 +842,8 @@ class WhatsAppMessageService:
                 unread_count = lead.get("unread_whatsapp_count", 0)
                 total_unread += unread_count
                 
-                active_chats.append(ActiveChatResponse(
+                # ✅ FIXED: Use ActiveChatItem instead of ActiveChatResponse
+                active_chats.append(ActiveChatItem(
                     lead_id=lead["lead_id"],
                     lead_name=lead["name"],
                     phone_number=lead.get("contact_number", ""),
@@ -573,71 +855,32 @@ class WhatsAppMessageService:
                     last_activity=lead.get("last_whatsapp_activity")
                 ))
             
+            # ✅ Create user_permissions object to match schema
+            user_permissions = {
+                "role": user_role,
+                "can_see_all_chats": user_role == "admin",
+                "assigned_leads_only": user_role != "admin",
+                "user_email": user_email,
+                "total_accessible_leads": len(active_chats)
+            }
+            
+            # ✅ Return with user_permissions field
             return ActiveChatsResponse(
+                success=True,
                 chats=active_chats,
                 total_chats=len(active_chats),
-                total_unread=total_unread
+                total_unread=total_unread,
+                user_permissions=user_permissions
             )
             
         except Exception as e:
             logger.error(f"Error fetching active chats: {str(e)}")
             raise Exception(f"Failed to fetch active chats: {str(e)}")
-    
-    async def mark_messages_as_read(
-        self, 
-        lead_id: str, 
-        message_ids: List[str], 
-        current_user: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Mark messages as read and update lead unread count"""
-        try:
-            db = get_database()
-            
-            # Check lead access
-            await self._check_lead_access(lead_id, current_user)
-            
-            # Mark messages as read
-            update_result = await db.whatsapp_messages.update_many(
-                {
-                    "lead_id": lead_id,
-                    "message_id": {"$in": message_ids},
-                    "direction": MessageDirection.INCOMING,
-                    "is_read": False
-                },
-                {
-                    "$set": {
-                        "is_read": True,
-                        "read_at": datetime.utcnow(),
-                        "read_by_user_id": str(current_user.get("_id") or current_user.get("id"))
-                    }
-                }
-            )
-            
-            # Update lead's unread count
-            if update_result.modified_count > 0:
-                new_unread_count = await db.whatsapp_messages.count_documents({
-                    "lead_id": lead_id,
-                    "direction": MessageDirection.INCOMING,
-                    "is_read": False
-                })
-                
-                await db.leads.update_one(
-                    {"lead_id": lead_id},
-                    {"$set": {"unread_whatsapp_count": new_unread_count}}
-                )
-            
-            return {
-                "success": True,
-                "marked_as_read": update_result.modified_count,
-                "message_ids": message_ids
-            }
-            
-        except Exception as e:
-            logger.error(f"Error marking messages as read: {str(e)}")
-            raise Exception(f"Failed to mark messages as read: {str(e)}")
-    
+
+
+
     # ============================================================================
-    # UTILITY & HELPER FUNCTIONS - EXISTING CODE
+    # UTILITY & HELPER FUNCTIONS - EXISTING CODE (KEEP AS-IS)
     # ============================================================================
     
     async def _find_lead_by_phone_number(self, phone_number: str) -> Optional[Dict[str, Any]]:
@@ -690,44 +933,6 @@ class WhatsAppMessageService:
             raise Exception("Lead not found or access denied")
         
         return lead
-    
-    async def _update_lead_whatsapp_activity(
-        self, 
-        lead_id: str, 
-        message_content: str, 
-        increment_total: bool = False,
-        increment_unread: bool = False
-    ):
-        """Update lead's WhatsApp activity fields"""
-        try:
-            db = get_database()
-            
-            update_fields = {
-                "last_whatsapp_activity": datetime.utcnow(),
-                "last_whatsapp_message": message_content[:200],  # Preview,
-                "last_contacted": datetime.utcnow()
-            }
-            
-            if increment_total:
-                update_fields["$inc"] = update_fields.get("$inc", {})
-                update_fields["$inc"]["whatsapp_message_count"] = 1
-            
-            if increment_unread:
-                update_fields["$inc"] = update_fields.get("$inc", {})
-                update_fields["$inc"]["unread_whatsapp_count"] = 1
-            
-            # Separate $set and $inc operations
-            set_fields = {k: v for k, v in update_fields.items() if k != "$inc"}
-            inc_fields = update_fields.get("$inc", {})
-            
-            update_query = {"$set": set_fields}
-            if inc_fields:
-                update_query["$inc"] = inc_fields
-            
-            await db.leads.update_one({"lead_id": lead_id}, update_query)
-            
-        except Exception as e:
-            logger.error(f"Error updating lead WhatsApp activity: {str(e)}")
     
     async def _log_whatsapp_activity(self, lead_id: str, description: str):
         """Log WhatsApp activity in lead timeline (following LeadG CRM pattern)"""

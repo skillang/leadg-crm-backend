@@ -1,4 +1,4 @@
-# app/schemas/whatsapp_chat.py - WhatsApp Chat API Request/Response Schemas
+# app/schemas/whatsapp_chat.py - Enhanced with Real-time Notification Schemas
 
 from pydantic import BaseModel, Field, validator
 from typing import Optional, List, Dict, Any, Union
@@ -52,6 +52,62 @@ class MarkMessagesReadRequest(BaseModel):
             }
         }
 
+# ============================================================================
+# 🆕 NEW: REAL-TIME NOTIFICATION REQUEST SCHEMAS
+# ============================================================================
+
+class MarkLeadAsReadRequest(BaseModel):
+    """🆕 Request schema for marking entire lead conversation as read"""
+    lead_id: str = Field(..., description="Lead ID to mark as read")
+    force_update: bool = Field(default=False, description="Force update even if no unread messages")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "lead_id": "LD-1001",
+                "force_update": False
+            }
+        }
+
+class UnreadStatusRequest(BaseModel):
+    """🆕 Request schema for checking unread status"""
+    lead_ids: Optional[List[str]] = Field(None, description="Specific lead IDs to check (if None, check all)")
+    include_details: bool = Field(default=False, description="Include detailed unread message information")
+    
+    @validator('lead_ids')
+    def validate_lead_ids(cls, v):
+        """Remove duplicates from lead IDs if provided"""
+        if v:
+            return list(set(v))  # Remove duplicates
+        return v
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "lead_ids": ["LD-1001", "LD-1002", "LD-1003"],
+                "include_details": True
+            }
+        }
+
+class RealtimeConnectionRequest(BaseModel):
+    """🆕 Request schema for establishing real-time connection"""
+    user_agent: Optional[str] = Field(None, description="User agent for connection tracking")
+    timezone: Optional[str] = Field(None, description="User timezone for timestamp display")
+    connection_id: Optional[str] = Field(None, description="Client-generated connection ID")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "user_agent": "Mozilla/5.0 Chrome/120.0.0.0",
+                "timezone": "Asia/Kolkata",
+                "connection_id": "conn_abc123"
+            }
+        }
+
+# ============================================================================
+# EXISTING SCHEMAS (KEEP AS-IS)
+# ============================================================================
+
 class ChatHistoryRequest(BaseModel):
     """Request schema for fetching chat history with pagination"""
     limit: int = Field(default=50, ge=1, le=100, description="Number of messages to fetch (1-100)")
@@ -91,7 +147,7 @@ class ActiveChatsRequest(BaseModel):
         }
 
 # ============================================================================
-# WEBHOOK REQUEST SCHEMAS
+# WEBHOOK REQUEST SCHEMAS (KEEP AS-IS)
 # ============================================================================
 
 class WebhookVerificationRequest(BaseModel):
@@ -408,7 +464,214 @@ class MarkReadResponse(BaseModel):
         }
 
 # ============================================================================
-# WEBHOOK RESPONSE SCHEMAS
+# 🆕 NEW: REAL-TIME NOTIFICATION RESPONSE SCHEMAS
+# ============================================================================
+
+class RealtimeNotification(BaseModel):
+    """🆕 Base schema for real-time notifications"""
+    type: str = Field(..., description="Notification type")
+    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Notification timestamp")
+    user_id: Optional[str] = Field(None, description="Target user ID (if user-specific)")
+    data: Dict[str, Any] = Field(..., description="Notification payload data")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "type": "new_whatsapp_message",
+                "timestamp": "2024-01-15T10:30:00Z",
+                "user_id": "user_123",
+                "data": {
+                    "lead_id": "LD-1001",
+                    "lead_name": "John Smith",
+                    "message_preview": "Hi, I'm interested in..."
+                }
+            }
+        }
+
+class NewMessageNotification(BaseModel):
+    """🆕 Schema for new WhatsApp message notifications"""
+    type: str = Field(default="new_whatsapp_message", description="Always 'new_whatsapp_message'")
+    lead_id: str = Field(..., description="Lead ID that received message")
+    lead_name: str = Field(..., description="Lead name")
+    message_preview: str = Field(..., description="Preview of message content (first 50 chars)")
+    timestamp: str = Field(..., description="Message timestamp (ISO format)")
+    direction: str = Field(..., description="Message direction (incoming/outgoing)")
+    message_id: str = Field(..., description="WhatsApp message ID")
+    unread_count: int = Field(default=1, description="New unread count for this lead")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "type": "new_whatsapp_message",
+                "lead_id": "LD-1001",
+                "lead_name": "John Smith",
+                "message_preview": "Hi, I'm interested in your courses...",
+                "timestamp": "2024-01-15T10:30:00Z",
+                "direction": "incoming",
+                "message_id": "wa_msg_12345",
+                "unread_count": 3
+            }
+        }
+
+class LeadMarkedReadNotification(BaseModel):
+    """🆕 Schema for lead marked as read notifications"""
+    type: str = Field(default="lead_marked_read", description="Always 'lead_marked_read'")
+    lead_id: str = Field(..., description="Lead ID that was marked as read")
+    lead_name: Optional[str] = Field(None, description="Lead name")
+    marked_by_user: str = Field(..., description="User email who marked as read")
+    unread_leads: List[str] = Field(..., description="Updated list of leads with unread messages")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "type": "lead_marked_read",
+                "lead_id": "LD-1001",
+                "lead_name": "John Smith", 
+                "marked_by_user": "john.doe@leadg.com",
+                "unread_leads": ["LD-1002", "LD-1003"]
+            }
+        }
+
+class UnreadLeadsSyncNotification(BaseModel):
+    """🆕 Schema for initial unread leads synchronization"""
+    type: str = Field(default="unread_leads_sync", description="Always 'unread_leads_sync'")
+    unread_leads: List[str] = Field(..., description="List of lead IDs with unread messages")
+    total_unread_count: int = Field(..., description="Total unread messages count")
+    sync_timestamp: str = Field(..., description="Sync timestamp")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "type": "unread_leads_sync",
+                "unread_leads": ["LD-1001", "LD-1002", "LD-1005"],
+                "total_unread_count": 8,
+                "sync_timestamp": "2024-01-15T10:30:00Z"
+            }
+        }
+
+class ConnectionEstablishedNotification(BaseModel):
+    """🆕 Schema for real-time connection established notification"""
+    type: str = Field(default="connection_established", description="Always 'connection_established'")
+    user_email: str = Field(..., description="Connected user email")
+    connection_id: str = Field(..., description="Unique connection ID")
+    timestamp: str = Field(..., description="Connection timestamp")
+    initial_unread_leads: List[str] = Field(..., description="Initial unread leads for this user")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "type": "connection_established",
+                "user_email": "john.doe@leadg.com",
+                "connection_id": "conn_abc123",
+                "timestamp": "2024-01-15T10:30:00Z",
+                "initial_unread_leads": ["LD-1001", "LD-1003"]
+            }
+        }
+
+class HeartbeatNotification(BaseModel):
+    """🆕 Schema for connection heartbeat notifications"""
+    type: str = Field(default="heartbeat", description="Always 'heartbeat'")
+    timestamp: str = Field(..., description="Heartbeat timestamp")
+    active_connections: int = Field(..., description="Number of active connections")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "type": "heartbeat",
+                "timestamp": "2024-01-15T10:30:00Z",
+                "active_connections": 5
+            }
+        }
+
+class MarkLeadAsReadResponse(BaseModel):
+    """🆕 Response schema for marking lead as read"""
+    success: bool = Field(..., description="Operation success status")
+    lead_id: str = Field(..., description="Lead ID that was marked as read")
+    marked_messages: int = Field(..., description="Number of messages marked as read")
+    icon_state: str = Field(..., description="New icon state (grey/green)")
+    message: str = Field(..., description="Success message")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "lead_id": "LD-1001",
+                "marked_messages": 3,
+                "icon_state": "grey",
+                "message": "Lead marked as read successfully"
+            }
+        }
+
+class LeadUnreadStatusResponse(BaseModel):
+    """🆕 Response schema for individual lead unread status"""
+    success: bool = Field(default=True, description="Response success status")
+    lead_id: str = Field(..., description="Lead ID")
+    lead_name: Optional[str] = Field(None, description="Lead name")
+    has_unread: bool = Field(..., description="Whether lead has unread messages")
+    unread_count: int = Field(..., description="Number of unread messages")
+    icon_state: str = Field(..., description="Icon state (green/grey)")
+    last_activity: Optional[datetime] = Field(None, description="Last WhatsApp activity")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "lead_id": "LD-1001",
+                "lead_name": "John Smith",
+                "has_unread": True,
+                "unread_count": 3,
+                "icon_state": "green",
+                "last_activity": "2024-01-15T10:30:00Z"
+            }
+        }
+
+class UnreadStatusSummary(BaseModel):
+    """🆕 Individual unread status item for bulk response"""
+    lead_id: str = Field(..., description="Lead ID")
+    lead_name: Optional[str] = Field(None, description="Lead name")
+    unread_count: int = Field(..., description="Number of unread messages")
+    last_activity: Optional[datetime] = Field(None, description="Last WhatsApp activity")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "lead_id": "LD-1001",
+                "lead_name": "John Smith",
+                "unread_count": 3,
+                "last_activity": "2024-01-15T10:30:00Z"
+            }
+        }
+
+class BulkUnreadStatusResponse(BaseModel):
+    """🆕 Response schema for bulk unread status check"""
+    success: bool = Field(default=True, description="Response success status")
+    unread_leads: List[str] = Field(..., description="List of lead IDs with unread messages")
+    unread_details: List[UnreadStatusSummary] = Field(..., description="Detailed unread information")
+    total_unread_leads: int = Field(..., description="Total number of leads with unread messages")
+    total_unread_messages: int = Field(..., description="Total unread messages across all leads")
+    user_role: str = Field(..., description="User role for context")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "unread_leads": ["LD-1001", "LD-1002", "LD-1005"],
+                "unread_details": [
+                    {
+                        "lead_id": "LD-1001",
+                        "lead_name": "John Smith",
+                        "unread_count": 3,
+                        "last_activity": "2024-01-15T10:30:00Z"
+                    }
+                ],
+                "total_unread_leads": 3,
+                "total_unread_messages": 8,
+                "user_role": "user"
+            }
+        }
+
+# ============================================================================
+# WEBHOOK RESPONSE SCHEMAS (KEEP AS-IS)
 # ============================================================================
 
 class WebhookProcessingResponse(BaseModel):
@@ -445,7 +708,7 @@ class WebhookVerificationResponse(BaseModel):
         }
 
 # ============================================================================
-# ERROR RESPONSE SCHEMAS
+# ERROR RESPONSE SCHEMAS (KEEP AS-IS)
 # ============================================================================
 
 class WhatsAppErrorResponse(BaseModel):
@@ -495,7 +758,7 @@ class ValidationErrorResponse(BaseModel):
         }
 
 # ============================================================================
-# STATISTICS & ANALYTICS SCHEMAS
+# STATISTICS & ANALYTICS SCHEMAS (KEEP AS-IS)
 # ============================================================================
 
 class WhatsAppStatsResponse(BaseModel):
@@ -532,7 +795,98 @@ class WhatsAppStatsResponse(BaseModel):
         }
 
 # ============================================================================
-# UTILITY SCHEMAS
+# 🆕 NEW: REAL-TIME CONNECTION SCHEMAS
+# ============================================================================
+
+class SSEConnectionInfo(BaseModel):
+    """🆕 Schema for SSE connection information"""
+    user_email: str = Field(..., description="Connected user email")
+    connection_id: str = Field(..., description="Unique connection identifier")
+    connected_at: datetime = Field(..., description="Connection establishment time")
+    user_agent: Optional[str] = Field(None, description="User agent string")
+    ip_address: Optional[str] = Field(None, description="User IP address")
+    timezone: Optional[str] = Field(None, description="User timezone")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "user_email": "john.doe@leadg.com",
+                "connection_id": "conn_abc123_456",
+                "connected_at": "2024-01-15T10:30:00Z",
+                "user_agent": "Mozilla/5.0 Chrome/120.0.0.0",
+                "ip_address": "192.168.1.100",
+                "timezone": "Asia/Kolkata"
+            }
+        }
+
+class RealtimeConnectionStatus(BaseModel):
+    """🆕 Schema for real-time connection status"""
+    is_connected: bool = Field(..., description="Whether user has active real-time connection")
+    connection_count: int = Field(..., description="Number of active connections for user")
+    last_connected: Optional[datetime] = Field(None, description="Last connection time")
+    last_activity: Optional[datetime] = Field(None, description="Last activity time")
+    connection_quality: str = Field(..., description="Connection quality (good/fair/poor)")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "is_connected": True,
+                "connection_count": 2,
+                "last_connected": "2024-01-15T10:30:00Z",
+                "last_activity": "2024-01-15T10:35:00Z",
+                "connection_quality": "good"
+            }
+        }
+
+# ============================================================================
+# 🆕 NEW: BULK OPERATIONS SCHEMAS  
+# ============================================================================
+
+class BulkMarkReadRequest(BaseModel):
+    """🆕 Request schema for bulk marking leads as read"""
+    lead_ids: List[str] = Field(..., min_items=1, max_items=50, description="Lead IDs to mark as read")
+    mark_all_messages: bool = Field(default=True, description="Mark all messages as read vs just latest")
+    
+    @validator('lead_ids')
+    def validate_lead_ids(cls, v):
+        """Remove duplicates and validate lead IDs"""
+        if not v:
+            raise ValueError("At least one lead ID must be provided")
+        return list(set(v))  # Remove duplicates
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "lead_ids": ["LD-1001", "LD-1002", "LD-1003"],
+                "mark_all_messages": True
+            }
+        }
+
+class BulkMarkReadResponse(BaseModel):
+    """🆕 Response schema for bulk mark as read operation"""
+    success: bool = Field(..., description="Overall operation success")
+    processed_leads: int = Field(..., description="Number of leads successfully processed")
+    failed_leads: int = Field(..., description="Number of leads that failed to process")
+    results: List[Dict[str, Any]] = Field(..., description="Detailed results per lead")
+    total_messages_marked: int = Field(..., description="Total messages marked as read")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "processed_leads": 2,
+                "failed_leads": 1,
+                "results": [
+                    {"lead_id": "LD-1001", "success": True, "messages_marked": 3},
+                    {"lead_id": "LD-1002", "success": True, "messages_marked": 1},
+                    {"lead_id": "LD-1003", "success": False, "error": "Access denied"}
+                ],
+                "total_messages_marked": 4
+            }
+        }
+
+# ============================================================================
+# UTILITY SCHEMAS (KEEP AS-IS)
 # ============================================================================
 
 class HealthCheckResponse(BaseModel):
@@ -544,6 +898,7 @@ class HealthCheckResponse(BaseModel):
     whatsapp_api_accessible: bool = Field(..., description="WhatsApp API accessibility")
     total_active_chats: int = Field(..., description="Current active chat count")
     last_webhook_received: Optional[datetime] = Field(None, description="Last webhook timestamp")
+    realtime_connections: int = Field(default=0, description="Active real-time connections")
     
     class Config:
         json_schema_extra = {
@@ -554,6 +909,7 @@ class HealthCheckResponse(BaseModel):
                 "database_connected": True,
                 "whatsapp_api_accessible": True,
                 "total_active_chats": 25,
-                "last_webhook_received": "2024-01-15T10:30:00Z"
+                "last_webhook_received": "2024-01-15T10:30:00Z",
+                "realtime_connections": 8
             }
         }

@@ -1,4 +1,4 @@
-# app/routers/whatsapp.py - Enhanced WhatsApp Integration with Chat Functionality
+# app/routers/whatsapp.py - Enhanced with Real-time Mark-as-Read Functionality
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from pydantic import BaseModel
@@ -19,6 +19,7 @@ from ..schemas.whatsapp_chat import (
 )
 import os
 import time
+from ..decorators.timezone_decorator import convert_dates_to_ist
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["WhatsApp Integration"])
@@ -128,9 +129,6 @@ async def fetch_templates_from_cms() -> List[Dict[str, Any]]:
         ]
 
 # ================================
-# NEW: Helper function to store outgoing messages
-# ================================
-# ================================
 # 🆕 NEW: WEBHOOK ENDPOINTS (Core Chat Functionality)
 # ================================
 
@@ -199,6 +197,7 @@ async def verify_webhook(
 # ================================
 
 @router.get("/active-chats", response_model=ActiveChatsResponse)
+@convert_dates_to_ist(['last_activity', 'timestamp'])
 async def get_active_chats(
     limit: int = 50,
     include_unread_only: bool = False,
@@ -224,15 +223,17 @@ async def get_active_chats(
         )
 
 @router.get("/lead-messages/{lead_id}", response_model=ChatHistoryResponse)
+@convert_dates_to_ist(['timestamp', 'last_activity', 'created_at'])
 async def get_lead_whatsapp_history(
     lead_id: str,
     limit: int = 50,
     offset: int = 0,
+    auto_mark_read: bool = True,  # 🆕 NEW: Auto-mark as read parameter
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     """
-    Get WhatsApp message history for a specific lead (UPDATED - Now fully functional)
-    Includes complete chat history with pagination and permission checking
+    🆕 ENHANCED: Get WhatsApp message history with auto-mark-as-read functionality
+    When user opens chat modal, automatically mark messages as read (icon turns grey)
     """
     try:
         result = await whatsapp_message_service.get_chat_history(
@@ -241,6 +242,18 @@ async def get_lead_whatsapp_history(
             offset=offset,
             current_user=current_user
         )
+        
+        # 🆕 NEW: Auto-mark as read when modal opens (WhatsApp-like behavior)
+        if auto_mark_read and result.success:
+            try:
+                await whatsapp_message_service.mark_lead_as_read(
+                    lead_id=lead_id,
+                    current_user=current_user
+                )
+                logger.info(f"Auto-marked lead {lead_id} as read for user {current_user.get('email')}")
+            except Exception as mark_read_error:
+                # Don't fail the whole request if mark-as-read fails
+                logger.warning(f"Failed to auto-mark lead {lead_id} as read: {str(mark_read_error)}")
         
         return result
         
@@ -312,7 +325,7 @@ async def mark_messages_as_read(
             success=result["success"],
             marked_count=result["marked_as_read"],
             lead_id=lead_id,
-            new_unread_count=0,  # Will be calculated in service
+            new_unread_count=result.get("new_unread_count", 0),
             message_ids=result["message_ids"]
         )
         
@@ -321,6 +334,157 @@ async def mark_messages_as_read(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to mark messages as read: {str(e)}"
+        )
+
+# ================================
+# 🆕 NEW: REAL-TIME MARK-AS-READ ENDPOINTS
+# ================================
+
+@router.post("/leads/{lead_id}/mark-read")
+async def mark_lead_as_read(
+    lead_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    🆕 NEW: Mark entire lead conversation as read (for WhatsApp icon state management)
+    Used when user clicks WhatsApp icon or opens modal - icon changes from green to grey
+    Triggers real-time update to all connected users
+    """
+    try:
+        result = await whatsapp_message_service.mark_lead_as_read(
+            lead_id=lead_id,
+            current_user=current_user
+        )
+        
+        return {
+            "success": True,
+            "lead_id": lead_id,
+            "marked_messages": result.get("marked_messages", 0),
+            "icon_state": "grey",
+            "message": "Lead marked as read successfully"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error marking lead {lead_id} as read: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to mark lead as read: {str(e)}"
+        )
+
+@router.get("/leads/{lead_id}/unread-status")
+async def get_lead_unread_status(
+    lead_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    🆕 NEW: Get unread status for a specific lead (for icon state)
+    Returns whether the lead has unread messages (green/grey icon)
+    """
+    try:
+        # Check lead access
+        await whatsapp_message_service._check_lead_access(lead_id, current_user)
+        
+        db = get_database()
+        
+        # Get lead with unread status
+        lead = await db.leads.find_one(
+            {"lead_id": lead_id},
+            {"whatsapp_has_unread": 1, "unread_whatsapp_count": 1, "name": 1}
+        )
+        
+        if not lead:
+            raise HTTPException(status_code=404, detail="Lead not found")
+        
+        has_unread = lead.get("whatsapp_has_unread", False)
+        unread_count = lead.get("unread_whatsapp_count", 0)
+        
+        return {
+            "success": True,
+            "lead_id": lead_id,
+            "lead_name": lead.get("name"),
+            "has_unread": has_unread,
+            "unread_count": unread_count,
+            "icon_state": "green" if has_unread else "grey"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting unread status for lead {lead_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get unread status: {str(e)}"
+        )
+
+# ================================
+# 🆕 NEW: BULK UNREAD STATUS ENDPOINTS
+# ================================
+
+@router.get("/unread-status")
+async def get_all_unread_status(
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    🆕 NEW: Get unread status for all leads user can access
+    Used for initial page load to set all WhatsApp icon states
+    """
+    try:
+        db = get_database()
+        
+        user_role = current_user.get("role", "user")
+        user_email = current_user.get("email", "")
+        
+        # Build query based on user permissions
+        if user_role == "admin":
+            # Admin sees all leads with WhatsApp activity
+            query = {"whatsapp_has_unread": True}
+        else:
+            # Regular user sees only assigned leads
+            query = {
+                "$or": [
+                    {"assigned_to": user_email},
+                    {"co_assignees": user_email}
+                ],
+                "whatsapp_has_unread": True
+            }
+        
+        # Get leads with unread messages
+        unread_leads = await db.leads.find(
+            query,
+            {
+                "lead_id": 1, 
+                "name": 1, 
+                "unread_whatsapp_count": 1,
+                "last_whatsapp_activity": 1
+            }
+        ).to_list(None)
+        
+        # Format response
+        unread_list = []
+        total_unread_count = 0
+        
+        for lead in unread_leads:
+            lead_unread_count = lead.get("unread_whatsapp_count", 0)
+            total_unread_count += lead_unread_count
+            
+            unread_list.append({
+                "lead_id": lead["lead_id"],
+                "lead_name": lead.get("name"),
+                "unread_count": lead_unread_count,
+                "last_activity": lead.get("last_whatsapp_activity")
+            })
+        
+        return {
+            "success": True,
+            "unread_leads": [lead["lead_id"] for lead in unread_leads],
+            "unread_details": unread_list,
+            "total_unread_leads": len(unread_leads),
+            "total_unread_messages": total_unread_count
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting unread status: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get unread status: {str(e)}"
         )
 
 # ================================
@@ -492,7 +656,7 @@ async def send_template_to_lead(
         
         result = await make_whatsapp_request("sendtemplate.php", whatsapp_params)
         
-        # 2. NEW: Store the outgoing template message in database
+        # 2. Store the outgoing template message in database
         if result:  # If template sent successfully
             # Create readable message content for storage
             template_content = f"Template: {request.template_name} (Lead: {request.lead_name})"
@@ -534,7 +698,7 @@ async def send_text_message(
         
         result = await make_whatsapp_request("sendtextmessage.php", whatsapp_params)
         
-        # 2. NEW: Store the outgoing message in database
+        # 2. Store the outgoing message in database
         if result:  # If message sent successfully
             await store_outgoing_message(
                 contact=request.contact,
