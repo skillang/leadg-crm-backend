@@ -623,7 +623,7 @@ async def get_available_templates(current_user: Dict[str, Any] = Depends(get_cur
                 "id": template["id"],
                 "template_name": template["template_name"],
                 "display_name": template["display_name"],
-                "description": template["description"],
+                "body": template["body"],
                 "is_active": template["Is_Active"]
             }
             for template in templates
@@ -656,7 +656,7 @@ async def send_template_to_lead(
         
         result = await make_whatsapp_request("sendtemplate.php", whatsapp_params)
         
-        # 2. Store the outgoing template message in database
+        # 2. NEW: Store the outgoing template message in database
         if result:  # If template sent successfully
             # Create readable message content for storage
             template_content = f"Template: {request.template_name} (Lead: {request.lead_name})"
@@ -670,18 +670,27 @@ async def send_template_to_lead(
                 template_name=request.template_name
             )
         
+        # 4. Return success response
         return {
-            "success": True,
+            "success": True,  # 🔥 Only True when actually successful
             "data": result,
             "template_name": request.template_name,
             "contact": request.contact,
             "lead_name": request.lead_name,
-            "message": "Template message sent and stored successfully"
+            "message": "Template message sent successfully"  # 🔥 Success message
         }
         
     except Exception as e:
         logger.error(f"Error sending template: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to send template: {str(e)}")
+        # 🔥 Return proper error response for exceptions too
+        return {
+            "success": False,
+            "error": str(e),
+            "template_name": request.template_name,
+            "contact": request.contact,
+            "lead_name": request.lead_name,
+            "message": f"Failed to send template: {str(e)}"
+        }
 
 @router.post("/send-text")
 async def send_text_message(

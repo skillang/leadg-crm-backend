@@ -17,7 +17,7 @@ class NoteType(str, Enum):
 class NoteBase(BaseModel):
     """Base note model"""
     title: str = Field(..., min_length=1, max_length=200)
-    content: str = Field(..., min_length=1, max_length=5000)
+    content: Optional[str] = Field(default="", max_length=5000)
     note_type: NoteType = NoteType.GENERAL
     tags: Optional[List[str]] = Field(default_factory=list)
     is_important: bool = False
@@ -58,7 +58,7 @@ class NoteCreate(NoteBase):
 class NoteUpdate(BaseModel):
     """Note update model"""
     title: Optional[str] = Field(None, min_length=1, max_length=200)
-    content: Optional[str] = Field(None, min_length=1, max_length=5000)
+    content: Optional[str] = Field(None, max_length=5000) 
     note_type: Optional[NoteType] = None
     tags: Optional[List[str]] = None
     is_important: Optional[bool] = None
