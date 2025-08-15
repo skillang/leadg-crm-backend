@@ -656,7 +656,7 @@ class WhatsAppMessageService:
             # Get messages for this lead, ordered by timestamp
             messages_cursor = db.whatsapp_messages.find(
                 {"lead_id": lead_id}
-            ).sort("timestamp", 1).skip(offset).limit(limit)
+            ).sort("timestamp", -1).skip(offset).limit(limit)
             
             messages = await messages_cursor.to_list(length=limit)
             
@@ -687,7 +687,7 @@ class WhatsAppMessageService:
             # Get last activity
             last_activity = None
             if messages:
-                last_msg = messages[-1]
+                last_msg = messages[0]
                 last_activity = last_msg["timestamp"]
             
             return ChatHistoryResponse(
