@@ -1,13 +1,13 @@
 # app/routers/realtime.py - Real-time SSE Endpoints for WhatsApp Notifications
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from typing import Dict, Any, Optional
 import asyncio
 import json
 import logging
 from datetime import datetime
-
+from bson import ObjectId  # Add ObjectId import
 from ..utils.dependencies import get_current_user
 from ..services.realtime_service import realtime_manager
 from ..schemas.whatsapp_chat import (
@@ -15,6 +15,7 @@ from ..schemas.whatsapp_chat import (
     RealtimeConnectionStatus,
     SSEConnectionInfo
 )
+from app.config.database import get_database
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Real-time Notifications"])
@@ -26,7 +27,7 @@ router = APIRouter(tags=["Real-time Notifications"])
 @router.get("/stream")
 async def realtime_notification_stream(
     request: Request,
-    current_user: Dict[str, Any] = Depends(get_current_user)
+    token: str = Query(..., description="JWT authentication token")
 ):
     """
     🆕 Server-Sent Events stream for real-time WhatsApp notifications
@@ -37,7 +38,61 @@ async def realtime_notification_stream(
     - Connection status and heartbeats
     
     No polling needed - true real-time push notifications!
+    
+    Note: Uses query parameter for token since EventSource cannot send custom headers
     """
+    
+    # 🔧 MANUAL TOKEN VERIFICATION (since EventSource can't send headers)
+    try:
+        from ..utils.security import security  # Import the security manager
+        from bson import ObjectId
+        
+        # Verify the token using existing security manager
+        payload = security.verify_token(token)
+        if payload is None:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        
+        # Check token type
+        if payload.get("type") != "access":
+            raise HTTPException(status_code=401, detail="Invalid token type")
+        
+        # Check if token is blacklisted
+        token_jti = payload.get("jti")
+        if token_jti and await security.is_token_blacklisted(token_jti):
+            raise HTTPException(status_code=401, detail="Token has been revoked")
+        
+        # Get user from database (same logic as get_current_user)
+        user_id = payload.get("sub")
+        if user_id is None:
+            raise HTTPException(status_code=401, detail="Invalid token payload")
+        
+        db = get_database()
+        user_data = await db.users.find_one({"_id": ObjectId(user_id)})
+        
+        if user_data is None:
+            raise HTTPException(status_code=401, detail="User not found")
+        
+        # Check if user is active
+        if not user_data.get("is_active", False):
+            raise HTTPException(status_code=401, detail="User account is disabled")
+        
+        # Create current_user dict (same format as get_current_user)
+        current_user = {
+            "user_id": str(user_data["_id"]),
+            "email": user_data["email"],
+            "first_name": user_data.get("first_name", ""),
+            "last_name": user_data.get("last_name", ""),
+            "role": user_data.get("role", "user"),
+            "is_active": user_data.get("is_active", False),
+            "permissions": user_data.get("permissions", {})
+        }
+        
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions
+    except Exception as e:
+        logger.error(f"❌ SSE authentication failed: {str(e)}")
+        raise HTTPException(status_code=401, detail="Authentication failed")
+    
     user_email = current_user["email"]
     
     async def event_generator():
@@ -45,6 +100,7 @@ async def realtime_notification_stream(
         queue = None
         
         try:
+            
             # Get connection metadata from request
             user_agent = request.headers.get("user-agent")
             client_ip = request.client.host if request.client else "unknown"
@@ -121,6 +177,7 @@ async def realtime_notification_stream(
             "Access-Control-Allow-Headers": "Cache-Control"
         }
     )
+
 
 @router.get("/stream/test")
 async def test_sse_stream(current_user: Dict[str, Any] = Depends(get_current_user)):
