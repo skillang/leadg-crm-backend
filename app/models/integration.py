@@ -127,14 +127,7 @@ EXPERIENCE_LEVELS = {
     "5+ Years": "more_than_10_years"
 }
 
-# Valid categories for Skillang integration
-SKILLANG_CATEGORIES = [
-    "Nursing",
-    "Study Abroad", 
-    "German Language",
-    "Work Abroad",
-    "Institution"
-]
+
 
 class IntegrationValidationError(Exception):
     """Custom exception for integration validation errors"""

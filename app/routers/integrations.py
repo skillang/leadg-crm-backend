@@ -7,7 +7,7 @@ from datetime import datetime
 from ..models.integration import (
     SkillangFormData, IntegrationResponse, IntegrationErrorResponse,
     SkillangIntegrationStats, IntegrationHealthCheck, IntegrationValidationError,
-    EXPERIENCE_LEVELS, SKILLANG_CATEGORIES
+    EXPERIENCE_LEVELS
 )
 from ..models.lead import LeadCreateComprehensive, LeadBasicInfo, LeadStatusAndTags, LeadAdditionalInfo, LeadAssignmentInfo
 from ..services.lead_service import lead_service
@@ -46,11 +46,12 @@ async def create_lead_from_skillang(
             )
         
         # Step 2: Validate category
-        if form_data.category not in SKILLANG_CATEGORIES:
+        valid_categories = await get_valid_categories()
+        if form_data.category not in valid_categories:
             logger.error(f"Invalid category received: {form_data.category}")
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid category. Must be one of: {', '.join(SKILLANG_CATEGORIES)}"
+                detail=f"Invalid category. Must be one of: {', '.join(valid_categories)}"
             )
         
         # Step 3: Build notes from additional fields
@@ -145,6 +146,18 @@ async def create_lead_from_skillang(
 # ============================================================================
 # BACKGROUND EMAIL FUNCTION
 # ============================================================================
+
+# ✅ ADD this function:
+async def get_valid_categories():
+    """Fetch active categories dynamically from database"""
+    try:
+        db = get_database()
+        categories = await db.lead_categories.find({"is_active": True}).to_list(None)
+        return [cat["name"] for cat in categories]
+    except Exception as e:
+        logger.error(f"Error fetching categories: {str(e)}")
+        # Fallback to ensure integration doesn't break
+        return ["Nursing", "Study Abroad", "German Language", "Work Abroad", "Institution"]
 
 async def send_skillang_confirmation_email(
     email: str, 
