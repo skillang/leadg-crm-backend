@@ -1,7 +1,7 @@
 # app/services/tata_call_service.py
-# 🔧 COMPLETE FIX: Tata Tele Call Service
-# Handles click-to-call, support calls, and call management operations
-# Fixed for 422 errors with proper user sync and API format compliance
+# CLEANED VERSION: Tata Tele Call Service - NO CALL LOGGING
+# Handles click-to-call and support calls without local database storage
+# Direct TATA API calls only - no logging, no call tracking
 
 import httpx
 import logging
@@ -9,14 +9,8 @@ import re
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, Tuple, List
 from bson import ObjectId
-from app.services.communication_service import CommunicationService
 from ..config.database import get_database
 from ..config.settings import get_settings
-from ..models.call_log import (
-    ClickToCallRequest, SupportCallRequest, TataCallResponse, TataSupportCallResponse,
-    CallLogCreate, CallLogUpdate, CallLogResponse, CallStatus, CallType, CallOutcome,
-    CallDirection, BulkCallRequest, BulkCallResponse, CallSystemHealth
-)
 from ..models.tata_integration import TataIntegrationLog
 from .tata_auth_service import tata_auth_service
 
@@ -26,11 +20,12 @@ logger = logging.getLogger(__name__)
 
 class TataCallService:
     """
-    🔧 FIXED: Comprehensive Tata Tele Call Service
+    CLEANED: Tata Tele Call Service - NO CALL LOGGING
     - Proper user sync validation
     - Exact Tata API format compliance
     - Auto lead phone extraction
     - Enhanced error handling and logging
+    - NO DATABASE STORAGE OF CALLS
     """
     
     def __init__(self):
@@ -53,7 +48,7 @@ class TataCallService:
         self.max_concurrent_calls = getattr(self.settings, 'max_concurrent_calls', 50)
 
     def _get_db(self):
-        """Lazy database initialization"""
+        """Lazy database initialization - only for lead/user lookups"""
         if self.db is None:
             try:
                 self.db = get_database()
@@ -63,7 +58,7 @@ class TataCallService:
 
     def _format_phone_for_tata(self, phone: str) -> str:
         """
-        🔧 FIXED: Format phone number for Tata API (Indian format)
+        Format phone number for Tata API (Indian format)
         Based on actual working patterns from Tata API
         """
         if not phone:
@@ -91,7 +86,7 @@ class TataCallService:
 
     async def _validate_user_tata_sync(self, user_id: str, user_email: str) -> Tuple[bool, Dict]:
         """
-        🔧 NEW: Validate that user is properly synced with Tata system
+        Validate that user is properly synced with Tata system
         This is the key fix for the 422 errors - ensuring correct agent_id
         """
         try:
@@ -177,7 +172,7 @@ class TataCallService:
 
     async def _get_lead_phone_number(self, lead_id: str) -> Optional[str]:
         """
-        🔧 ENHANCED: Auto-fetch lead's phone number with multiple strategies
+        Auto-fetch lead's phone number with multiple strategies
         """
         try:
             db = self._get_db()
@@ -245,7 +240,7 @@ class TataCallService:
         user_id: str = "system"
     ) -> Tuple[bool, Dict[str, Any]]:
         """
-        🔧 ENHANCED: Make authenticated request to Tata API with detailed logging
+        Make authenticated request to Tata API with detailed logging
         """
         try:
             # Get valid token
@@ -323,12 +318,11 @@ class TataCallService:
         notes: Optional[str] = None
     ) -> Tuple[bool, Dict]:
         """
-        🔧 CORE FIX: Make Tata click-to-call request with EXACT format from documentation
+        Make Tata click-to-call request with EXACT format from documentation
         This is the critical method that was causing 422 errors
         """
         try:
-            # 🎯 ACTUAL FORMAT that Tata expects (not what docs say)
-            # Based on user feedback: this is the real working format
+            # ACTUAL FORMAT that Tata expects
             request_data = {
                 "destination_number": destination_number,  # Required: Customer phone with +
                 "agent_number": agent_number,              # Required: Agent number (clean, no +)
@@ -349,7 +343,7 @@ class TataCallService:
                 
                 request_data["caller_id"] = clean_caller_id
             
-            logger.info(f"🚀 Making Tata click-to-call request (ACTUAL format):")
+            logger.info(f"🚀 Making Tata click-to-call request:")
             logger.info(f"   Agent Number: {agent_number}")
             logger.info(f"   Destination: {destination_number}")
             logger.info(f"   Caller ID: {request_data.get('caller_id', 'Not set')}")
@@ -383,119 +377,10 @@ class TataCallService:
             logger.error(f"❌ Tata API call exception: {str(e)}")
             return False, {"error": "API call failed", "message": str(e)}
 
-    async def _create_call_log(
-        self, 
-        lead_id: str, 
-        user_id: str, 
-        user_email: str,
-        destination_number: str, 
-        agent_number: str,
-        notes: Optional[str],
-        custom_identifier: str,
-        call_purpose: Optional[str] = None,
-        caller_id: Optional[str] = None
-    ) -> str:
-        """
-        🔧 ENHANCED: Create call log entry with all relevant data
-        """
-        try:
-            db = self._get_db()
-            if db is None:
-                raise Exception("Database not available")
-            
-            call_data = {
-                "lead_id": lead_id,
-                "user_id": user_id,
-                "user_email": user_email,
-                "call_type": CallType.CLICK_TO_CALL.value,
-                "call_status": CallStatus.INITIATED.value,
-                "call_direction": CallDirection.OUTBOUND.value,
-                "destination_number": destination_number,
-                "agent_number": agent_number,
-                "custom_identifier": custom_identifier,
-                "notes": notes or "Click-to-call initiated",
-                "created_at": datetime.utcnow(),
-                "updated_at": datetime.utcnow(),
-                "metadata": {
-                    "initiated_via": "crm_click_to_call",
-                    "agent_number_used": agent_number,
-                    "destination_formatted": destination_number,
-                    "call_purpose": call_purpose,
-                    "caller_id_used": caller_id
-                }
-            }
-            
-            result = await db.call_logs.insert_one(call_data)
-            call_log_id = str(result.inserted_id)
-            
-            logger.info(f"✅ Created call log: {call_log_id}")
-            return call_log_id
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to create call log: {str(e)}")
-            raise
+    # ==========================================================================
+    # MAIN CALLING METHODS - NO LOGGING
+    # ==========================================================================
 
-    async def _update_call_log(self, call_log_id: str, updates: Dict) -> bool:
-        """
-        🔧 ENHANCED: Update call log entry with results
-        """
-        try:
-            db = self._get_db()
-            if db is None:
-                return False
-            
-            updates["updated_at"] = datetime.utcnow()
-            
-            result = await db.call_logs.update_one(
-                {"_id": ObjectId(call_log_id)},
-                {"$set": updates}
-            )
-            
-            logger.info(f"✅ Updated call log: {call_log_id}")
-            return result.modified_count > 0
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to update call log: {str(e)}")
-            return False
-
-    async def _log_activity_to_lead(
-        self, 
-        lead_id: str, 
-        activity_type: str, 
-        description: str,
-        user_id: str,
-        metadata: Optional[Dict[str, Any]] = None
-    ):
-        """Log call activity to lead timeline for tracking"""
-        try:
-            db = self._get_db()
-            if db is None:
-                return
-            
-            if activity_type in ["call_initiated", "call_completed", "call_connected"]:
-                await CommunicationService.log_phone_communication(
-                    lead_id=lead_id,
-                    call_duration=metadata.get("call_duration") if metadata else None,
-                    call_status=metadata.get("call_status") if metadata else None
-                )
-            
-            activity = {
-                "_id": ObjectId(),
-                "lead_id": lead_id,
-                "activity_type": activity_type,
-                "description": description,
-                "created_by": user_id,
-                "created_at": datetime.utcnow(),
-                "metadata": metadata or {}
-            }
-            
-            await db.lead_activities.insert_one(activity)
-            logger.info(f"✅ Logged activity to lead {lead_id}: {activity_type}")
-            
-        except Exception as e:
-            logger.error(f"❌ Error logging activity to lead {lead_id}: {str(e)}")
-
-    # 🔥 MAIN METHOD: Simplified Click-to-Call with Complete Fix
     async def initiate_click_to_call_simple(
         self,
         lead_id: str,
@@ -504,20 +389,19 @@ class TataCallService:
         call_purpose: Optional[str] = None
     ) -> Tuple[bool, Dict[str, Any]]:
         """
-        🔧 COMPLETE FIX: Simplified click-to-call that addresses all 422 error causes
+        CLEANED: Simplified click-to-call - NO LOGGING
         
         This method:
         1. Validates user Tata sync (fixes wrong agent_id)
         2. Auto-fetches lead phone number
         3. Uses exact Tata API format (fixes 422 errors)
-        4. Provides detailed logging for debugging
+        4. NO DATABASE STORAGE - Direct API call only
         
         Usage: Only requires lead_id, everything else is auto-handled
         """
-        call_log_id = None
         try:
             user_email = current_user.get("email", "unknown")
-            logger.info(f"🎯 User {user_email} initiating simplified click-to-call for lead {lead_id}")
+            logger.info(f"🎯 User {user_email} initiating simplified click-to-call for lead {lead_id} (NO LOGGING)")
             
             # 1. Extract and validate user ID
             user_id = (current_user.get("user_id") or 
@@ -529,7 +413,7 @@ class TataCallService:
             
             user_id = str(user_id)
             
-            # 2. 🔧 CRITICAL FIX: Validate user Tata sync
+            # 2. Validate user Tata sync
             sync_valid, sync_data = await self._validate_user_tata_sync(user_id, user_email)
             if not sync_valid:
                 logger.error(f"❌ User {user_email} has invalid Tata sync: {sync_data.get('message')}")
@@ -554,107 +438,46 @@ class TataCallService:
             
             logger.info(f"✅ Auto-fetched lead phone: {destination_number}")
             
-            # 4. Generate tracking identifier
+            # 4. Generate tracking identifier (for TATA API only)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             custom_identifier = f"crm_call_{lead_id}_{timestamp}"
             
-            # 5. Create call log before making the call
-            call_log_id = await self._create_call_log(
-                lead_id=lead_id,
-                user_id=user_id,
-                user_email=user_email,
-                destination_number=destination_number,
-                agent_number=agent_number,
-                notes=f"{call_purpose}: {notes}" if call_purpose and notes else (call_purpose or notes or "Click-to-call initiated"),
-                custom_identifier=custom_identifier,
-                call_purpose=call_purpose,
-                caller_id=sync_data.get("tata_extension")
-            )
-            
-            # 6. 🔧 CRITICAL FIX: Make Tata API call with ACTUAL expected format
+            # 5. Make Tata API call directly (NO DATABASE LOGGING)
             call_success, call_result = await self._make_tata_click_to_call_request(
                 agent_number=agent_number,
                 destination_number=destination_number,
                 custom_identifier=custom_identifier,
-                caller_id=sync_data.get("tata_extension"),  # Pass caller_id
+                caller_id=sync_data.get("tata_extension"),
                 call_purpose=call_purpose or "CRM Call",
                 notes=notes
             )
             
-            # 7. Update call log and return result
+            # 6. Return result (NO DATABASE OPERATIONS)
             if call_success:
-                # Success - update call log
-                await self._update_call_log(call_log_id, {
-                    "call_status": CallStatus.RINGING.value,
-                    "tata_call_id": call_result.get("call_id"),
-                    "metadata": {
-                        "tata_response": call_result.get("tata_response"),
-                        "sync_data": sync_data,
-                        "call_success": True
-                    }
-                })
-                
-                # Log activity to lead
-                await self._log_activity_to_lead(
-                    lead_id=lead_id,
-                    activity_type="call_initiated",
-                    description=f"Click-to-call initiated to {destination_number}",
-                    user_id=user_id,
-                    metadata={
-                        "call_log_id": call_log_id,
-                        "tata_call_id": call_result.get("call_id"),
-                        "agent_number": agent_number
-                    }
-                )
-                
-                logger.info(f"✅ Click-to-call successful for lead {lead_id}")
+                logger.info(f"✅ Click-to-call successful for lead {lead_id} (NO LOGGING)")
                 
                 return True, {
                     "success": True,
                     "message": "Call initiated successfully",
-                    "call_log_id": call_log_id,
                     "tata_call_id": call_result.get("call_id"),
                     "agent_number": agent_number,
                     "destination_number": destination_number,
-                    "status": "ringing"
+                    "status": "ringing",
+                    "note": "Call initiated via TATA API - no local logging"
                 }
             else:
-                # Failed - update call log with error
-                await self._update_call_log(call_log_id, {
-                    "call_status": CallStatus.FAILED.value,
-                    "call_outcome": CallOutcome.NO_RESPONSE.value,
-                    "metadata": {
-                        "error_response": call_result,
-                        "sync_data": sync_data,
-                        "call_success": False
-                    }
-                })
-                
                 logger.error(f"❌ Click-to-call failed for lead {lead_id}: {call_result.get('message')}")
                 
                 return False, {
                     "error": call_result.get("error", "Call failed"),
                     "message": call_result.get("message", "Unable to initiate call"),
-                    "call_log_id": call_log_id,
                     "tata_response": call_result.get("tata_response")
                 }
                 
         except Exception as e:
             logger.error(f"❌ Click-to-call system error: {str(e)}")
-            
-            # Update call log with exception if it was created
-            if call_log_id:
-                try:
-                    await self._update_call_log(call_log_id, {
-                        "call_status": CallStatus.FAILED.value,
-                        "metadata": {"exception": str(e)}
-                    })
-                except:
-                    pass
-            
             return False, {"error": "System error", "message": str(e)}
 
-    # 🔧 LEGACY METHOD: Updated for compatibility
     async def initiate_click_to_call(
         self, 
         lead_id: str,
@@ -665,11 +488,11 @@ class TataCallService:
         call_timeout: Optional[int] = None
     ) -> Tuple[bool, Dict[str, Any]]:
         """
-        🔧 UPDATED: Legacy click-to-call method that uses simplified version
+        Legacy click-to-call method - NO LOGGING
         Kept for backward compatibility with existing code
         """
         try:
-            logger.info(f"Legacy click-to-call called for lead {lead_id}")
+            logger.info(f"Legacy click-to-call called for lead {lead_id} (NO LOGGING)")
             
             # If destination_number is provided, validate it matches lead
             if destination_number:
@@ -697,29 +520,17 @@ class TataCallService:
         lead_id: Optional[str] = None,
         notes: Optional[str] = None
     ) -> Tuple[bool, Dict[str, Any]]:
-        """Initiate support call using Tata support API"""
-        call_log_id = None
+        """Initiate support call using Tata support API - NO LOGGING"""
         try:
             user_id = str(current_user.get("user_id") or current_user.get("_id"))
             user_email = current_user.get("email", "unknown")
             
-            logger.info(f"Initiating support call for {user_email} to {customer_number}")
+            logger.info(f"Initiating support call for {user_email} to {customer_number} (NO LOGGING)")
             
             # Validate user sync for support calls too
             sync_valid, sync_data = await self._validate_user_tata_sync(user_id, user_email)
             if not sync_valid:
                 return False, sync_data
-            
-            # Create call log
-            call_log_id = await self._create_call_log(
-                lead_id=lead_id or f"SUPPORT_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}",
-                user_id=user_id,
-                user_email=user_email,
-                destination_number=customer_number,
-                agent_number=sync_data.get("tata_agent_id"),
-                notes=notes or "Support call",
-                custom_identifier=f"support_call_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
-            )
             
             # Get API key for support calls
             api_key = getattr(self.settings, 'TATA_SUPPORT_API_KEY', None)
@@ -739,7 +550,7 @@ class TataCallService:
             if caller_id:
                 support_request_data["caller_id"] = caller_id
             
-            # Make support call request
+            # Make support call request (NO DATABASE LOGGING)
             success, response_data = await self._make_authenticated_request(
                 method="POST",
                 url=self.endpoints["support_call"],
@@ -748,48 +559,28 @@ class TataCallService:
             )
             
             if success and response_data.get("success"):
-                # Update call log with success
-                await self._update_call_log(call_log_id, {
-                    "call_status": CallStatus.RINGING.value,
-                    "tata_call_id": response_data.get("call_id"),
-                    "metadata": {"support_response": response_data}
-                })
-                
-                logger.info(f"✅ Support call initiated successfully")
+                logger.info(f"✅ Support call initiated successfully (NO LOGGING)")
                 
                 return True, {
                     "success": True,
                     "message": "Support call initiated successfully",
-                    "call_log_id": call_log_id,
                     "tata_call_id": response_data.get("call_id"),
-                    "status": "ringing"
+                    "status": "ringing",
+                    "note": "Support call initiated via TATA API - no local logging"
                 }
             else:
-                # Update call log with failure
-                await self._update_call_log(call_log_id, {
-                    "call_status": CallStatus.FAILED.value,
-                    "metadata": {"error_response": response_data}
-                })
-                
                 return False, {
                     "error": "Support call failed",
-                    "message": response_data.get("message", "Unknown error"),
-                    "call_log_id": call_log_id
+                    "message": response_data.get("message", "Unknown error")
                 }
                 
         except Exception as e:
             logger.error(f"Support call error: {str(e)}")
-            
-            if call_log_id:
-                try:
-                    await self._update_call_log(call_log_id, {
-                        "call_status": CallStatus.FAILED.value,
-                        "metadata": {"exception": str(e)}
-                    })
-                except:
-                    pass
-            
             return False, {"error": "System error", "message": str(e)}
+
+    # ==========================================================================
+    # UTILITY METHODS - PRESERVED
+    # ==========================================================================
 
     async def validate_phone_number(self, phone_number: str) -> Dict[str, Any]:
         """Validate phone number format and provide cleaning suggestions"""
@@ -850,78 +641,87 @@ class TataCallService:
                 "suggestions": []
             }
 
-    async def get_call_system_health(self) -> CallSystemHealth:
-        """Get call system health status"""
+    # ==========================================================================
+    # SIMPLIFIED METHODS (NO LOGGING OPERATIONS)
+    # ==========================================================================
+
+    async def check_user_call_permissions(self, user_id: str) -> Dict[str, Any]:
+        """Check user call permissions - NO LOGGING"""
         try:
             db = self._get_db()
             if not db:
-                return CallSystemHealth(
-                    overall_status="unhealthy",
-                    tata_api_status="unknown",
-                    call_service_status="unhealthy", 
-                    database_status="unavailable",
-                    recent_errors=["Database connection unavailable"]
-                )
+                return {
+                    "can_make_calls": False,
+                    "has_tata_mapping": False,
+                    "permission_errors": ["Database unavailable"]
+                }
             
-            # Check integration health
-            integration_health = await self.auth_service.get_integration_health()
+            # Get user mapping
+            user_mapping = await db.tata_user_mappings.find_one({"crm_user_id": user_id})
             
-            # Count active calls
-            active_calls = await db.call_logs.count_documents({
-                "call_status": {"$in": [CallStatus.INITIATED.value, CallStatus.RINGING.value, CallStatus.IN_PROGRESS.value]}
-            })
-            
-            # Count calls in last hour
-            one_hour_ago = datetime.utcnow() - timedelta(hours=1)
-            calls_last_hour = await db.call_logs.count_documents({
-                "created_at": {"$gte": one_hour_ago}
-            })
-            
-            # Calculate 24h success rate
-            twenty_four_hours_ago = datetime.utcnow() - timedelta(hours=24)
-            total_calls_24h = await db.call_logs.count_documents({
-                "created_at": {"$gte": twenty_four_hours_ago}
-            })
-            
-            successful_calls_24h = await db.call_logs.count_documents({
-                "created_at": {"$gte": twenty_four_hours_ago},
-                "call_status": CallStatus.COMPLETED.value,
-                "call_outcome": {"$in": [CallOutcome.SUCCESSFUL.value, CallOutcome.INTERESTED.value]}
-            })
-            
-            success_rate_24h = (successful_calls_24h / total_calls_24h * 100) if total_calls_24h > 0 else 0
-            
-            # Determine overall status
-            if integration_health.tata_api_status == "healthy" and integration_health.token_valid:
-                if active_calls < self.max_concurrent_calls and success_rate_24h > 80:
-                    overall_status = "healthy"
-                else:
-                    overall_status = "degraded"
+            if user_mapping:
+                return {
+                    "can_make_calls": user_mapping.get("can_make_calls", False),
+                    "has_tata_mapping": True,
+                    "tata_agent_id": user_mapping.get("tata_agent_id"),
+                    "permission_errors": []
+                }
             else:
-                overall_status = "unhealthy"
-            
-            return CallSystemHealth(
-                overall_status=overall_status,
-                tata_api_status=integration_health.tata_api_status,
-                call_service_status="healthy" if overall_status != "unhealthy" else "unhealthy",
-                database_status="healthy",
-                active_calls=active_calls,
-                calls_last_hour=calls_last_hour,
-                success_rate_24h=success_rate_24h,
-                average_response_time=100.0,
-                recent_errors=[],
-                system_alerts=[]
-            )
-            
+                return {
+                    "can_make_calls": False,
+                    "has_tata_mapping": False,
+                    "permission_errors": ["No TATA mapping found"]
+                }
+                
         except Exception as e:
-            logger.error(f"Error getting call system health: {str(e)}")
-            return CallSystemHealth(
-                overall_status="unhealthy",
-                tata_api_status="unknown",
-                call_service_status="unhealthy", 
-                database_status="unknown",
-                recent_errors=[f"Health check failed: {str(e)}"]
-            )
+            logger.error(f"Error checking user permissions: {str(e)}")
+            return {
+                "can_make_calls": False,
+                "has_tata_mapping": False,
+                "permission_errors": [f"Permission check failed: {str(e)}"]
+            }
+
+    async def get_call_status(self, call_id: str, requesting_user_id: str) -> Dict[str, Any]:
+        """Get call status - SIMPLIFIED (NO LOGGING)"""
+        return {
+            "success": False,
+            "message": "Call status not tracked (no logging enabled)",
+            "note": "Use TATA dashboard for call status tracking"
+        }
+
+    async def end_call(self, call_id: str, user_id: str, call_outcome: Optional[str] = None, notes: Optional[str] = None) -> Dict[str, Any]:
+        """End call - SIMPLIFIED (NO LOGGING)"""
+        return {
+            "success": True,
+            "message": "Call end acknowledged (no logging enabled)",
+            "final_status": "acknowledged",
+            "note": "Use TATA dashboard for call management"
+        }
+
+    async def get_user_active_calls(self, user_id: str) -> List[Dict]:
+        """Get user active calls - SIMPLIFIED (NO LOGGING)"""
+        return []  # No local call tracking
+
+    async def get_all_active_calls(self) -> List[Dict]:
+        """Get all active calls - SIMPLIFIED (NO LOGGING)"""
+        return []  # No local call tracking
+
+    async def process_webhook(self, webhook_payload: Any, raw_body: bytes, headers: Dict) -> Dict[str, Any]:
+        """Process TATA webhook - SIMPLIFIED (NO LOGGING)"""
+        try:
+            logger.info(f"Webhook received but not processed (no logging enabled)")
+            return {
+                "success": True,
+                "message": "Webhook acknowledged but not processed (no logging enabled)",
+                "note": "Webhook data not stored locally"
+            }
+        except Exception as e:
+            logger.error(f"Webhook processing error: {str(e)}")
+            return {
+                "success": False,
+                "message": f"Webhook processing failed: {str(e)}"
+            }
+
 
 # Create singleton instance
 tata_call_service = TataCallService()

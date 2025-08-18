@@ -1,4 +1,4 @@
-# app/main.py - Updated with Real-time WhatsApp Support and Skillang Integration
+# app/main.py - Updated with Real-time WhatsApp Support, Skillang Integration and Admin Call Dashboard
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,13 +7,15 @@ import logging
 import time
 
 from .config.settings import settings
-# 🔧 FIX: Import the correct scheduler functions
+# Import the correct scheduler functions
 from app.utils.whatsapp_scheduler import start_whatsapp_scheduler, stop_whatsapp_scheduler
 from .config.database import connect_to_mongo, close_mongo_connection
-from .routers import auth, leads, tasks, notes, documents, timeline, contacts, lead_categories, stages, statuses, course_levels, sources, whatsapp, emails, permissions, tata_auth, tata_calls, call_logs, tata_users ,bulk_whatsapp ,realtime, notifications, integrations
-# 🆕 NEW: Import realtime router for SSE functionality
-# 🆕 NEW: Import integrations router for Skillang integration
-
+from .routers import (
+    auth, leads, tasks, notes, documents, timeline, contacts, lead_categories, 
+    stages, statuses, course_levels, sources, whatsapp, emails, permissions, 
+    tata_auth, tata_calls, tata_users, bulk_whatsapp, realtime, notifications, 
+    integrations, admin_calls  # NEW: Admin dashboard router
+)
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -36,40 +38,39 @@ async def lifespan(app: FastAPI):
     await setup_default_statuses()
     logger.info("✅ Default statuses setup completed")
     
-    # 🆕 NEW: Check course levels collection (admin must create manually)
+    # Check course levels collection (admin must create manually)
     await setup_default_course_levels()
     logger.info("✅ Course levels collection checked")
     
-    # 🆕 NEW: Check sources collection (admin must create manually)
+    # Check sources collection (admin must create manually)
     await setup_default_sources()
     logger.info("✅ Sources collection checked")
     
-    # 🆕 NEW: Check email configuration and start scheduler
+    # Check email configuration and start scheduler
     await check_email_configuration()
     logger.info("✅ Email configuration checked")
     
-    # 🆕 NEW: Start email scheduler
+    # Start email scheduler
     await start_email_scheduler()
     logger.info("✅ Email scheduler started")
     
-    # 🆕 NEW: Check Skillang integration configuration
+    # Check Skillang integration configuration
     await check_skillang_integration()
     logger.info("✅ Skillang integration configuration checked")
     
-    # 🔧 FIX: Start WhatsApp scheduler PROPERLY
+    # Start WhatsApp scheduler
     try:
         await start_whatsapp_scheduler()
         logger.info("✅ WhatsApp scheduler started successfully")
     except Exception as e:
         logger.error(f"❌ Failed to start WhatsApp scheduler: {e}")
-        # Don't fail startup if WhatsApp scheduler fails
         logger.warning("⚠️ Continuing without WhatsApp scheduler")
     
-    # 🆕 NEW: Initialize default permissions for existing users
+    # Initialize default permissions for existing users
     await initialize_user_permissions()
     logger.info("✅ User permissions initialized")
     
-    # 🆕 NEW: Initialize real-time WhatsApp service integration
+    # Initialize real-time WhatsApp service integration
     await initialize_realtime_whatsapp_service()
     logger.info("✅ Real-time WhatsApp service initialized")
     
@@ -80,14 +81,14 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("🛑 Shutting down LeadG CRM API...")
     
-    # 🔧 FIX: Stop WhatsApp scheduler PROPERLY
+    # Stop WhatsApp scheduler
     try:
         await stop_whatsapp_scheduler()
         logger.info("✅ WhatsApp scheduler stopped")
     except Exception as e:
         logger.error(f"❌ Error stopping WhatsApp scheduler: {e}")
     
-    # 🆕 NEW: Cleanup real-time connections
+    # Cleanup real-time connections
     await cleanup_realtime_connections()
     logger.info("✅ Real-time connections cleaned up")
     
@@ -122,7 +123,6 @@ async def setup_default_statuses():
     except Exception as e:
         logger.warning(f"Error setting up default statuses: {e}")
 
-# 🆕 NEW: Setup default course levels function
 async def setup_default_course_levels():
     """Check course levels collection exists - admin must create all course levels manually"""
     try:
@@ -142,7 +142,6 @@ async def setup_default_course_levels():
     except Exception as e:
         logger.warning(f"Error checking course levels: {e}")
 
-# 🆕 NEW: Setup default sources function
 async def setup_default_sources():
     """Check sources collection exists - admin must create all sources manually"""
     try:
@@ -162,7 +161,6 @@ async def setup_default_sources():
     except Exception as e:
         logger.warning(f"Error checking sources: {e}")
 
-# 🆕 NEW: Start email scheduler function
 async def start_email_scheduler():
     """Start the background email scheduler"""
     try:
@@ -176,7 +174,6 @@ async def start_email_scheduler():
         logger.warning(f"⚠️ Failed to start email scheduler: {e}")
         logger.info("📧 Email functionality will work without scheduling")
 
-# 🆕 NEW: Check email configuration function
 async def check_email_configuration():
     """Check email (ZeptoMail) configuration on startup"""
     try:
@@ -200,7 +197,6 @@ async def check_email_configuration():
     except Exception as e:
         logger.warning(f"Error checking email configuration: {e}")
 
-# 🆕 NEW: Check Skillang integration configuration function
 async def check_skillang_integration():
     """Check Skillang integration configuration on startup"""
     try:
@@ -217,7 +213,6 @@ async def check_skillang_integration():
     except Exception as e:
         logger.warning(f"Error checking Skillang integration configuration: {e}")
 
-# 🆕 NEW: Initialize user permissions function
 async def initialize_user_permissions():
     """Initialize default permissions for existing users who don't have permissions field"""
     try:
@@ -255,7 +250,6 @@ async def initialize_user_permissions():
     except Exception as e:
         logger.warning(f"Error initializing user permissions: {e}")
 
-# 🆕 NEW: Initialize real-time WhatsApp service integration
 async def initialize_realtime_whatsapp_service():
     """Initialize real-time WhatsApp service with dependency injection"""
     try:
@@ -273,7 +267,6 @@ async def initialize_realtime_whatsapp_service():
         logger.warning(f"⚠️ Failed to initialize real-time WhatsApp service: {e}")
         logger.info("📱 WhatsApp will work without real-time notifications")
 
-# 🆕 NEW: Cleanup real-time connections on shutdown
 async def cleanup_realtime_connections():
     """Cleanup all real-time connections on application shutdown"""
     try:
@@ -300,13 +293,13 @@ async def cleanup_realtime_connections():
 app = FastAPI(
     title=settings.app_name,
     version=settings.version,
-    description="LeadG CRM - Customer Relationship Management API with Real-time WhatsApp, Email Functionality, Granular Permissions and Skillang Integration",
+    description="LeadG CRM - Customer Relationship Management API with Real-time WhatsApp, Email Functionality, Granular Permissions, Call Analytics and Skillang Integration",
     lifespan=lifespan,
     docs_url="/docs" if settings.debug else None,
     redoc_url="/redoc" if settings.debug else None,
 )
 
-# 🆕 UPDATED: Add CORS middleware with Skillang domain support
+# Add CORS middleware with Skillang domain support
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.get_allowed_origins() + [settings.skillang_frontend_domain],
@@ -314,15 +307,6 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["*"],
 )
-
-# 🔧 REMOVE: Remove these old event handlers - lifespan handles everything now
-# @app.on_event("startup")
-# async def startup_event():
-#     await start_whatsapp_scheduler()
-
-# @app.on_event("shutdown") 
-# async def shutdown_event():
-#     await stop_whatsapp_scheduler()
 
 # Request timing middleware
 @app.middleware("http")
@@ -338,17 +322,22 @@ async def add_process_time_header(request: Request, call_next):
         logger.error(f"Request failed: {request.method} {request.url} - Error: {str(e)}", exc_info=True)
         raise
 
-# 🔄 UPDATED: Health check with Skillang integration module
+# Health check with all modules including admin dashboard
 @app.get("/health")
 async def health_check():
     return {
         "status": "healthy",
         "message": "LeadG CRM API is running",
         "version": settings.version,
-        "modules": ["auth", "leads", "tasks", "notes", "documents", "timeline", "contacts", "stages", "statuses", "course-levels", "sources", "whatsapp", "realtime", "emails", "permissions","tata-auth", "tata-calls", "call-logs", "tata-users", "bulk-whatsapp", "integrations"]
+        "modules": [
+            "auth", "leads", "tasks", "notes", "documents", "timeline", "contacts", 
+            "stages", "statuses", "course-levels", "sources", "whatsapp", "realtime", 
+            "emails", "permissions", "tata-auth", "tata-calls", "tata-users", 
+            "bulk-whatsapp", "integrations", "admin-calls"
+        ]
     }
 
-# 🔄 UPDATED: Root endpoint with integrations endpoint
+# Root endpoint with admin dashboard
 @app.get("/")
 async def root():
     return {
@@ -372,13 +361,17 @@ async def root():
             "realtime": "/realtime",
             "emails": "/emails",
             "permissions": "/permissions",
+            "tata-auth": "/tata-auth",
+            "tata-calls": "/tata-calls",
+            "tata-users": "/tata-users",
             "bulk-whatsapp": "/bulk-whatsapp",
             "integrations": "/integrations",
+            "admin": "/admin",  # NEW: Admin dashboard
             "health": "/health"
         }
     }
 
-# Include routers with specific prefixes
+# Include all routers with specific prefixes
 app.include_router(
     auth.router,
     prefix="/auth",
@@ -427,28 +420,24 @@ app.include_router(
     tags=["Lead Categories"]
 )
 
-# Add stages router
 app.include_router(
     stages.router,
     prefix="/stages",
     tags=["Stages"]
 )
 
-# Add statuses router
 app.include_router(
     statuses.router,
     prefix="/statuses",
     tags=["Statuses"]
 )
 
-# Add course levels router
 app.include_router(
     course_levels.router,
     prefix="/course-levels",
     tags=["Course Levels"]
 )
 
-# Add sources router
 app.include_router(
     sources.router,
     prefix="/sources",
@@ -461,21 +450,18 @@ app.include_router(
     tags=["WhatsApp"]
 )
 
-# 🆕 NEW: Add real-time router for SSE functionality
 app.include_router(
     realtime.router,
     prefix="/realtime",
     tags=["Real-time Notifications"]
 )
 
-# Add emails router
 app.include_router(
     emails.router,
     prefix="/emails",
     tags=["Emails"]
 )
 
-# 🆕 NEW: Add permissions router
 app.include_router(
     permissions.router,
     prefix="/permissions",
@@ -495,35 +481,34 @@ app.include_router(
 )
 
 app.include_router(
-    call_logs.router,
-    prefix="/call-logs",
-    tags=["Call Logs & Analytics"]
-)
-
-app.include_router(
     tata_users.router,
     prefix="/tata-users", 
     tags=["Tata User Sync"]
 )
 
-# Add this line with your existing router registrations
 app.include_router(
     bulk_whatsapp.router,
     prefix="/bulk-whatsapp", 
-    tags=["bulk-whatsapp"]
+    tags=["Bulk WhatsApp"]
 )
 
 app.include_router(
     notifications.router,
     prefix="/notifications", 
     tags=["Notifications"]
-)  # ✅ Add this line
+)
 
-# 🆕 NEW: Add integrations router for Skillang integration
 app.include_router(
     integrations.router,
     prefix="/integrations",
     tags=["Integrations"]
+)
+
+# NEW: Include admin call dashboard router
+app.include_router(
+    admin_calls.router,
+    prefix="/admin",
+    tags=["Admin Dashboard"]
 )
 
 if __name__ == "__main__":

@@ -1,41 +1,112 @@
 # app/routers/tata_calls.py
-# Enhanced Tata Calls Router - With Progressive Dialer Support + Simplified Click-to-Call
-# Core calling functionality from CRM + Progressive Bulk Calling + Auto-fetch functionality
+# Enhanced Tata Calls Router - CLEANED VERSION (No Call Logging)
+# Core calling functionality from CRM + User syncing functionality preserved
 
 from fastapi import APIRouter, HTTPException, status, Depends, Request
 from typing import Dict, Any, Optional, List
 import logging
 from datetime import datetime
 from bson import ObjectId
+from pydantic import BaseModel, Field
 
 from app.decorators.timezone_decorator import convert_dates_to_ist
 
-# 🔧 FIX: Setup logging FIRST before using logger anywhere
+# Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Import existing services (calling and user sync preserved)
 from ..services.tata_user_service import tata_user_service
 from ..services.tata_call_service import tata_call_service
 from ..utils.dependencies import get_current_active_user, get_admin_user
-from ..models.call_log import (
-    ClickToCallRequest, ClickToCallRequestSimple, ClickToCallResponse, 
-    SupportCallRequest, SupportCallResponse, CallPermissionResponse, 
-    CallWebhookPayload, CallValidationRequest, CallValidationResponse
-)
 
-# 🆕 NEW: Import Progressive Dialer Service (NOW logger is available)
-try:
-    from ..services.progressive_dialer_service import progressive_dialer_service
-    PROGRESSIVE_DIALER_AVAILABLE = True
-    logger.info("✅ Progressive Dialer service imported successfully")
-except ImportError as e:
-    PROGRESSIVE_DIALER_AVAILABLE = False
-    logger.warning(f"⚠️ Progressive Dialer not available: {e}")
+# =============================================================================
+# SIMPLE INLINE MODELS (No Database Storage - Just API Request/Response)
+# =============================================================================
+
+class ClickToCallRequestSimple(BaseModel):
+    lead_id: str = Field(..., description="Lead ID to call")
+    notes: Optional[str] = Field(None, description="Call notes")
+    call_purpose: Optional[str] = Field(None, description="Purpose of call")
+
+class ClickToCallRequest(BaseModel):
+    lead_id: str = Field(..., description="Lead ID")
+    destination_number: str = Field(..., description="Phone number to call")
+    caller_id: Optional[str] = Field(None, description="Caller ID")
+    notes: Optional[str] = Field(None, description="Call notes")
+    call_timeout: Optional[int] = Field(None, description="Call timeout in seconds")
+
+class ClickToCallResponse(BaseModel):
+    success: bool = Field(..., description="Call success status")
+    message: str = Field(..., description="Response message")
+    call_id: Optional[str] = Field(None, description="Call ID")
+    tata_call_id: Optional[str] = Field(None, description="TATA API call ID")
+    call_status: str = Field("initiated", description="Call status")
+    estimated_connection_time: int = Field(30, description="Estimated connection time")
+    initiated_at: datetime = Field(default_factory=datetime.utcnow, description="Call initiation time")
+    caller_number: Optional[str] = Field(None, description="Caller number")
+    destination_number: Optional[str] = Field(None, description="Destination number")
+
+class SupportCallRequest(BaseModel):
+    issue_type: str = Field(..., description="Type of issue")
+    priority: Optional[str] = Field("normal", description="Priority level")
+    description: Optional[str] = Field(None, description="Issue description")
+    related_lead_id: Optional[str] = Field(None, description="Related lead ID")
+
+class SupportCallResponse(BaseModel):
+    success: bool = Field(..., description="Support call success")
+    message: str = Field(..., description="Response message")
+    support_call_id: str = Field(..., description="Support call ID")
+    ticket_number: Optional[str] = Field(None, description="Ticket number")
+    priority: str = Field(..., description="Priority level")
+    estimated_callback_time: int = Field(300, description="Estimated callback time")
+    support_agent_info: Optional[dict] = Field(None, description="Support agent info")
+    submitted_at: datetime = Field(default_factory=datetime.utcnow, description="Submission time")
+
+class CallPermissionResponse(BaseModel):
+    user_id: str = Field(..., description="User ID")
+    can_make_calls: bool = Field(..., description="Can make calls")
+    has_tata_mapping: bool = Field(..., description="Has TATA mapping")
+    tata_agent_id: Optional[str] = Field(None, description="TATA agent ID")
+    call_limit_remaining: Optional[int] = Field(None, description="Remaining call limit")
+    daily_call_count: int = Field(0, description="Daily call count")
+    permission_errors: list = Field(default_factory=list, description="Permission errors")
+    last_call_time: Optional[datetime] = Field(None, description="Last call time")
+    checked_at: datetime = Field(default_factory=datetime.utcnow, description="Check time")
+
+class CallWebhookPayload(BaseModel):
+    event_type: str = Field(..., description="Event type")
+    call_id: str = Field(..., description="Call ID")
+    data: dict = Field(default_factory=dict, description="Event data")
+
+class CallValidationRequest(BaseModel):
+    lead_id: str = Field(..., description="Lead ID to validate")
+
+class CallValidationResponse(BaseModel):
+    can_call: bool = Field(..., description="Can make call")
+    validation_errors: list = Field(default_factory=list, description="Validation errors")
+    lead_found: bool = Field(False, description="Lead found")
+    lead_phone: Optional[str] = Field(None, description="Lead phone number")
+    user_can_call: bool = Field(False, description="User can make calls")
+    user_agent_id: Optional[str] = Field(None, description="User agent ID")
+    estimated_setup_time: int = Field(0, description="Setup time estimate")
+    recommendations: list = Field(default_factory=list, description="Recommendations")
+
+# =============================================================================
+# DISABLE PROGRESSIVE DIALER (No Call Logging Dependencies)
+# =============================================================================
+
+PROGRESSIVE_DIALER_AVAILABLE = False  # Disabled since we removed call logging
+
+# =============================================================================
+# CREATE ROUTER
+# =============================================================================
 
 router = APIRouter()
 
-# ============================================================================
-# 🆕 NEW: SIMPLIFIED CLICK-TO-CALL ENDPOINT (AUTO-FETCH)
-# ============================================================================
+# =============================================================================
+# SIMPLIFIED CLICK-TO-CALL ENDPOINT (AUTO-FETCH) - PRESERVED
+# =============================================================================
 
 @router.post("/click-to-call-simple", response_model=ClickToCallResponse)
 async def initiate_click_to_call_simple(
@@ -50,6 +121,7 @@ async def initiate_click_to_call_simple(
     - **User Agent**: Automatically uses user's Tata sync data  
     - **No Manual Input**: Frontend only needs to send lead_id
     - **Smart Validation**: Pre-validates lead and user before calling
+    - **No Logging**: Direct call to TATA API without local storage
     
     **Usage:**
     ```json
@@ -70,10 +142,7 @@ async def initiate_click_to_call_simple(
                 detail="Lead ID is required"
             )
         
-        # Extract user_id with fallbacks (same pattern as other endpoints)
-        user_id = str(current_user.get("user_id") or current_user.get("_id") or current_user.get("id"))
-        
-        # 🆕 Use the new simplified service method
+        # Use the simplified service method (preserved - no logging)
         success, result = await tata_call_service.initiate_click_to_call_simple(
             lead_id=call_request.lead_id,
             current_user=current_user,
@@ -124,9 +193,9 @@ async def initiate_click_to_call_simple(
             detail=f"Internal error initiating call: {str(e)}"
         )
 
-# ============================================================================
-# 🆕 NEW: CALL VALIDATION ENDPOINT
-# ============================================================================
+# =============================================================================
+# CALL VALIDATION ENDPOINT - PRESERVED
+# =============================================================================
 
 @router.post("/validate-call", response_model=CallValidationResponse)
 async def validate_call_parameters(
@@ -167,7 +236,6 @@ async def validate_call_parameters(
             recommendations.append("Add a phone number to the lead before calling")
         
         # 2. Check user calling permissions using TataUserService
-        # 🔧 FIXED: Use tata_user_service instead of tata_call_service
         user_mapping = await tata_user_service.get_user_mapping(user_id)
         
         user_can_call = False
@@ -191,15 +259,7 @@ async def validate_call_parameters(
             validation_errors.append("No Tata agent ID found for user")
             recommendations.append("Complete Tata system synchronization")
         
-        # 3. Alternative: Check if user has agent number (from call service)
-        # if user_can_call:
-        #     agent_number = await tata_call_service._get_user_agent_number(user_id)
-        #     if not agent_number:
-        #         validation_errors.append("No agent number configured for calls")
-        #         recommendations.append("Contact admin to configure agent calling number")
-        #         user_can_call = False
-        
-        # 4. Overall validation result
+        # 3. Overall validation result
         can_call = len(validation_errors) == 0
         
         if can_call:
@@ -214,7 +274,7 @@ async def validate_call_parameters(
             lead_phone=lead_phone,
             user_can_call=user_can_call,
             user_agent_id=user_agent_id,
-            estimated_setup_time=0 if can_call else 10,  # 🔧 FIXED: 0 for ready, 10 for setup needed
+            estimated_setup_time=0 if can_call else 10,
             recommendations=recommendations
         )
         
@@ -227,278 +287,54 @@ async def validate_call_parameters(
             user_can_call=False,
             recommendations=["Contact support for assistance"]
         )
-    
-# ============================================================================
-# 🆕 NEW: PROGRESSIVE DIALER ENDPOINTS
-# ============================================================================
+
+# =============================================================================
+# PROGRESSIVE DIALER ENDPOINTS - DISABLED (PLACEHOLDER RESPONSES)
+# =============================================================================
 
 @router.post("/start-progressive-dialer")
 async def start_progressive_dialer_session(
     request: Dict[str, Any],
     current_user: dict = Depends(get_current_active_user)
 ):
-    """
-    🎯 Start Progressive Dialer Session - Multi-lead Sequential Calling
-    
-    - **Multi-lead Calling**: Select multiple leads for sequential calling
-    - **Agent Session**: Agent stays connected throughout the session  
-    - **Auto-dialing**: System automatically dials next lead after each call
-    - **Real-time Control**: Pause/resume/end session as needed
-    - **Lead Validation**: Ensures all leads have valid phone numbers
-    """
-    
-    if not PROGRESSIVE_DIALER_AVAILABLE:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Progressive Dialer service is not available"
-        )
-    
-    try:
-        lead_ids = request.get("lead_ids", [])
-        session_name = request.get("session_name", f"Progressive Session - {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-        
-        logger.info(f"User {current_user['email']} starting progressive dialer with {len(lead_ids)} leads")
-        
-        # Validation
-        if not lead_ids:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="At least one lead ID is required"
-            )
-        
-        if len(lead_ids) > 50:  # Reasonable limit
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Maximum 50 leads allowed per session"
-            )
-        
-        # Check if user has calling enabled
-        if not current_user.get("calling_enabled"):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Calling not enabled for your account. Please contact admin to set up Tata integration."
-            )
-        
-        # Start progressive dialer session
-        result = await progressive_dialer_service.start_progressive_dialer_session(
-            lead_ids=lead_ids,
-            current_user=current_user,
-            session_name=session_name
-        )
-        
-        if result.get("success"):
-            logger.info(f"✅ Progressive dialer started successfully: Session {result.get('session_id')}")
-            return {
-                "success": True,
-                "message": result.get("message"),
-                "session_id": result.get("session_id"),
-                "campaign_id": result.get("campaign_id"),
-                "total_leads": result.get("total_leads"),
-                "leads_preview": result.get("leads_preview", []),
-                "next_steps": [
-                    "1. Answer your phone when it rings to join the session",
-                    "2. Leads will be connected to you automatically one by one",
-                    "3. Use the session control endpoints to pause/resume/end as needed"
-                ],
-                "session_controls": {
-                    "status_endpoint": f"/api/v1/tata-calls/dialer-session/{result.get('session_id')}/status",
-                    "pause_endpoint": f"/api/v1/tata-calls/dialer-session/{result.get('session_id')}/pause",
-                    "end_endpoint": f"/api/v1/tata-calls/dialer-session/{result.get('session_id')}/end"
-                },
-                "started_at": datetime.utcnow()
-            }
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=result.get("message", "Failed to start progressive dialer")
-            )
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Progressive dialer endpoint error: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Internal error starting progressive dialer: {str(e)}"
-        )
+    """Progressive Dialer - DISABLED (No Call Logging)"""
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Progressive Dialer service is disabled (no call logging)"
+    )
 
 @router.get("/dialer-session/{session_id}/status")
 async def get_dialer_session_status(
     session_id: str,
     current_user: dict = Depends(get_current_active_user)
 ):
-    """
-    📊 Get Real-time Progressive Dialer Session Status
-    
-    - **Live Monitoring**: Real-time session progress and statistics
-    - **Call Status**: Current call information and duration
-    - **Progress Tracking**: Leads called, connected, remaining
-    - **Performance Metrics**: Success rates and call statistics
-    """
-    
-    if not PROGRESSIVE_DIALER_AVAILABLE:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Progressive Dialer service is not available"
-        )
-    
-    try:
-        user_id = str(current_user.get("user_id") or current_user.get("_id"))
-        
-        logger.info(f"User {current_user['email']} checking dialer session status: {session_id}")
-        
-        # Get session status
-        result = await progressive_dialer_service.get_session_status(
-            session_id=session_id,
-            user_id=user_id
-        )
-        
-        if result.get("success"):
-            return {
-                "success": True,
-                "session_id": session_id,
-                "status": result.get("status"),
-                "agent_status": result.get("agent_status"),
-                "current_call": result.get("current_call", {}),
-                "progress": result.get("progress", {}),
-                "session_duration": result.get("session_duration"),
-                "performance_metrics": {
-                    "total_leads": result.get("progress", {}).get("total_leads", 0),
-                    "leads_called": result.get("progress", {}).get("leads_called", 0),
-                    "leads_connected": result.get("progress", {}).get("leads_connected", 0),
-                    "leads_remaining": result.get("progress", {}).get("leads_remaining", 0),
-                    "success_rate": round(
-                        (result.get("progress", {}).get("leads_connected", 0) / 
-                         max(result.get("progress", {}).get("leads_called", 1), 1)) * 100, 2
-                    ) if result.get("progress", {}).get("leads_called", 0) > 0 else 0
-                },
-                "last_updated": result.get("last_updated"),
-                "checked_at": datetime.utcnow()
-            }
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=result.get("message", "Session not found")
-            )
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Session status error: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get session status: {str(e)}"
-        )
+    """Progressive Dialer Status - DISABLED (No Call Logging)"""
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Progressive Dialer service is disabled (no call logging)"
+    )
 
 @router.post("/dialer-session/{session_id}/pause")
 async def pause_dialer_session(
     session_id: str,
     current_user: dict = Depends(get_current_active_user)
 ):
-    """
-    ⏸️ Pause Progressive Dialer Session
-    
-    - **Session Control**: Temporarily pause the dialer session
-    - **Call Completion**: Current call will complete, no new calls will be initiated
-    - **Resume Ready**: Session can be resumed later
-    """
-    
-    if not PROGRESSIVE_DIALER_AVAILABLE:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Progressive Dialer service is not available"
-        )
-    
-    try:
-        user_id = str(current_user.get("user_id") or current_user.get("_id"))
-        
-        logger.info(f"User {current_user['email']} pausing dialer session: {session_id}")
-        
-        # Pause session
-        result = await progressive_dialer_service.control_session(
-            session_id=session_id,
-            action="pause",
-            user_id=user_id
-        )
-        
-        if result.get("success"):
-            return {
-                "success": True,
-                "message": "Progressive dialer session paused successfully",
-                "session_id": session_id,
-                "status": "paused",
-                "paused_at": datetime.utcnow(),
-                "note": "Current call will complete. No new calls will be initiated until resumed."
-            }
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=result.get("message", "Failed to pause session")
-            )
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Session pause error: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to pause session: {str(e)}"
-        )
+    """Progressive Dialer Pause - DISABLED (No Call Logging)"""
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Progressive Dialer service is disabled (no call logging)"
+    )
 
 @router.post("/dialer-session/{session_id}/resume")
 async def resume_dialer_session(
     session_id: str,
     current_user: dict = Depends(get_current_active_user)
 ):
-    """
-    ▶️ Resume Progressive Dialer Session
-    
-    - **Session Control**: Resume paused dialer session
-    - **Continuation**: Continues calling remaining leads
-    - **State Preservation**: Maintains progress and statistics
-    """
-    
-    if not PROGRESSIVE_DIALER_AVAILABLE:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Progressive Dialer service is not available"
-        )
-    
-    try:
-        user_id = str(current_user.get("user_id") or current_user.get("_id"))
-        
-        logger.info(f"User {current_user['email']} resuming dialer session: {session_id}")
-        
-        # Resume session
-        result = await progressive_dialer_service.control_session(
-            session_id=session_id,
-            action="resume",
-            user_id=user_id
-        )
-        
-        if result.get("success"):
-            return {
-                "success": True,
-                "message": "Progressive dialer session resumed successfully",
-                "session_id": session_id,
-                "status": "active",
-                "resumed_at": datetime.utcnow(),
-                "note": "Dialer will continue with remaining leads."
-            }
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=result.get("message", "Failed to resume session")
-            )
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Session resume error: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to resume session: {str(e)}"
-        )
+    """Progressive Dialer Resume - DISABLED (No Call Logging)"""
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Progressive Dialer service is disabled (no call logging)"
+    )
 
 @router.post("/dialer-session/{session_id}/end")
 async def end_dialer_session(
@@ -506,59 +342,11 @@ async def end_dialer_session(
     session_summary: Optional[Dict[str, Any]] = None,
     current_user: dict = Depends(get_current_active_user)
 ):
-    """
-    🛑 End Progressive Dialer Session
-    
-    - **Session Termination**: Completely end the dialer session
-    - **Final Summary**: Provides complete session statistics
-    - **Call Completion**: Current call will complete before ending
-    - **Data Preservation**: All call logs and statistics are saved
-    """
-    
-    if not PROGRESSIVE_DIALER_AVAILABLE:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Progressive Dialer service is not available"
-        )
-    
-    try:
-        user_id = str(current_user.get("user_id") or current_user.get("_id"))
-        
-        logger.info(f"User {current_user['email']} ending dialer session: {session_id}")
-        
-        # End session
-        result = await progressive_dialer_service.control_session(
-            session_id=session_id,
-            action="end",
-            user_id=user_id,
-            session_summary=session_summary
-        )
-        
-        if result.get("success"):
-            return {
-                "success": True,
-                "message": "Progressive dialer session ended successfully",
-                "session_id": session_id,
-                "status": "completed",
-                "ended_at": datetime.utcnow(),
-                "final_summary": result.get("final_summary", {}),
-                "session_statistics": result.get("session_statistics", {}),
-                "note": "All call data has been saved. Session is now closed."
-            }
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=result.get("message", "Failed to end session")
-            )
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Session end error: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to end session: {str(e)}"
-        )
+    """Progressive Dialer End - DISABLED (No Call Logging)"""
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Progressive Dialer service is disabled (no call logging)"
+    )
 
 @router.get("/dialer-sessions/my-sessions")
 async def get_my_dialer_sessions(
@@ -566,60 +354,15 @@ async def get_my_dialer_sessions(
     limit: int = 20,
     current_user: dict = Depends(get_current_active_user)
 ):
-    """
-    📋 Get My Progressive Dialer Sessions
-    
-    - **User Sessions**: Shows all dialer sessions for current user
-    - **Status Filtering**: Filter by active, paused, completed sessions
-    - **Session History**: View past session performance
-    """
-    
-    if not PROGRESSIVE_DIALER_AVAILABLE:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Progressive Dialer service is not available"
-        )
-    
-    try:
-        user_id = str(current_user.get("user_id") or current_user.get("_id"))
-        
-        logger.info(f"User {current_user['email']} fetching dialer sessions")
-        
-        # Get user's dialer sessions
-        result = await progressive_dialer_service.get_user_sessions(
-            user_id=user_id,
-            status_filter=status,
-            limit=limit
-        )
-        
-        if result.get("success"):
-            return {
-                "success": True,
-                "sessions": result.get("sessions", []),
-                "total_sessions": result.get("total_count", 0),
-                "active_sessions": result.get("active_count", 0),
-                "retrieved_at": datetime.utcnow()
-            }
-        else:
-            return {
-                "success": True,
-                "sessions": [],
-                "total_sessions": 0,
-                "active_sessions": 0,
-                "message": "No sessions found",
-                "retrieved_at": datetime.utcnow()
-            }
-            
-    except Exception as e:
-        logger.error(f"Error fetching user sessions: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch sessions: {str(e)}"
-        )
+    """Progressive Dialer Sessions - DISABLED (No Call Logging)"""
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Progressive Dialer service is disabled (no call logging)"
+    )
 
-# ============================================================================
-# EXISTING CLICK-TO-CALL ENDPOINTS - UNCHANGED (BACKWARD COMPATIBILITY)
-# ============================================================================
+# =============================================================================
+# LEGACY CLICK-TO-CALL ENDPOINT - PRESERVED (BACKWARD COMPATIBILITY)
+# =============================================================================
 
 @router.post("/click-to-call", response_model=ClickToCallResponse)
 async def initiate_click_to_call(
@@ -632,7 +375,7 @@ async def initiate_click_to_call(
     - **Authentication Required**: User must be logged in
     - **Permission Check**: Validates user has access to the lead
     - **User Mapping**: Checks if user is mapped to Tata system
-    - **Auto-logging**: Automatically logs call to lead timeline
+    - **No Logging**: Direct call to TATA API without local storage
     
     **Note**: Use `/click-to-call-simple` for easier integration
     """
@@ -652,20 +395,14 @@ async def initiate_click_to_call(
                 detail="Lead ID is required"
             )
         
-        # Extract user_id with fallbacks (same pattern as other endpoints)
-        user_id_fallback = (current_user.get("user_id") or 
-                           current_user.get("_id") or 
-                           current_user.get("id") or 
-                           current_user.get("email"))
-        
-        # Initiate call through service (fix parameters and return handling)
+        # Initiate call through service (preserved functionality)
         success, result = await tata_call_service.initiate_click_to_call(
             lead_id=call_request.lead_id,
             destination_number=call_request.destination_number,
-            current_user=current_user,  # ← Pass whole user dict
-            caller_id=call_request.caller_id,  # ← Add caller_id
+            current_user=current_user,
+            caller_id=call_request.caller_id,
             notes=call_request.notes,
-            call_timeout=call_request.call_timeout  # ← Add timeout if exists
+            call_timeout=call_request.call_timeout
         )
         
         # Handle tuple response from service
@@ -698,18 +435,20 @@ async def initiate_click_to_call(
             detail=f"Internal error initiating call: {str(e)}"
         )
 
+# =============================================================================
+# SUPPORT CALL ENDPOINT - SIMPLIFIED (NO LOGGING)
+# =============================================================================
+
 @router.post("/support-call", response_model=SupportCallResponse)
 async def initiate_support_call(
     support_request: SupportCallRequest,
     current_user: dict = Depends(get_current_active_user)
 ):
     """
-    Initiate support call for user assistance
+    Initiate support call for user assistance - NO LOGGING
     
     - **Authentication Required**: User must be logged in
-    - **Support Priority**: Automatic priority assignment based on user role
-    - **Issue Tracking**: Links call to specific issue or lead
-    - **Escalation**: Auto-escalation for critical issues
+    - **Direct TATA API Call**: No local storage or logging
     """
     try:
         logger.info(f"User {current_user['email']} requesting support call for: {support_request.issue_type}")
@@ -721,31 +460,30 @@ async def initiate_support_call(
                 detail="Issue type is required"
             )
         
-        # Initiate support call through service
-        result = await tata_call_service.initiate_support_call(
-            user_id=current_user["user_id"],
-            issue_type=support_request.issue_type,
-            priority=support_request.priority,
-            description=support_request.description,
-            related_lead_id=support_request.related_lead_id
+        # Initiate support call through service (preserved)
+        success, result = await tata_call_service.initiate_support_call(
+            customer_number=current_user.get("phone", ""),
+            current_user=current_user,
+            lead_id=support_request.related_lead_id,
+            notes=f"{support_request.issue_type}: {support_request.description or ''}"
         )
         
-        if not result["success"]:
+        if not success:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=result["message"]
+                detail=result.get("message", "Support call failed")
             )
         
-        logger.info(f"Support call initiated successfully: {result['support_call_id']}")
+        logger.info(f"Support call initiated successfully")
         
         return SupportCallResponse(
             success=True,
             message="Support call request submitted successfully",
-            support_call_id=result["support_call_id"],
-            ticket_number=result.get("ticket_number"),
-            priority=result["priority"],
-            estimated_callback_time=result.get("estimated_callback_time", 300),  # 5 minutes default
-            support_agent_info=result.get("support_agent_info"),
+            support_call_id=result.get("tata_call_id", "support_call"),
+            ticket_number=None,
+            priority=support_request.priority,
+            estimated_callback_time=300,
+            support_agent_info=None,
             submitted_at=datetime.utcnow()
         )
         
@@ -758,9 +496,9 @@ async def initiate_support_call(
             detail=f"Internal error requesting support call: {str(e)}"
         )
 
-# ============================================================================
-# PERMISSION AND STATUS ENDPOINTS - UNCHANGED
-# ============================================================================
+# =============================================================================
+# PERMISSION ENDPOINT - PRESERVED (USER SYNC FUNCTIONALITY)
+# =============================================================================
 
 @router.get("/permissions/{user_id}", response_model=CallPermissionResponse)
 async def check_call_permissions(
@@ -768,11 +506,11 @@ async def check_call_permissions(
     current_user: dict = Depends(get_current_active_user)
 ):
     """
-    Check if user has permissions to make calls
+    Check if user has permissions to make calls - PRESERVED
     
     - **Self or Admin**: Users can check their own permissions, admins can check any user
     - **Tata Mapping**: Checks if user is mapped to Tata system
-    - **Call Quotas**: Checks remaining call quotas and limits
+    - **No Call Logging**: Just permission checks
     """
     try:
         # Permission check: users can check their own permissions, admins can check any user
@@ -784,20 +522,30 @@ async def check_call_permissions(
         
         logger.info(f"Checking call permissions for user {user_id}")
         
-        # Check permissions through service
-        permissions = await tata_call_service.check_user_call_permissions(user_id)
+        # Get user mapping (preserved functionality)
+        user_mapping = await tata_user_service.get_user_mapping(user_id)
         
-        return CallPermissionResponse(
-            user_id=user_id,
-            can_make_calls=permissions["can_make_calls"],
-            has_tata_mapping=permissions["has_tata_mapping"],
-            tata_agent_id=permissions.get("tata_agent_id"),
-            call_limit_remaining=permissions.get("call_limit_remaining"),
-            daily_call_count=permissions.get("daily_call_count", 0),
-            permission_errors=permissions.get("permission_errors", []),
-            last_call_time=permissions.get("last_call_time"),
-            checked_at=datetime.utcnow()
-        )
+        if user_mapping:
+            return CallPermissionResponse(
+                user_id=user_id,
+                can_make_calls=user_mapping.get("can_make_calls", False),
+                has_tata_mapping=True,
+                tata_agent_id=user_mapping.get("tata_agent_id"),
+                call_limit_remaining=None,  # No logging = no limits
+                daily_call_count=0,  # No logging = no count
+                permission_errors=[],
+                last_call_time=None,  # No logging = no last call time
+                checked_at=datetime.utcnow()
+            )
+        else:
+            return CallPermissionResponse(
+                user_id=user_id,
+                can_make_calls=False,
+                has_tata_mapping=False,
+                tata_agent_id=None,
+                permission_errors=["User not synchronized with TATA system"],
+                checked_at=datetime.utcnow()
+            )
         
     except HTTPException:
         raise  # Re-raise HTTP exceptions as-is
@@ -808,114 +556,37 @@ async def check_call_permissions(
             detail=f"Internal error checking call permissions: {str(e)}"
         )
 
+# =============================================================================
+# SIMPLIFIED STATUS/MANAGEMENT ENDPOINTS (NO LOGGING)
+# =============================================================================
+
 @router.get("/status/{call_id}")
 async def get_call_status(
     call_id: str,
     current_user: dict = Depends(get_current_active_user)
 ):
     """
-    Get real-time status of a specific call
-    
-    - **Authentication Required**: User must be logged in
-    - **Access Control**: Users can only check status of their own calls or assigned leads
-    - **Real-time**: Returns current call status from Tata API
+    Get call status - SIMPLIFIED (No local logging)
+    Returns basic status without database lookups
     """
     try:
         logger.info(f"User {current_user['email']} checking status for call {call_id}")
         
-        # Get call status through service
-        status_result = await tata_call_service.get_call_status(
-            call_id=call_id,
-            requesting_user_id=current_user["user_id"]
-        )
-        
-        if not status_result["success"]:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=status_result["message"]
-            )
-        
+        # Since we don't store call logs, return basic response
         return {
             "success": True,
             "call_id": call_id,
-            "call_status": status_result["call_status"],
-            "call_duration": status_result.get("call_duration"),
-            "connection_time": status_result.get("connection_time"),
-            "end_time": status_result.get("end_time"),
-            "call_outcome": status_result.get("call_outcome"),
-            "last_updated": status_result.get("last_updated"),
-            "tata_call_details": status_result.get("tata_call_details", {}),
+            "message": "Call status not tracked (no logging enabled)",
+            "note": "Use TATA dashboard for detailed call tracking",
             "checked_at": datetime.utcnow()
         }
         
-    except HTTPException:
-        raise  # Re-raise HTTP exceptions as-is
     except Exception as e:
         logger.error(f"Error checking call status {call_id}: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Internal error checking call status: {str(e)}"
         )
-
-# ============================================================================
-# WEBHOOK ENDPOINTS - UNCHANGED
-# ============================================================================
-
-@router.post("/webhook")
-async def handle_tata_webhook(
-    request: Request,
-    webhook_payload: CallWebhookPayload
-):
-    """
-    Handle webhooks from Tata Tele API
-    
-    - **Public Endpoint**: No authentication required (webhook from Tata)
-    - **Signature Verification**: Verifies webhook signature for security
-    - **Event Processing**: Processes call status updates, recordings, etc.
-    - **Auto-logging**: Updates call logs and lead timelines automatically
-    """
-    try:
-        # Get raw body for signature verification
-        raw_body = await request.body()
-        
-        logger.info(f"Received Tata webhook: {webhook_payload.event_type} for call {webhook_payload.call_id}")
-        
-        # Process webhook through service
-        result = await tata_call_service.process_webhook(
-            webhook_payload=webhook_payload,
-            raw_body=raw_body,
-            headers=dict(request.headers)
-        )
-        
-        if not result["success"]:
-            logger.warning(f"Webhook processing failed: {result['message']}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=result["message"]
-            )
-        
-        logger.info(f"Webhook processed successfully: {webhook_payload.event_type}")
-        
-        return {
-            "success": True,
-            "message": "Webhook processed successfully",
-            "event_type": webhook_payload.event_type,
-            "call_id": webhook_payload.call_id,
-            "processed_at": datetime.utcnow()
-        }
-        
-    except HTTPException:
-        raise  # Re-raise HTTP exceptions as-is
-    except Exception as e:
-        logger.error(f"Error processing webhook: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Internal error processing webhook: {str(e)}"
-        )
-
-# ============================================================================
-# CALL MANAGEMENT ENDPOINTS - UNCHANGED
-# ============================================================================
 
 @router.post("/end/{call_id}")
 async def end_call(
@@ -925,44 +596,21 @@ async def end_call(
     current_user: dict = Depends(get_current_active_user)
 ):
     """
-    Manually end a call and update outcome
-    
-    - **Authentication Required**: User must be logged in
-    - **Access Control**: Users can only end their own calls
-    - **Call Summary**: Updates call outcome and notes
-    - **Auto-logging**: Updates lead timeline with call results
+    End call - SIMPLIFIED (No logging)
+    Just returns success without database operations
     """
     try:
         logger.info(f"User {current_user['email']} ending call {call_id}")
         
-        # End call through service
-        result = await tata_call_service.end_call(
-            call_id=call_id,
-            user_id=current_user["user_id"],
-            call_outcome=call_outcome,
-            notes=notes
-        )
-        
-        if not result["success"]:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=result["message"]
-            )
-        
-        logger.info(f"Call ended successfully: {call_id}")
-        
+        # Since we don't store call logs, return basic response
         return {
             "success": True,
-            "message": "Call ended successfully",
+            "message": "Call end acknowledged (no logging enabled)",
             "call_id": call_id,
-            "final_status": result["final_status"],
-            "call_duration": result.get("call_duration"),
-            "call_outcome": call_outcome,
+            "note": "Call outcomes not stored locally - use TATA dashboard",
             "ended_at": datetime.utcnow()
         }
         
-    except HTTPException:
-        raise  # Re-raise HTTP exceptions as-is
     except Exception as e:
         logger.error(f"Error ending call {call_id}: {str(e)}", exc_info=True)
         raise HTTPException(
@@ -975,39 +623,31 @@ async def get_my_active_calls(
     current_user: dict = Depends(get_current_active_user)
 ):
     """
-    Get list of user's currently active calls
-    
-    - **Authentication Required**: User must be logged in
-    - **User Specific**: Only returns calls for the current user
-    - **Real-time**: Shows current call status
+    Get active calls - SIMPLIFIED (No logging)
+    Returns empty since we don't track calls locally
     """
     try:
         logger.info(f"User {current_user['email']} fetching active calls")
         
-        # Get active calls through service
-        active_calls = await tata_call_service.get_user_active_calls(
-            user_id=current_user["user_id"]
-        )
-        
         return {
             "success": True,
-            "active_calls": active_calls,
-            "total_active": len(active_calls),
+            "active_calls": [],
+            "total_active": 0,
+            "message": "Active calls not tracked locally (no logging enabled)",
+            "note": "Use TATA dashboard for call monitoring",
             "retrieved_at": datetime.utcnow()
         }
         
-    except HTTPException:
-        raise  # Re-raise HTTP exceptions as-is
     except Exception as e:
-        logger.error(f"Error fetching active calls for user {current_user['user_id']}: {str(e)}", exc_info=True)
+        logger.error(f"Error fetching active calls: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Internal error fetching active calls: {str(e)}"
         )
 
-# ============================================================================
-# ADMIN ENDPOINTS - UNCHANGED
-# ============================================================================
+# =============================================================================
+# ADMIN ENDPOINTS - SIMPLIFIED (NO LOGGING)
+# =============================================================================
 
 @router.get("/admin/all-active-calls")
 @convert_dates_to_ist()
@@ -1015,27 +655,21 @@ async def get_all_active_calls(
     current_user: dict = Depends(get_admin_user)  # Admin only
 ):
     """
-    Get list of all currently active calls (Admin only)
-    
-    - **Admin Only**: Only admins can view all active calls
-    - **System Overview**: Shows all active calls across all users
-    - **Call Monitoring**: For call center management
+    Get all active calls - SIMPLIFIED (No logging)
+    Returns empty since we don't track calls locally
     """
     try:
         logger.info(f"Admin {current_user['email']} fetching all active calls")
         
-        # Get all active calls through service
-        all_active_calls = await tata_call_service.get_all_active_calls()
-        
         return {
             "success": True,
-            "active_calls": all_active_calls,
-            "total_active": len(all_active_calls),
+            "active_calls": [],
+            "total_active": 0,
+            "message": "Active calls not tracked locally (no logging enabled)",
+            "note": "Use TATA dashboard for system-wide call monitoring",
             "retrieved_at": datetime.utcnow()
         }
         
-    except HTTPException:
-        raise  # Re-raise HTTP exceptions as-is
     except Exception as e:
         logger.error(f"Error fetching all active calls: {str(e)}", exc_info=True)
         raise HTTPException(
@@ -1043,9 +677,44 @@ async def get_all_active_calls(
             detail=f"Internal error fetching all active calls: {str(e)}"
         )
 
-# ============================================================================
-# ROUTER METADATA
-# ============================================================================
+# =============================================================================
+# WEBHOOK ENDPOINT - SIMPLIFIED (NO LOGGING)
+# =============================================================================
 
-# Router tags and metadata for API documentation
-router.tags = ["Tata Calls", "Progressive Dialer", "Simplified Calling"]
+@router.post("/webhook")
+async def handle_tata_webhook(
+    request: Request,
+    webhook_payload: CallWebhookPayload
+):
+    """
+    Handle TATA webhooks - SIMPLIFIED (No logging)
+    Just acknowledges webhooks without storing data
+    """
+    try:
+        # Get raw body for logging
+        raw_body = await request.body()
+        
+        logger.info(f"Received Tata webhook: {webhook_payload.event_type} for call {webhook_payload.call_id}")
+        logger.info(f"Webhook acknowledged but not processed (no logging enabled)")
+        
+        return {
+            "success": True,
+            "message": "Webhook acknowledged (no logging enabled)",
+            "event_type": webhook_payload.event_type,
+            "call_id": webhook_payload.call_id,
+            "note": "Webhook data not stored locally",
+            "processed_at": datetime.utcnow()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error processing webhook: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal error processing webhook: {str(e)}"
+        )
+
+# =============================================================================
+# ROUTER METADATA
+# =============================================================================
+
+router.tags = ["Tata Calls", "Simplified Calling"]

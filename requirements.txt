@@ -13,3 +13,5 @@ bcrypt==4.0.1
 httpx==0.28.1
 cryptography==41.0.7
 APScheduler==3.10.4
+aiohttp==3.9.1
+python-dateutil==2.8.2
