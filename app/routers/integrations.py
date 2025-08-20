@@ -54,16 +54,44 @@ async def create_lead_from_skillang(
                 detail=f"Invalid category. Must be one of: {', '.join(valid_categories)}"
             )
         
-        # Step 3: Build notes from additional fields
+        # Step 3: ENHANCED - Build comprehensive notes from ALL additional fields
         notes_parts = []
-        if form_data.pincode:
-            notes_parts.append(f"Pincode: {form_data.pincode}")
-        if form_data.qualification:
-            notes_parts.append(f"Qualification: {form_data.qualification}")
-        if form_data.form_source:
-            notes_parts.append(f"Form Source: {form_data.form_source}")
         
-        # Add integration source info
+        # Standard optional fields mapping
+        field_mappings = {
+            'pincode': 'Pincode',
+            'qualification': 'Qualification', 
+            'form_source': 'Form Source',
+            'preferred_call_type': 'Preferred Call Type',
+            'preferred_language': 'Preferred Language',
+            'status': 'Current Status',
+            'preferred_time': 'Preferred Contact Time',
+            'budget_range': 'Budget Range',
+            'urgency_level': 'Urgency Level',
+            'referral_source': 'Referral Source',
+            'special_requirements': 'Special Requirements',
+            'german_status': 'German Language Status',
+            'start_planning': 'Planning to Start',
+            'call_back': 'Preferred Callback Time'
+        }
+        
+        # Process all standard fields
+        for field_name, display_name in field_mappings.items():
+            field_value = getattr(form_data, field_name, None)
+            if field_value:
+                notes_parts.append(f"{display_name}: {field_value}")
+        
+        # Process flexible extra_info dictionary
+        if form_data.extra_info:
+            notes_parts.append("--- Additional Information ---")
+            for key, value in form_data.extra_info.items():
+                if value:  # Only add non-empty values
+                    # Convert key from snake_case to Title Case
+                    display_key = key.replace('_', ' ').title()
+                    notes_parts.append(f"{display_key}: {value}")
+        
+        # Add integration metadata
+        notes_parts.append("--- Integration Details ---")
         notes_parts.append(f"Integration: Skillang Form Submission")
         notes_parts.append(f"Submitted At: {datetime.utcnow().isoformat()}")
         
@@ -81,8 +109,8 @@ async def create_lead_from_skillang(
             ),
             status_and_tags=LeadStatusAndTags(
                 stage="Initial",
-                lead_score=25,  # Default score for form submissions
-                tags=["Website Form", "Skillang Integration"]
+                lead_score=calculate_lead_score(form_data),  # Enhanced scoring based on extra data
+                tags=generate_tags(form_data)  # Dynamic tags based on form data
             ),
             assignment=LeadAssignmentInfo(
                 assigned_to="unassigned"  # Keep unassigned for manual assignment
@@ -144,10 +172,123 @@ async def create_lead_from_skillang(
         )
 
 # ============================================================================
+# HELPER FUNCTIONS FOR ENHANCED DATA PROCESSING
+# ============================================================================
+
+def calculate_lead_score(form_data: SkillangFormData) -> int:
+    """Calculate lead score based on available data and engagement indicators"""
+    base_score = 25
+    
+    # Add points for additional information provided (shows engagement)
+    if form_data.qualification:
+        base_score += 5
+    if form_data.experience and form_data.experience != "fresher":
+        base_score += 10
+    if form_data.budget_range:
+        base_score += 15  # Budget indicates serious interest
+    if form_data.preferred_time:
+        base_score += 5   # Specific time preference shows planning
+    if form_data.special_requirements:
+        base_score += 8   # Detailed requirements indicate serious consideration
+    
+    # Urgency level scoring
+    if form_data.urgency_level == "High":
+        base_score += 20
+    elif form_data.urgency_level == "Medium":
+        base_score += 10
+    elif form_data.urgency_level == "Low":
+        base_score += 3
+    
+    # Referral source bonus
+    if form_data.referral_source:
+        if "referral" in form_data.referral_source.lower() or "friend" in form_data.referral_source.lower():
+            base_score += 12  # Personal referrals are high value
+        else:
+            base_score += 5   # Other sources still valuable
+    
+    # Planning and timing bonuses
+    if form_data.start_planning:
+        if "immediately" in form_data.start_planning.lower():
+            base_score += 15  # High urgency for immediate start
+        elif "next month" in form_data.start_planning.lower():
+            base_score += 8
+        else:
+            base_score += 3
+    
+    if form_data.call_back:
+        base_score += 5  # Shows engagement and planning
+    
+    # German language status bonus (for language courses)
+    if form_data.german_status:
+        if "beginner" in form_data.german_status.lower() or "started" in form_data.german_status.lower():
+            base_score += 8
+        else:
+            base_score += 3
+    
+    # Extra info bonus (shows detailed engagement)
+    if form_data.extra_info and len(form_data.extra_info) > 0:
+        base_score += len(form_data.extra_info) * 3  # 3 points per extra field
+    
+    return min(base_score, 100)  # Cap at 100
+
+def generate_tags(form_data: SkillangFormData) -> list:
+    """Generate dynamic tags based on form data for better lead categorization"""
+    tags = ["Website Form", "Skillang Integration"]
+    
+    # Urgency-based tags
+    if form_data.urgency_level:
+        tags.append(f"Urgency: {form_data.urgency_level}")
+    
+    # Communication preference tags
+    if form_data.preferred_call_type:
+        tags.append(f"Call Type: {form_data.preferred_call_type}")
+    
+    if form_data.preferred_language and form_data.preferred_language.lower() != "english":
+        tags.append(f"Language: {form_data.preferred_language}")
+    
+    # Source and referral tags
+    if form_data.referral_source:
+        tags.append(f"Referral: {form_data.referral_source}")
+    
+    if form_data.form_source:
+        tags.append(f"Source: {form_data.form_source}")
+    
+    # Budget indication
+    if form_data.budget_range:
+        tags.append("Budget Provided")
+    
+    # Special requirements flag
+    if form_data.special_requirements:
+        tags.append("Special Requirements")
+    
+    # Experience level tags
+    if form_data.experience:
+        tags.append(f"Experience: {form_data.experience}")
+    
+    # Country-specific tags for international leads
+    if form_data.country and form_data.country.lower() not in ["india", "unknown"]:
+        tags.append(f"International: {form_data.country}")
+    
+    # Planning and engagement tags
+    if form_data.start_planning:
+        if "immediately" in form_data.start_planning.lower():
+            tags.append("Immediate Start")
+        else:
+            tags.append(f"Start: {form_data.start_planning}")
+    
+    if form_data.call_back:
+        tags.append(f"Callback: {form_data.call_back}")
+    
+    # German language specific tags
+    if form_data.german_status:
+        tags.append(f"German Status: {form_data.german_status}")
+    
+    return tags
+
+# ============================================================================
 # BACKGROUND EMAIL FUNCTION
 # ============================================================================
 
-# ✅ ADD this function:
 async def get_valid_categories():
     """Fetch active categories dynamically from database"""
     try:

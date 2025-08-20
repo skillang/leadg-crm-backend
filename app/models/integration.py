@@ -1,21 +1,42 @@
 # app/models/integration.py - Skillang Integration Models
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional
+from typing import Optional, Dict, Any
 from datetime import datetime
 from enum import Enum
 
 class SkillangFormData(BaseModel):
     """Model for Skillang form submission data"""
+    # Core required fields
     name: str = Field(..., min_length=1, max_length=100, description="Full name of the applicant")
     email: EmailStr = Field(..., description="Valid email address")
     phone: str = Field(..., min_length=10, max_length=15, description="Phone number")
-    pincode: Optional[str] = Field(None, max_length=10, description="Postal/ZIP code")
     category: str = Field(..., description="Lead category (Nursing, Study Abroad, etc.)")
+    
+    # Standard optional fields
+    pincode: Optional[str] = Field(None, max_length=10, description="Postal/ZIP code")
     experience: Optional[str] = Field(None, description="Experience level (0-1 Years, 1-3 Years, etc.)")
     country: Optional[str] = Field(None, max_length=50, description="Country of origin")
     qualification: Optional[str] = Field(None, max_length=100, description="Educational qualification")
     age: Optional[int] = Field(None, ge=16, le=80, description="Age of the applicant")
     form_source: Optional[str] = Field(None, max_length=50, description="Form source identifier")
+    
+    # NEW: Additional fields for enhanced forms
+    preferred_call_type: Optional[str] = Field(None, description="Preferred call type (Voice, Video, WhatsApp)")
+    preferred_language: Optional[str] = Field(None, description="Preferred communication language")
+    status: Optional[str] = Field(None, description="Current status or stage")
+    preferred_time: Optional[str] = Field(None, description="Preferred contact time")
+    budget_range: Optional[str] = Field(None, description="Budget range for services")
+    urgency_level: Optional[str] = Field(None, description="Urgency level (Low, Medium, High)")
+    referral_source: Optional[str] = Field(None, description="How they heard about us")
+    special_requirements: Optional[str] = Field(None, description="Any special requirements")
+    
+    # NEW: Specific fields from your form data
+    german_status: Optional[str] = Field(None, description="German language learning status")
+    start_planning: Optional[str] = Field(None, description="When planning to start (Immediately, Next Month, etc.)")
+    call_back: Optional[str] = Field(None, description="Preferred callback time (Morning, Afternoon, Evening)")
+    
+    # NEW: Flexible extra_info field for any additional data
+    extra_info: Optional[Dict[str, Any]] = Field(None, description="Additional form data as key-value pairs")
 
     class Config:
         json_schema_extra = {
@@ -29,7 +50,22 @@ class SkillangFormData(BaseModel):
                 "country": "India",
                 "qualification": "B.Sc Nursing",
                 "age": 25,
-                "form_source": "Nursing Page Form"
+                "form_source": "Nursing Page Form",
+                "preferred_call_type": "WhatsApp",
+                "preferred_language": "Tamil",
+                "urgency_level": "High",
+                "budget_range": "50,000 - 1,00,000 INR",
+                "preferred_time": "Evening (6-8 PM)",
+                "referral_source": "Google Search",
+                "special_requirements": "Need weekend availability",
+                "german_status": "Not yet started",
+                "start_planning": "Immediately", 
+                "call_back": "Morning",
+                "extra_info": {
+                    "shift_preference": "Night Shift",
+                    "visa_status": "Student Visa",
+                    "work_experience_abroad": "Yes"
+                }
             }
         }
 
@@ -126,8 +162,6 @@ EXPERIENCE_LEVELS = {
     "3-5 Years": "3_to_5_years",
     "5+ Years": "more_than_10_years"
 }
-
-
 
 class IntegrationValidationError(Exception):
     """Custom exception for integration validation errors"""
