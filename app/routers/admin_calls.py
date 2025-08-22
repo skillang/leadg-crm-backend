@@ -16,7 +16,7 @@ from ..models.admin_dashboard import (
     AdminDashboardResponse, UserPerformanceResponse, PerformanceRankingResponse,
     RecordingPlayResponse, FilterOptionsResponse, DashboardFilters,
     UserPerformanceRequest, PlayRecordingRequest, PerformancePeriod,
-    CallStatusFilter, CallDirectionFilter, DashboardError
+    CallStatusFilter, CallDirectionFilter, DashboardError,ComprehensivePeakHoursResponse, PeakAnsweredHoursResponse, PeakMissedHoursResponse
 )
 from ..utils.dependencies import get_admin_user, get_current_active_user
 
@@ -1524,6 +1524,324 @@ async def get_summary_statistics(
             detail=f"Failed to fetch summary statistics: {str(e)}"
         )
 
+
+
+
+# =============================================================================
+# NEW: COMPREHENSIVE PEAK HOURS ANALYTICS ENDPOINT
+# =============================================================================
+
+@router.get("/analytics/comprehensive-peak-hours")
+async def get_comprehensive_peak_hours_analysis(
+    date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    include_total: bool = Query(True, description="Include peak calling hours (all calls)"),
+    include_answered: bool = Query(True, description="Include peak answered hours"),
+    include_missed: bool = Query(True, description="Include peak missed hours"),
+    user_ids: Optional[str] = Query(None, description="Comma-separated user IDs to filter"),
+    current_user: Dict = Depends(get_admin_user)
+):
+    """
+    🆕 NEW: Get comprehensive peak hours analysis
+    - Peak calling hours (all calls)
+    - Peak answered hours (when leads answer most)
+    - Peak missed hours (when leads miss most)
+    
+    This endpoint provides all three peak hour analyses in a single efficient API call.
+    """
+    try:
+        logger.info(f"Admin {current_user.get('email')} requesting comprehensive peak hours analysis")
+        
+        # Initialize agent mapping
+        await tata_admin_service.initialize_agent_mapping()
+        
+        # Set default date range if not provided
+        if not date_from or not date_to:
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=7)  # Last 7 days default
+            date_from = start_date.strftime("%Y-%m-%d")
+            date_to = end_date.strftime("%Y-%m-%d")
+        
+        # Format dates for TATA API
+        from_date = f"{date_from} 00:00:00"
+        to_date = f"{date_to} 23:59:59"
+        
+        logger.info(f"📊 Fetching comprehensive peak hours analysis from {date_from} to {date_to}")
+        
+        # Fetch ALL call records first
+        all_call_records = await tata_admin_service.fetch_all_call_records(
+            from_date=from_date,
+            to_date=to_date,
+            max_records=10000
+        )
+        
+        logger.info(f"📈 Fetched {len(all_call_records)} total call records")
+        
+        # Apply user filtering if specified
+        filtered_call_records = all_call_records
+        filter_info = {"applied": False, "user_count": 0, "agent_numbers": []}
+        
+        if user_ids:
+            logger.info(f"🎯 Applying user filter for: {user_ids}")
+            user_list = [uid.strip() for uid in user_ids.split(",")]
+            
+            # Build list of target agent numbers
+            target_agent_numbers = []
+            for user_id in user_list:
+                for agent_number, mapping in tata_admin_service.agent_user_mapping.items():
+                    if mapping.get("user_id") == user_id:
+                        target_agent_numbers.append(agent_number)
+                        logger.info(f"✅ User {user_id} -> Agent {agent_number}")
+                        break
+                else:
+                    logger.warning(f"❌ User {user_id} not found in agent mapping")
+            
+            # Filter records by agent numbers
+            if target_agent_numbers:
+                original_count = len(filtered_call_records)
+                filtered_call_records = [
+                    record for record in all_call_records
+                    if record.get("agent_number") in target_agent_numbers
+                ]
+                logger.info(f"🔍 User filtering: {original_count} -> {len(filtered_call_records)} records")
+                
+                filter_info = {
+                    "applied": True,
+                    "user_count": len(user_list),
+                    "agent_numbers": target_agent_numbers,
+                    "records_before_filter": original_count,
+                    "records_after_filter": len(filtered_call_records)
+                }
+            else:
+                logger.warning("No valid target agent numbers found")
+                filtered_call_records = []
+                filter_info = {
+                    "applied": True,
+                    "user_count": len(user_list),
+                    "agent_numbers": [],
+                    "error": "No valid agent numbers found for specified users"
+                }
+        
+        # Calculate comprehensive peak hours using the performance calculator
+        peak_hours_analysis = performance_calculator.calculate_comprehensive_peak_hours(
+            call_records=filtered_call_records
+        )
+        
+        # Validate the analysis was successful
+        if not peak_hours_analysis.get("success", False):
+            logger.error(f"Peak hours calculation failed: {peak_hours_analysis.get('error', 'Unknown error')}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "error": "calculation_failed",
+                    "message": "Failed to calculate peak hours",
+                    "details": peak_hours_analysis.get("error", "Unknown error")
+                }
+            )
+        
+        # Filter results based on include flags
+        response_data = {
+            "success": True,
+            "date_range": f"{date_from} to {date_to}",
+            "analysis_type": "comprehensive_peak_hours",
+            "filter_info": filter_info
+        }
+        
+        if include_total:
+            response_data["peak_calling_hours"] = peak_hours_analysis["peak_calling_hours"]
+        
+        if include_answered:
+            response_data["peak_answered_hours"] = peak_hours_analysis["peak_answered_hours"]
+        
+        if include_missed:
+            response_data["peak_missed_hours"] = peak_hours_analysis["peak_missed_hours"]
+        
+        # Always include summary and metadata
+        response_data.update({
+            "summary": peak_hours_analysis["summary"],
+            "analysis_metadata": peak_hours_analysis["analysis_metadata"],
+            "generated_at": datetime.utcnow(),
+            "requested_by": current_user.get("email", "unknown"),
+            "query_parameters": {
+                "date_from": date_from,
+                "date_to": date_to,
+                "include_total": include_total,
+                "include_answered": include_answered,
+                "include_missed": include_missed,
+                "user_filter_applied": bool(user_ids),
+                "filtered_user_ids": user_ids.split(",") if user_ids else None
+            }
+        })
+        
+        # Add additional insights
+        summary = peak_hours_analysis["summary"]
+        if summary["total_calls"] > 0:
+            response_data["insights"] = {
+                "best_calling_time": peak_hours_analysis["analysis_metadata"].get("most_active_hour"),
+                "best_answer_time": peak_hours_analysis["analysis_metadata"].get("best_answer_hour"), 
+                "worst_miss_time": peak_hours_analysis["analysis_metadata"].get("worst_miss_hour"),
+                "overall_answer_rate": summary["answer_rate"],
+                "recommendation": _generate_peak_hours_recommendation(peak_hours_analysis)
+            }
+        
+        # Log admin activity
+        try:
+            await tata_admin_service.log_admin_activity(
+                admin_user_id=str(current_user.get("user_id") or current_user.get("_id", "unknown")),
+                admin_email=current_user.get("email", "unknown"),
+                action="viewed_comprehensive_peak_hours",
+                details={
+                    "date_range": f"{date_from} to {date_to}",
+                    "total_calls_analyzed": summary["total_calls"],
+                    "user_filter_applied": bool(user_ids),
+                    "include_flags": {
+                        "total": include_total,
+                        "answered": include_answered, 
+                        "missed": include_missed
+                    }
+                }
+            )
+        except Exception as e:
+            logger.warning(f"Error logging admin activity: {e}")
+        
+        logger.info(f"✅ Comprehensive peak hours analysis complete: {summary['total_calls']} calls analyzed")
+        
+        return response_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in comprehensive peak hours analysis: {str(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "success": False,
+                "error": "internal_error",
+                "message": f"Failed to analyze peak hours: {str(e)}",
+                "date_range": f"{date_from} to {date_to}" if 'date_from' in locals() else "unknown"
+            }
+        )
+
+def _generate_peak_hours_recommendation(analysis: Dict[str, Any]) -> str:
+    """
+    Generate actionable recommendation based on peak hours analysis
+    """
+    try:
+        metadata = analysis.get("analysis_metadata", {})
+        summary = analysis.get("summary", {})
+        
+        most_active = metadata.get("most_active_hour")
+        best_answer = metadata.get("best_answer_hour") 
+        worst_miss = metadata.get("worst_miss_hour")
+        answer_rate = summary.get("answer_rate", 0)
+        
+        if answer_rate > 75:
+            if best_answer == most_active:
+                return f"Excellent performance! Peak activity hour ({most_active}:00) aligns with best answer rates. Continue focusing efforts during this time."
+            else:
+                return f"Good performance overall. Consider shifting some activity from hour {most_active}:00 to hour {best_answer}:00 for better answer rates."
+        elif answer_rate > 50:
+            return f"Moderate performance. Focus more calling efforts during hour {best_answer}:00 when leads are most responsive, and reduce activity during hour {worst_miss}:00."
+        else:
+            return f"Low answer rate detected. Strongly recommend concentrating calls during hour {best_answer}:00 and avoiding hour {worst_miss}:00. Consider lead quality review."
+            
+    except Exception:
+        return "Unable to generate specific recommendation. Review peak hours data to optimize calling strategy."
+
+# =============================================================================
+# QUICK ENDPOINT: GET ONLY PEAK ANSWERED HOURS
+# =============================================================================
+
+@router.get("/analytics/peak-answered-hours")
+async def get_peak_answered_hours_only(
+    date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    user_ids: Optional[str] = Query(None, description="Comma-separated user IDs to filter"),
+    current_user: Dict = Depends(get_admin_user)
+):
+    """
+    🎯 QUICK: Get only peak answered hours (when leads answer most frequently)
+    """
+    try:
+        # Call the comprehensive endpoint but return only answered hours
+        comprehensive_result = await get_comprehensive_peak_hours_analysis(
+            date_from=date_from,
+            date_to=date_to,
+            include_total=False,
+            include_answered=True,
+            include_missed=False,
+            user_ids=user_ids,
+            current_user=current_user
+        )
+        
+        return {
+            "success": True,
+            "analysis_type": "peak_answered_hours_only",
+            "date_range": comprehensive_result["date_range"],
+            "peak_answered_hours": comprehensive_result["peak_answered_hours"],
+            "summary": {
+                "total_answered": comprehensive_result["summary"]["total_answered"],
+                "answer_rate": comprehensive_result["summary"]["answer_rate"]
+            },
+            "best_answer_hour": comprehensive_result["analysis_metadata"]["best_answer_hour"],
+            "generated_at": datetime.utcnow()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting peak answered hours: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get peak answered hours: {str(e)}"
+        )
+
+# =============================================================================
+# QUICK ENDPOINT: GET ONLY PEAK MISSED HOURS  
+# =============================================================================
+
+@router.get("/analytics/peak-missed-hours")
+async def get_peak_missed_hours_only(
+    date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    user_ids: Optional[str] = Query(None, description="Comma-separated user IDs to filter"),
+    current_user: Dict = Depends(get_admin_user)
+):
+    """
+    ⚠️ QUICK: Get only peak missed hours (when leads miss calls most frequently)
+    """
+    try:
+        # Call the comprehensive endpoint but return only missed hours
+        comprehensive_result = await get_comprehensive_peak_hours_analysis(
+            date_from=date_from,
+            date_to=date_to,
+            include_total=False,
+            include_answered=False,
+            include_missed=True,
+            user_ids=user_ids,
+            current_user=current_user
+        )
+        
+        return {
+            "success": True,
+            "analysis_type": "peak_missed_hours_only",
+            "date_range": comprehensive_result["date_range"],
+            "peak_missed_hours": comprehensive_result["peak_missed_hours"],
+            "summary": {
+                "total_missed": comprehensive_result["summary"]["total_missed"],
+                "miss_rate": comprehensive_result["summary"]["miss_rate"]
+            },
+            "worst_miss_hour": comprehensive_result["analysis_metadata"]["worst_miss_hour"],
+            "generated_at": datetime.utcnow()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting peak missed hours: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get peak missed hours: {str(e)}"
+        )
 # =============================================================================
 # EXPORT ENDPOINTS
 # =============================================================================
@@ -1686,292 +2004,3 @@ async def get_admin_activity_logs(
             detail=f"Failed to fetch activity logs: {str(e)}"
         )
 # Add these endpoints to your app/routers/admin_calls.py
-
-@router.get("/debug/tata-token-test")
-async def debug_tata_token_test(
-    current_user: dict = Depends(get_admin_user)
-):
-    """
-    🔍 DEBUG: Test TATA token generation and API call
-    """
-    try:
-        debug_results = {}
-        
-        # 1. Test token from tata_auth_service
-        try:
-            token = await tata_auth_service.get_valid_token()
-            debug_results["auth_service_token"] = {
-                "has_token": token is not None,
-                "token_preview": f"{token[:30]}..." if token else None,
-                "token_length": len(token) if token else 0
-            }
-        except Exception as e:
-            debug_results["auth_service_token"] = {"error": str(e)}
-        
-        # 2. Test fresh login
-        try:
-            login_result = await tata_auth_service.login()
-            debug_results["fresh_login"] = {
-                "success": login_result.get("success"),
-                "has_access_token": "access_token" in login_result,
-                "token_preview": f"{login_result.get('access_token', '')[:30]}..." if login_result.get('access_token') else None,
-                "message": login_result.get("message")
-            }
-        except Exception as e:
-            debug_results["fresh_login"] = {"error": str(e)}
-        
-        # 3. Test admin service token method
-        try:
-            admin_token = await tata_admin_service._get_valid_auth_token()
-            debug_results["admin_service_token"] = {
-                "has_token": admin_token is not None,
-                "token_preview": f"{admin_token[:30]}..." if admin_token else None,
-                "is_bearer": admin_token.startswith("Bearer ") if admin_token else False
-            }
-        except Exception as e:
-            debug_results["admin_service_token"] = {"error": str(e)}
-        
-        # 4. Test API call with the token
-        if debug_results.get("admin_service_token", {}).get("has_token"):
-            try:
-                test_result = await tata_admin_service.fetch_call_records(
-                    from_date="2025-08-18 00:00:00",
-                    to_date="2025-08-18 23:59:59",
-                    limit=5
-                )
-                debug_results["api_test"] = {
-                    "success": "error" not in test_result,
-                    "record_count": len(test_result.get("results", [])),
-                    "response_keys": list(test_result.keys()),
-                    "error": test_result.get("error")
-                }
-            except Exception as e:
-                debug_results["api_test"] = {"error": str(e)}
-        
-        # 5. Compare tokens
-        auth_token = debug_results.get("auth_service_token", {}).get("token_preview", "")
-        admin_token = debug_results.get("admin_service_token", {}).get("token_preview", "")
-        
-        debug_results["token_comparison"] = {
-            "tokens_match": auth_token == admin_token,
-            "auth_token_preview": auth_token,
-            "admin_token_preview": admin_token
-        }
-        
-        return {
-            "success": True,
-            "debug_results": debug_results,
-            "recommendation": _get_token_debug_recommendation(debug_results)
-        }
-        
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-def _get_token_debug_recommendation(debug_results: dict) -> str:
-    """Generate recommendation based on token debug results"""
-    
-    api_test = debug_results.get("api_test", {})
-    if api_test.get("success") and api_test.get("record_count", 0) > 0:
-        return "✅ Token system working! API returning call records."
-    
-    auth_token = debug_results.get("auth_service_token", {})
-    if not auth_token.get("has_token"):
-        return "❌ No token from auth service - run TATA login first"
-    
-    fresh_login = debug_results.get("fresh_login", {})
-    if not fresh_login.get("success"):
-        return f"❌ Fresh login failing: {fresh_login.get('message')}"
-    
-    if api_test.get("error"):
-        return f"❌ API call failing: {api_test.get('error')}"
-    
-    return "⚠️ Token retrieved but API not returning records - check date range or TATA system"
-
-
-@router.post("/debug/force-fresh-login")
-async def debug_force_fresh_login(
-    current_user: dict = Depends(get_admin_user)
-):
-    """
-    🔧 DEBUG: Force a fresh TATA login using credentials from .env
-    """
-    try:
-        # Force fresh login
-        login_result = await tata_auth_service.login()
-        
-        if login_result.get("success"):
-            # Test the new token immediately
-            test_result = await tata_admin_service.fetch_call_records(
-                from_date="2025-08-18 00:00:00",
-                to_date="2025-08-18 23:59:59",
-                limit=3
-            )
-            
-            return {
-                "success": True,
-                "login_result": {
-                    "success": login_result.get("success"),
-                    "token_preview": f"{login_result.get('access_token', '')[:30]}..." if login_result.get('access_token') else None,
-                    "expires_in": login_result.get("expires_in")
-                },
-                "api_test": {
-                    "record_count": len(test_result.get("results", [])),
-                    "has_error": "error" in test_result,
-                    "error": test_result.get("error")
-                },
-                "message": "Fresh login successful - token updated"
-            }
-        else:
-            return {
-                "success": False,
-                "error": login_result.get("message"),
-                "details": login_result
-            }
-            
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-
-@router.get("/debug/manual-api-test")
-async def debug_manual_api_test(
-    token: str,
-    from_date: str = "2025-08-18 00:00:00",
-    to_date: str = "2025-08-18 23:59:59",
-    current_user: dict = Depends(get_admin_user)
-):
-    """
-    🔍 DEBUG: Test TATA API with manually provided token
-    """
-    try:
-        import aiohttp
-        
-        headers = {
-            "accept": "application/json", 
-            "Authorization": token  # Use raw token as provided
-        }
-        
-        params = {
-            "from_date": from_date,
-            "to_date": to_date,
-            "limit": 5
-        }
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                "https://api-smartflo.tatateleservices.com/v1/call/records",
-                headers=headers,
-                params=params,
-                timeout=aiohttp.ClientTimeout(total=10)
-            ) as response:
-                status = response.status
-                
-                if status == 200:
-                    data = await response.json()
-                    return {
-                        "success": True,
-                        "status": status,
-                        "record_count": len(data.get("results", [])),
-                        "total_count": data.get("count", 0),
-                        "sample_record": data.get("results", [])[0] if data.get("results") else None,
-                        "message": "Manual API test successful"
-                    }
-                else:
-                    error_text = await response.text()
-                    return {
-                        "success": False,
-                        "status": status,
-                        "error": error_text,
-                        "message": "Manual API test failed"
-                    }
-                    
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-# =============================================================================
-# ROUTER METADATA
-# =============================================================================
-
-# Note: Exception handlers are added at the app level in main.py, not on routers
-
-@router.get("/debug/test-user-filter/{user_id}")
-async def debug_test_user_filter(
-    user_id: str,
-    date_from: str = Query("2025-08-18", description="Start date"),
-    date_to: str = Query("2025-08-18", description="End date"),
-    current_user: Dict = Depends(get_admin_user)
-):
-    """🔍 DEBUG: Test user filtering for a specific user"""
-    try:
-        # Initialize agent mapping
-        await tata_admin_service.initialize_agent_mapping()
-        
-        # Find user's agent number
-        user_agent_number = None
-        for agent_number, mapping in tata_admin_service.agent_user_mapping.items():
-            if mapping.get("user_id") == user_id:
-                user_agent_number = agent_number
-                break
-        
-        if not user_agent_number:
-            return {
-                "success": False,
-                "error": f"User {user_id} not found in agent mapping",
-                "available_users": [
-                    {"user_id": m["user_id"], "user_name": m["user_name"], "agent_number": k}
-                    for k, m in tata_admin_service.agent_user_mapping.items()
-                ]
-            }
-        
-        # Test 1: Fetch all records (no filter)
-        from_date = f"{date_from} 00:00:00"
-        to_date = f"{date_to} 23:59:59"
-        
-        all_records = await tata_admin_service.fetch_all_call_records(
-            from_date=from_date,
-            to_date=to_date,
-            max_records=1000
-        )
-        
-        # Test 2: Filter in Python
-        user_records_python = [
-            r for r in all_records 
-            if r.get("agent_number") == user_agent_number
-        ]
-        
-        # Test 3: Fetch with TATA API filter
-        tata_filters = {"agents": [f"agent|{user_agent_number}"]}
-        filtered_records = await tata_admin_service.fetch_all_call_records(
-            from_date=from_date,
-            to_date=to_date,
-            filters=tata_filters,
-            max_records=1000
-        )
-        
-        return {
-            "success": True,
-            "user_id": user_id,
-            "agent_number": user_agent_number,
-            "date_range": f"{date_from} to {date_to}",
-            "results": {
-                "total_records_all_users": len(all_records),
-                "user_records_python_filter": len(user_records_python),
-                "user_records_tata_filter": len(filtered_records),
-                "tata_filter_working": len(filtered_records) > 0,
-                "python_filter_working": len(user_records_python) > 0
-            },
-            "sample_records": {
-                "python_filtered": user_records_python[:3] if user_records_python else [],
-                "tata_filtered": filtered_records[:3] if filtered_records else []
-            },
-            "filters_used": tata_filters,
-            "debug_recommendation": (
-                "TATA API filtering is working correctly" if len(filtered_records) > 0 
-                else "TATA API filtering failed - using Python fallback"
-            )
-        }
-        
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e),
-            "user_id": user_id
-        }

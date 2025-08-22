@@ -589,7 +589,7 @@ class PerformanceCalculator:
         call_records: List[Dict]
     ) -> Dict[str, Any]:
         """
-        Calculate peak calling hours
+        Calculate peak calling hours (existing method - unchanged)
         
         Args:
             call_records: List of call records
@@ -631,6 +631,127 @@ class PerformanceCalculator:
         except Exception as e:
             logger.error(f"Error calculating peak hours: {e}")
             return {"peak_hours": [], "total_calls": 0}
+
+    def calculate_comprehensive_peak_hours(
+        self,
+        call_records: List[Dict]
+    ) -> Dict[str, Any]:
+        """
+        🆕 NEW: Calculate comprehensive peak hours analysis
+        - Peak calling hours (all calls)
+        - Peak answered hours (answered calls only)
+        - Peak missed hours (missed calls only)
+        
+        Args:
+            call_records: List of call records
+            
+        Returns:
+            Comprehensive peak hours analysis
+        """
+        try:
+            # Initialize hourly stats for all three categories
+            hourly_total_stats = defaultdict(int)
+            hourly_answered_stats = defaultdict(int)
+            hourly_missed_stats = defaultdict(int)
+            
+            total_calls = 0
+            total_answered = 0
+            total_missed = 0
+            
+            # Process each call record
+            for record in call_records:
+                call_time = record.get("time", "")
+                call_status = record.get("status", "")
+                
+                if not call_time:
+                    continue
+                
+                try:
+                    # Extract hour from time (HH:MM:SS format)
+                    hour = int(call_time.split(":")[0])
+                    
+                    # Count total calls for this hour
+                    hourly_total_stats[hour] += 1
+                    total_calls += 1
+                    
+                    # Count by status
+                    if call_status == "answered":
+                        hourly_answered_stats[hour] += 1
+                        total_answered += 1
+                    else:
+                        # Treat all non-answered as missed
+                        hourly_missed_stats[hour] += 1
+                        total_missed += 1
+                        
+                except (ValueError, IndexError):
+                    continue
+            
+            # Helper function to format peak hours
+            def format_peak_hours(hourly_stats: defaultdict, total_count: int, calls_type: str) -> List[Dict]:
+                if not hourly_stats or total_count == 0:
+                    return []
+                
+                sorted_hours = sorted(hourly_stats.items(), key=lambda x: x[1], reverse=True)
+                
+                return [
+                    {
+                        "hour": hour,
+                        "calls": calls,
+                        "percentage": round((calls / total_count) * 100, 2),
+                        "hour_display": f"{hour:02d}:00-{hour:02d}:59",
+                        "calls_type": calls_type
+                    }
+                    for hour, calls in sorted_hours[:3]
+                ]
+            
+            # Calculate peak hours for each category
+            peak_calling_hours = format_peak_hours(hourly_total_stats, total_calls, "total")
+            peak_answered_hours = format_peak_hours(hourly_answered_stats, total_answered, "answered")
+            peak_missed_hours = format_peak_hours(hourly_missed_stats, total_missed, "missed")
+            
+            return {
+                "success": True,
+                "peak_calling_hours": peak_calling_hours,
+                "peak_answered_hours": peak_answered_hours,
+                "peak_missed_hours": peak_missed_hours,
+                "summary": {
+                    "total_calls": total_calls,
+                    "total_answered": total_answered,
+                    "total_missed": total_missed,
+                    "answer_rate": round((total_answered / total_calls) * 100, 2) if total_calls > 0 else 0.0,
+                    "miss_rate": round((total_missed / total_calls) * 100, 2) if total_calls > 0 else 0.0
+                },
+                "hourly_distributions": {
+                    "total_calls": dict(hourly_total_stats),
+                    "answered_calls": dict(hourly_answered_stats),
+                    "missed_calls": dict(hourly_missed_stats)
+                },
+                "analysis_metadata": {
+                    "hours_with_calls": len(hourly_total_stats),
+                    "hours_with_answered": len(hourly_answered_stats),
+                    "hours_with_missed": len(hourly_missed_stats),
+                    "most_active_hour": max(hourly_total_stats, key=hourly_total_stats.get) if hourly_total_stats else None,
+                    "best_answer_hour": max(hourly_answered_stats, key=hourly_answered_stats.get) if hourly_answered_stats else None,
+                    "worst_miss_hour": max(hourly_missed_stats, key=hourly_missed_stats.get) if hourly_missed_stats else None
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating comprehensive peak hours: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "peak_calling_hours": [],
+                "peak_answered_hours": [],
+                "peak_missed_hours": [],
+                "summary": {
+                    "total_calls": 0,
+                    "total_answered": 0,
+                    "total_missed": 0,
+                    "answer_rate": 0.0,
+                    "miss_rate": 0.0
+                }
+            }
     
     def calculate_efficiency_metrics(
         self,

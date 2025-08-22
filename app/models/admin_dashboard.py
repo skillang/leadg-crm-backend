@@ -759,3 +759,237 @@ class RecordingDetailsResponse(BaseModel):
     user_info: Dict[str, str] = Field(..., description="Associated user information")
     recording_info: Optional[Dict[str, Any]] = Field(None, description="Recording metadata")
     retrieved_at: datetime = Field(..., description="Data retrieval timestamp")
+
+# ============================================================================
+# PEAK HOURS ANALYTICS MODELS - ADD TO admin_dashboard.py
+# ============================================================================
+
+class PeakHourData(BaseModel):
+    """Model for individual peak hour data point"""
+    hour: int = Field(..., ge=0, le=23, description="Hour of day (0-23)")
+    calls: int = Field(..., ge=0, description="Number of calls in this hour")
+    percentage: float = Field(..., ge=0, le=100, description="Percentage of total calls")
+    hour_display: str = Field(..., description="Formatted hour display (e.g., '14:00-14:59')")
+    calls_type: str = Field(..., description="Type of calls (total/answered/missed)")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "hour": 14,
+                "calls": 45,
+                "percentage": 15.2,
+                "hour_display": "14:00-14:59",
+                "calls_type": "answered"
+            }
+        }
+
+class PeakHoursSummary(BaseModel):
+    """Summary statistics for peak hours analysis"""
+    total_calls: int = Field(..., ge=0, description="Total calls analyzed")
+    total_answered: int = Field(..., ge=0, description="Total answered calls")
+    total_missed: int = Field(..., ge=0, description="Total missed calls")
+    answer_rate: float = Field(..., ge=0, le=100, description="Overall answer rate percentage")
+    miss_rate: float = Field(..., ge=0, le=100, description="Overall miss rate percentage")
+
+class PeakHoursMetadata(BaseModel):
+    """Metadata for peak hours analysis"""
+    hours_with_calls: int = Field(..., ge=0, description="Number of hours with call activity")
+    hours_with_answered: int = Field(..., ge=0, description="Number of hours with answered calls")
+    hours_with_missed: int = Field(..., ge=0, description="Number of hours with missed calls")
+    most_active_hour: Optional[int] = Field(None, ge=0, le=23, description="Hour with most total calls")
+    best_answer_hour: Optional[int] = Field(None, ge=0, le=23, description="Hour with most answered calls")
+    worst_miss_hour: Optional[int] = Field(None, ge=0, le=23, description="Hour with most missed calls")
+
+class PeakHoursInsights(BaseModel):
+    """Actionable insights from peak hours analysis"""
+    best_calling_time: Optional[int] = Field(None, description="Recommended best time to call")
+    best_answer_time: Optional[int] = Field(None, description="Time when leads answer most")
+    worst_miss_time: Optional[int] = Field(None, description="Time when leads miss calls most")
+    overall_answer_rate: float = Field(..., description="Overall answer rate")
+    recommendation: str = Field(..., description="Actionable recommendation based on data")
+
+class FilterInfo(BaseModel):
+    """Information about applied filters"""
+    applied: bool = Field(..., description="Whether user filtering was applied")
+    user_count: int = Field(default=0, description="Number of users in filter")
+    agent_numbers: List[str] = Field(default=[], description="Agent numbers included in filter")
+    records_before_filter: Optional[int] = Field(None, description="Records before filtering")
+    records_after_filter: Optional[int] = Field(None, description="Records after filtering")
+    error: Optional[str] = Field(None, description="Filter error message if any")
+
+class ComprehensivePeakHoursResponse(BaseModel):
+    """Complete response model for comprehensive peak hours analysis"""
+    success: bool = Field(..., description="Request success status")
+    date_range: str = Field(..., description="Date range analyzed")
+    analysis_type: str = Field(..., description="Type of analysis performed")
+    
+    # Peak hours data (conditionally included based on request flags)
+    peak_calling_hours: Optional[List[PeakHourData]] = Field(None, description="Top 3 peak calling hours (all calls)")
+    peak_answered_hours: Optional[List[PeakHourData]] = Field(None, description="Top 3 peak answered hours")
+    peak_missed_hours: Optional[List[PeakHourData]] = Field(None, description="Top 3 peak missed hours")
+    
+    # Analysis summary and metadata
+    summary: PeakHoursSummary = Field(..., description="Summary statistics")
+    analysis_metadata: PeakHoursMetadata = Field(..., description="Analysis metadata")
+    insights: Optional[PeakHoursInsights] = Field(None, description="Generated insights and recommendations")
+    
+    # Request and filter information
+    filter_info: FilterInfo = Field(..., description="Information about applied filters")
+    query_parameters: Dict[str, Any] = Field(..., description="Parameters used for the query")
+    
+    # Response metadata
+    generated_at: datetime = Field(..., description="Response generation timestamp")
+    requested_by: str = Field(..., description="Admin user who requested the analysis")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "date_range": "2025-01-01 to 2025-01-07",
+                "analysis_type": "comprehensive_peak_hours",
+                "peak_calling_hours": [
+                    {
+                        "hour": 14,
+                        "calls": 45,
+                        "percentage": 15.2,
+                        "hour_display": "14:00-14:59",
+                        "calls_type": "total"
+                    }
+                ],
+                "peak_answered_hours": [
+                    {
+                        "hour": 11,
+                        "calls": 32,
+                        "percentage": 18.5,
+                        "hour_display": "11:00-11:59",
+                        "calls_type": "answered"
+                    }
+                ],
+                "peak_missed_hours": [
+                    {
+                        "hour": 16,
+                        "calls": 8,
+                        "percentage": 12.1,
+                        "hour_display": "16:00-16:59",
+                        "calls_type": "missed"
+                    }
+                ],
+                "summary": {
+                    "total_calls": 500,
+                    "total_answered": 380,
+                    "total_missed": 120,
+                    "answer_rate": 76.0,
+                    "miss_rate": 24.0
+                },
+                "insights": {
+                    "best_calling_time": 14,
+                    "best_answer_time": 11,
+                    "recommendation": "Focus calling efforts during 11:00-11:59 for best answer rates"
+                }
+            }
+        }
+
+class PeakAnsweredHoursResponse(BaseModel):
+    """Response model for peak answered hours only"""
+    success: bool = Field(..., description="Request success status")
+    analysis_type: str = Field(default="peak_answered_hours_only", description="Analysis type")
+    date_range: str = Field(..., description="Date range analyzed")
+    peak_answered_hours: List[PeakHourData] = Field(..., description="Top 3 peak answered hours")
+    summary: Dict[str, Union[int, float]] = Field(..., description="Answered calls summary")
+    best_answer_hour: Optional[int] = Field(None, description="Hour with best answer rate")
+    generated_at: datetime = Field(..., description="Response generation timestamp")
+
+class PeakMissedHoursResponse(BaseModel):
+    """Response model for peak missed hours only"""
+    success: bool = Field(..., description="Request success status")
+    analysis_type: str = Field(default="peak_missed_hours_only", description="Analysis type")
+    date_range: str = Field(..., description="Date range analyzed")
+    peak_missed_hours: List[PeakHourData] = Field(..., description="Top 3 peak missed hours")
+    summary: Dict[str, Union[int, float]] = Field(..., description="Missed calls summary")
+    worst_miss_hour: Optional[int] = Field(None, description="Hour with most missed calls")
+    generated_at: datetime = Field(..., description="Response generation timestamp")
+
+# ============================================================================
+# HOURLY DISTRIBUTION MODELS (for detailed analytics)
+# ============================================================================
+
+class HourlyDistribution(BaseModel):
+    """Detailed hourly distribution of calls"""
+    total_calls: Dict[str, int] = Field(default={}, description="Total calls by hour (0-23)")
+    answered_calls: Dict[str, int] = Field(default={}, description="Answered calls by hour")
+    missed_calls: Dict[str, int] = Field(default={}, description="Missed calls by hour")
+
+class HourlyAnalyticsResponse(BaseModel):
+    """Extended response with full hourly distributions"""
+    success: bool = Field(..., description="Request success status")
+    date_range: str = Field(..., description="Date range analyzed")
+    peak_hours_summary: ComprehensivePeakHoursResponse = Field(..., description="Peak hours analysis")
+    hourly_distributions: HourlyDistribution = Field(..., description="Complete hourly breakdown")
+    
+    # Additional analytics
+    busiest_time_period: str = Field(..., description="Busiest time period description")
+    quietest_time_period: str = Field(..., description="Quietest time period description")
+    calling_pattern_insights: List[str] = Field(default=[], description="Pattern insights")
+    
+    generated_at: datetime = Field(..., description="Response generation timestamp")
+
+# ============================================================================
+# VALIDATION HELPERS FOR PEAK HOURS MODELS
+# ============================================================================
+
+class PeakHoursValidation:
+    """Validation helpers for peak hours data"""
+    
+    @staticmethod
+    def validate_hour_range(hour: int) -> bool:
+        """Validate hour is in valid range (0-23)"""
+        return 0 <= hour <= 23
+    
+    @staticmethod
+    def validate_percentage(percentage: float) -> bool:
+        """Validate percentage is in valid range (0-100)"""
+        return 0 <= percentage <= 100
+    
+    @staticmethod
+    def validate_peak_hours_data(peak_hours: List[PeakHourData]) -> bool:
+        """Validate peak hours data structure"""
+        if not isinstance(peak_hours, list):
+            return False
+        
+        if len(peak_hours) > 3:  # Should only have top 3
+            return False
+        
+        for hour_data in peak_hours:
+            if not isinstance(hour_data, PeakHourData):
+                return False
+            if not PeakHoursValidation.validate_hour_range(hour_data.hour):
+                return False
+            if not PeakHoursValidation.validate_percentage(hour_data.percentage):
+                return False
+        
+        return True
+
+# ============================================================================
+# ERROR MODELS FOR PEAK HOURS ENDPOINTS
+# ============================================================================
+
+class PeakHoursError(BaseModel):
+    """Error response model for peak hours analysis"""
+    success: bool = Field(default=False, description="Request success status")
+    error: str = Field(..., description="Error type")
+    message: str = Field(..., description="Human-readable error message")
+    details: Optional[str] = Field(None, description="Additional error details")
+    date_range: Optional[str] = Field(None, description="Date range that was attempted")
+    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Error timestamp")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": False,
+                "error": "calculation_failed",
+                "message": "Failed to calculate peak hours",
+                "details": "Insufficient data for analysis",
+                "date_range": "2025-01-01 to 2025-01-07",
+                "timestamp": "2025-01-15T10:30:00Z"
+            }
+        }
