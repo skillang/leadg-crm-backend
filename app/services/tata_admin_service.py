@@ -321,37 +321,10 @@ class TataAdminService:
             "tata_extension": None
         }
     
-    def parse_call_record(self, record: Dict) -> CallRecord:
-        """
-        Parse TATA API call record into our CallRecord model
-        """
-        # Map agent to user
-        agent_number = record.get("agent_number", "")
-        user_mapping = self.map_agent_to_user(agent_number)
-        
-        return CallRecord(
-            call_id=record.get("id", ""),
-            uuid=record.get("uuid"),
-            direction=record.get("direction", "unknown"),
-            status=record.get("status", "unknown"),
-            service=record.get("service", ""),
-            date=record.get("date", ""),
-            time=record.get("time", ""),
-            end_stamp=record.get("end_stamp"),
-            call_duration=record.get("call_duration", 0),
-            answered_seconds=record.get("answered_seconds", 0),
-            agent_number=agent_number,
-            agent_name=record.get("agent_name", ""),
-            client_number=record.get("client_number", ""),
-            did_number=record.get("did_number"),
-            recording_url=record.get("recording_url"),
-            hangup_cause=record.get("hangup_cause"),
-            circle=record.get("circle"),
-            # Mapped fields
-            user_id=user_mapping.get("user_id"),
-            user_name=user_mapping.get("user_name"),
-            lead_id=record.get("lead_id")  # If available from TATA
-        )
+   
+
+
+
     
     def calculate_daily_stats(
         self, 
@@ -1028,12 +1001,13 @@ class TataAdminService:
     ) -> Dict[str, Any]:
         """
         NEW: Fetch call records using TATA API with direct parameter support
+        FIXED: Handles agent parameter formatting for TATA API compatibility
         
         Args:
             params: Dictionary of TATA API parameters
-                   - from_date, to_date (required)
-                   - page, limit (pagination)
-                   - agents, call_type, direction, etc. (filters)
+                - from_date, to_date (required)
+                - page, limit (pagination)
+                - agents, call_type, direction, etc. (filters)
         
         Returns:
             Dict containing success status, data from TATA API, and error info
@@ -1053,6 +1027,28 @@ class TataAdminService:
                 "accept": "application/json",
                 "Authorization": auth_token  # Raw token without "Bearer" prefix
             }
+            
+            # FIXED: Handle agent parameter formatting before API call
+            if 'agents' in params and params['agents']:
+                original_agent = params['agents']
+                
+                # Remove + prefix if present - TATA API doesn't expect it
+                if original_agent.startswith('+'):
+                    params['agents'] = original_agent[1:]  # +916380480960 -> 916380480960
+                    logger.info(f"🔧 Fixed agent parameter: {original_agent} -> {params['agents']}")
+                
+                # Handle multiple agents (comma-separated)
+                elif ',' in original_agent:
+                    # Clean each agent number in comma-separated list
+                    agent_list = [agent.strip() for agent in original_agent.split(',')]
+                    cleaned_agents = []
+                    for agent in agent_list:
+                        if agent.startswith('+'):
+                            cleaned_agents.append(agent[1:])
+                        else:
+                            cleaned_agents.append(agent)
+                    params['agents'] = ','.join(cleaned_agents)
+                    logger.info(f"🔧 Fixed multiple agents: {original_agent} -> {params['agents']}")
             
             logger.info(f"TATA API call with parameters: {params}")
             
@@ -1124,7 +1120,9 @@ class TataAdminService:
                 "success": False,
                 "error": f"Unexpected error: {str(e)}",
                 "data": {"results": [], "count": 0}
-            }
+        }
+
+
     
     async def fetch_call_records(
         self, 
@@ -1436,13 +1434,17 @@ class TataAdminService:
         """
         Parse TATA API call record into our CallRecord model
         """
-        # Map agent to user
+        # DEBUG: Log what TATA actually returns
+      
+        
         agent_number = record.get("agent_number", "")
         user_mapping = self.map_agent_to_user(agent_number)
         
         return CallRecord(
-            call_id=record.get("id", ""),
-            uuid=record.get("uuid"),
+            call_id=record.get("id", ""),           # Main ID for frontend use
+            tata_call_id=record.get("call_id", ""), # Secondary TATA call_id
+            uuid=record.get("uuid"),                # UUID
+            id=record.get("id", ""),                # Also store in id field
             direction=record.get("direction", "unknown"),
             status=record.get("status", "unknown"),
             service=record.get("service", ""),
@@ -1458,12 +1460,12 @@ class TataAdminService:
             recording_url=record.get("recording_url"),
             hangup_cause=record.get("hangup_cause"),
             circle=record.get("circle"),
-            # Mapped fields
             user_id=user_mapping.get("user_id"),
             user_name=user_mapping.get("user_name"),
             lead_id=record.get("lead_id")
         )
-    
+
+
     def calculate_daily_stats(
         self, 
         call_records: List[Dict], 

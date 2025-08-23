@@ -675,15 +675,16 @@ async def get_monthly_performers(
 async def play_user_recording(
     recording_request: PlayRecordingRequest,
     request: Request,
+    date_from: Optional[str] = Query(None, description="Dashboard date range start (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="Dashboard date range end (YYYY-MM-DD)"),
     current_user: Dict = Depends(get_admin_user)
 ):
     """
-    Admin endpoint to play user recordings using TATA API call filtering
+    OPTIMIZED: Admin endpoint that searches in the same date range as the dashboard
     """
     try:
         logger.info(f"Admin {current_user.get('email')} requesting recording {recording_request.call_id}")
         
-        # Initialize agent mapping
         await tata_admin_service.initialize_agent_mapping()
         
         # Find user details
@@ -695,45 +696,99 @@ async def play_user_recording(
                 user_agent_number = agent_number
                 break
         
-        # Use TATA API to find the specific call record
-        today = datetime.now()
-        from_date = (today - timedelta(days=30)).strftime("%Y-%m-%d 00:00:00")
-        to_date = today.strftime("%Y-%m-%d 23:59:59")
+        # Use provided date range or smart fallback
+        if date_from and date_to:
+            # Use exact dashboard date range
+            from_date = f"{date_from} 00:00:00"
+            to_date = f"{date_to} 23:59:59"
+            logger.info(f"Using provided date range: {date_from} to {date_to}")
+        else:
+            # Smart fallback: try recent dates first
+            today = datetime.now()
+            from_date = today.strftime("%Y-%m-%d 00:00:00")
+            to_date = today.strftime("%Y-%m-%d 23:59:59")
+            logger.info(f"Using today's date as fallback: {today.strftime('%Y-%m-%d')}")
         
-        # Search by call_id using TATA API
-        tata_params = {
-            'from_date': from_date,
-            'to_date': to_date,
-            'call_id': recording_request.call_id,
-            'page': '1',
-            'limit': '1'
-        }
+        search_id = recording_request.call_id
         
-        tata_response = await tata_admin_service.fetch_call_records_with_filters(
-            params=tata_params
-        )
+        # Progressive search strategies (much more efficient)
+        strategies = []
         
-        if not tata_response.get("success"):
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"TATA API search failed: {tata_response.get('error')}"
+        if date_from and date_to:
+            # If date range provided, search only that range
+            strategies = [
+                {
+                    'from_date': from_date,
+                    'to_date': to_date,
+                    'page': '1',
+                    'limit': '500'
+                }
+            ]
+        else:
+            # Progressive fallback for unknown date ranges
+            today = datetime.now()
+            strategies = [
+                # Strategy 1: Today only
+                {
+                    'from_date': today.strftime("%Y-%m-%d 00:00:00"),
+                    'to_date': today.strftime("%Y-%m-%d 23:59:59"),
+                    'page': '1',
+                    'limit': '200'
+                },
+                # Strategy 2: Last 3 days
+                {
+                    'from_date': (today - timedelta(days=3)).strftime("%Y-%m-%d 00:00:00"),
+                    'to_date': today.strftime("%Y-%m-%d 23:59:59"),
+                    'page': '1',
+                    'limit': '500'
+                },
+                # Strategy 3: Last 7 days
+                {
+                    'from_date': (today - timedelta(days=7)).strftime("%Y-%m-%d 00:00:00"),
+                    'to_date': today.strftime("%Y-%m-%d 23:59:59"),
+                    'page': '1',
+                    'limit': '1000'
+                }
+            ]
+        
+        target_call = None
+        for i, tata_params in enumerate(strategies):
+            logger.info(f"Trying search strategy {i+1}: {tata_params}")
+            
+            tata_response = await tata_admin_service.fetch_call_records_with_filters(
+                params=tata_params
             )
+            
+            if tata_response.get("success"):
+                all_records = tata_response.get("data", {}).get("results", [])
+                logger.info(f"Strategy {i+1} returned {len(all_records)} records")
+                
+                # Search through results for matching call ID
+                for record in all_records:
+                    if (record.get("id") == search_id or 
+                        record.get("call_id") == search_id or 
+                        record.get("uuid") == search_id):
+                        target_call = record
+                        logger.info(f"Found call using strategy {i+1}: {record.get('id')}")
+                        break
+                
+                if target_call:
+                    break
+            else:
+                logger.warning(f"Strategy {i+1} failed: {tata_response.get('error')}")
         
-        # Extract call record
-        tata_data = tata_response.get("data", {})
-        call_records = tata_data.get("results", [])
-        
-        if not call_records:
+        if not target_call:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "call_not_found",
-                    "message": f"Call {recording_request.call_id} not found",
-                    "suggestion": "Call might be older than 30 days or call ID is incorrect"
+                    "message": f"Call {recording_request.call_id} not found in date range",
+                    "searched_date_range": f"{date_from or 'recent days'} to {date_to or 'today'}",
+                    "strategies_tried": len(strategies),
+                    "suggestion": "Call might be outside the searched date range"
                 }
             )
         
-        target_call = call_records[0]
         recording_url = target_call.get("recording_url")
         
         if not recording_url:
@@ -743,7 +798,7 @@ async def play_user_recording(
                     "error": "no_recording",
                     "message": f"No recording available for call {recording_request.call_id}",
                     "call_info": {
-                        "call_id": target_call.get("id"),
+                        "id": target_call.get("id"),
                         "date": target_call.get("date"),
                         "time": target_call.get("time"),
                         "status": target_call.get("status"),
@@ -752,7 +807,7 @@ async def play_user_recording(
                 }
             )
         
-        # Log admin activity
+        # Rest of your existing logging and response code...
         client_ip = request.client.host if request.client else "unknown"
         user_agent = request.headers.get("user-agent", "unknown")
         
@@ -769,7 +824,8 @@ async def play_user_recording(
                 "call_date": target_call.get("date"),
                 "call_time": target_call.get("time"),
                 "call_duration": target_call.get("call_duration", 0),
-                "agent_name": target_call.get("agent_name")
+                "agent_name": target_call.get("agent_name"),
+                "search_date_range": f"{date_from or 'recent'} to {date_to or 'today'}"
             },
             ip_address=client_ip,
             user_agent=user_agent

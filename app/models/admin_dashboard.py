@@ -43,6 +43,7 @@ class CallRecord(BaseModel):
     """
     # Core call identifiers
     call_id: str = Field(..., description="Call ID")
+    tata_call_id: Optional[str] = Field(None, description="TATA secondary call_id") 
     uuid: Optional[str] = Field(None, description="Call UUID")
     id: Optional[str] = Field(None, description="TATA internal ID")
     
