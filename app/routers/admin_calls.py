@@ -89,18 +89,18 @@ async def get_admin_call_dashboard(
         
         # Convert legacy user_ids to agents parameter
         if user_ids and not agents:
-            user_list = [uid.strip() for uid in user_ids.split(",")]
-            agent_numbers = []
-            
-            for user_id in user_list:
-                for agent_number, mapping in tata_admin_service.agent_user_mapping.items():
-                    if mapping.get("user_id") == user_id:
-                        agent_numbers.append(agent_number)
-                        break
-            
-            if agent_numbers:
-                agents = ",".join(agent_numbers)
-                logger.info(f"Converted user_ids {user_ids} to agents {agents}")
+            # Check if user_ids is "0" or "all" which means all users
+            if user_ids in ["0", "all"]:
+                # Don't set agents parameter to get all users
+                logger.info("User requested all users, not filtering by agent")
+            else:
+                # IMPORTANT: For Tata API, we need to pass the user_ids directly as agents
+                # The format should be like: agents=0506197500005,0506197500006
+                agents = user_ids
+                logger.info(f"Using user_ids directly as agents parameter: {agents}")
+                
+                # Log the mapping for debugging
+                logger.debug(f"Agent mapping: {tata_admin_service.agent_user_mapping}")
         
         # Convert legacy call_status to call_type
         if call_status != "all" and not call_type:
