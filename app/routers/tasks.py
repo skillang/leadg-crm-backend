@@ -502,6 +502,7 @@ async def get_assignable_users_for_tasks(
             detail=f"Failed to retrieve assignable users: {str(e)}"
         )
 
+
 @router.post("/tasks/bulk-action")
 async def bulk_task_action(
     bulk_action: TaskBulkAction,
