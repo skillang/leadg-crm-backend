@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     
     # CMS Configuration
     cms_base_url: str = "https://cms.skillang.com/api"
-    cms_templates_endpoint: str = "whatsapp-templates"
+    cms_templates_endpoint: str = "whatsapp-templates?populate=*"
     
     # 🆕 EMAIL CMS CONFIGURATION
     email_templates_endpoint: str = "mail-templates"  # Email-specific endpoint

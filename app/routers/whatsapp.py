@@ -36,7 +36,8 @@ WHATSAPP_CONFIG = {
 
 CMS_CONFIG = {
     "base_url": os.getenv("CMS_BASE_URL", "https://cms.skillang.com/api"),
-    "templates_endpoint": os.getenv("CMS_TEMPLATES_ENDPOINT", "whatsapp-templates")
+    "base_url_for_images": "https://cms.skillang.com", 
+    "templates_endpoint": os.getenv("CMS_TEMPLATES_ENDPOINT", "whatsapp-templates?populate=*")
 }
 
 # ================================
@@ -90,24 +91,24 @@ async def make_whatsapp_request(endpoint: str, params: Dict[str, Any]) -> Dict[s
 async def fetch_templates_from_cms() -> List[Dict[str, Any]]:
     """Fetch WhatsApp templates from Strapi CMS"""
     url = f"{CMS_CONFIG['base_url']}/{CMS_CONFIG['templates_endpoint']}"
-    
+   
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(url)
             response.raise_for_status()
             data = response.json()
-            
+           
             # Extract templates from Strapi response format
             templates = data.get('data', [])
-            
+           
             # Filter only active templates
             active_templates = [
-                template for template in templates 
+                template for template in templates
                 if template.get('Is_Active', False)
             ]
-            
+           
             return active_templates
-            
+           
     except Exception as e:
         logger.error(f"Failed to fetch templates from CMS: {str(e)}")
         # Return fallback templates if CMS is unavailable
@@ -117,6 +118,8 @@ async def fetch_templates_from_cms() -> List[Dict[str, Any]]:
                 "template_name": "nursing_promo_form_wa",
                 "display_name": "Nursing Promo",
                 "description": "form for nursing",
+                "body": "Default body text",
+                "templatePosterImage": None,
                 "Is_Active": True
             },
             {
@@ -124,6 +127,8 @@ async def fetch_templates_from_cms() -> List[Dict[str, Any]]:
                 "template_name": "lead_new",
                 "display_name": "New lead",
                 "description": "new lead welcome message",
+                "body": "Default welcome message",
+                "templatePosterImage": None,
                 "Is_Active": True
             }
         ]
@@ -616,26 +621,43 @@ async def get_available_templates(current_user: Dict[str, Any] = Depends(get_cur
     """Get available WhatsApp templates from CMS"""
     try:
         templates = await fetch_templates_from_cms()
-        
+       
         # Format for frontend consumption
-        formatted_templates = [
-            {
+        formatted_templates = []
+        
+        for template in templates:
+            # Handle templatePosterImage
+            poster_image_url = None
+            template_poster_image = template.get("templatePosterImage")
+            
+            if template_poster_image:
+                # Get the full URL for the poster image
+                poster_image_url = template_poster_image.get("url")
+                
+                # If it's a relative URL, make it absolute using the base URL without /api
+                if poster_image_url and not poster_image_url.startswith(('http://', 'https://')):
+                    poster_image_url = f"{CMS_CONFIG['base_url_for_images']}{poster_image_url}"
+
+            
+            formatted_template = {
                 "id": template["id"],
                 "template_name": template["template_name"],
                 "display_name": template["display_name"],
-                "body": template["body"],
+                "body": template.get("body", ""),
+                "posterImgUrl": poster_image_url,  # This will be None if no image
+                "templatePosterImage": template_poster_image,  # Include full image object if needed
                 "is_active": template["Is_Active"]
             }
-            for template in templates
-        ]
-        
+            
+            formatted_templates.append(formatted_template)
+       
         return {
             "success": True,
             "templates": formatted_templates,
             "total": len(formatted_templates),
             "message": "Templates fetched successfully"
         }
-        
+       
     except Exception as e:
         logger.error(f"Error fetching templates: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch templates: {str(e)}")

@@ -94,14 +94,25 @@ async def get_admin_call_dashboard(
                 # Don't set agents parameter to get all users
                 logger.info("User requested all users, not filtering by agent")
             else:
-                # IMPORTANT: For Tata API, we need to pass the user_ids directly as agents
-                # The format should be like: agents=0506197500005,0506197500006
-                agents = user_ids
-                logger.info(f"Using user_ids directly as agents parameter: {agents}")
+                # Convert internal user IDs to TATA agent IDs
+                user_id_list = [uid.strip() for uid in user_ids.split(',')]
+                tata_agent_ids = []
                 
-                # Log the mapping for debugging
-                logger.debug(f"Agent mapping: {tata_admin_service.agent_user_mapping}")
-        
+                for user_id in user_id_list:
+                    # Find the TATA agent ID for this user
+                    for agent_number, mapping in tata_admin_service.agent_user_mapping.items():
+                        if mapping.get("user_id") == user_id:
+                            tata_agent_id = mapping.get("tata_agent_id")
+                            if tata_agent_id:
+                                tata_agent_ids.append(tata_agent_id)
+                            break
+                
+                if tata_agent_ids:
+                    agents = ','.join(tata_agent_ids)
+                    logger.info(f"Converted user IDs {user_ids} to TATA agent IDs: {agents}")
+                else:
+                    logger.warning(f"No TATA agent IDs found for user IDs: {user_ids}")
+
         # Convert legacy call_status to call_type
         if call_status != "all" and not call_type:
             call_type = "c" if call_status == "answered" else "m"
@@ -301,7 +312,7 @@ async def get_user_call_performance(
         user_name = "Unknown"
         for agent_number, mapping in tata_admin_service.agent_user_mapping.items():
             if mapping.get("user_id") == user_id:
-                user_agent_number = agent_number
+                user_agent_number = mapping.get("tata_agent_id")
                 user_name = mapping.get("user_name", "Unknown")
                 break
         
@@ -693,7 +704,7 @@ async def play_user_recording(
         for agent_number, mapping in tata_admin_service.agent_user_mapping.items():
             if mapping.get("user_id") == recording_request.user_id:
                 user_name = mapping.get("user_name", "Unknown")
-                user_agent_number = agent_number
+                user_agent_number = mapping.get("tata_agent_id") 
                 break
         
         # Use provided date range or smart fallback
@@ -882,7 +893,7 @@ async def get_user_recordings(
         user_name = "Unknown"
         for agent_number, mapping in tata_admin_service.agent_user_mapping.items():
             if mapping.get("user_id") == user_id:
-                user_agent_number = agent_number
+                user_agent_number = mapping.get("tata_agent_id")
                 user_name = mapping.get("user_name", "Unknown")
                 break
         
