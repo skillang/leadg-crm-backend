@@ -1122,8 +1122,6 @@ class TataAdminService:
                 "data": {"results": [], "count": 0}
         }
 
-
-    
     async def fetch_call_records(
         self, 
         from_date: str, 

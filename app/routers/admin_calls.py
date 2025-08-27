@@ -1220,29 +1220,72 @@ async def get_filter_options(
 async def get_summary_statistics(
     date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    user_ids: Optional[str] = Query(None, description="Comma-separated user IDs to filter"),
     current_user: Dict = Depends(get_admin_user)
 ):
-    """Get summary statistics using TATA API filtering"""
+    """Get summary statistics with comprehensive peak hours analysis using TATA API filtering"""
     try:
-        # Set default date range
+        filter_info = {"applied": False, "scope": "all_users"}
+        logger.info(f"Admin {current_user.get('email')} requesting summary statistics - Scope: {filter_info.get('scope', 'all_users')}")
+        user_ids = user_ids 
+        # Initialize agent mapping
+        await tata_admin_service.initialize_agent_mapping()
+        
+        # Set default date to today only
         if not date_from or not date_to:
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=7)
-            date_from = start_date.strftime("%Y-%m-%d")
-            date_to = end_date.strftime("%Y-%m-%d")
+            today = datetime.now()
+            date_from = today.strftime("%Y-%m-%d")
+            date_to = today.strftime("%Y-%m-%d")
         
         # Format for TATA API
         from_date = f"{date_from} 00:00:00"
         to_date = f"{date_to} 23:59:59"
         
-        # Use TATA API to fetch summary data
+        # Initialize filter_info first
+        filter_info = {"applied": False, "scope": "all_users"}
+        
+        # Build TATA params - Default: fetch ALL records
         tata_params = {
             'from_date': from_date,
             'to_date': to_date,
             'page': '1',
-            'limit': '1000'  # Get enough for statistics
+            'limit': '2000'  # Increased limit for better analysis
         }
         
+        # Apply user filtering ONLY if user_ids is provided
+        if user_ids:
+            user_list = [uid.strip() for uid in user_ids.split(",")]
+            agent_ids = []
+            
+            # Map user_ids to agent_numbers
+            for user_id in user_list:
+                for _, mapping in tata_admin_service.agent_user_mapping.items():
+                    if mapping.get("user_id") == user_id:
+                        tata_agent_id = mapping.get("tata_agent_id")  # correct key
+                        if tata_agent_id:  # make sure it's not None
+                            agent_ids.append(tata_agent_id)
+                        break
+
+            # Only apply agent filter if we found matching agent numbers
+            if agent_ids:
+                tata_params['agents'] = ",".join(agent_ids)
+                filter_info = {
+                    "applied": True,
+                    "scope": "filtered_users",
+                    "user_count": len(user_list),
+                    "user_ids": user_list,
+                    "agent_id": agent_ids
+                }
+                logger.info(f"Filtering summary stats for users: {user_list} -> agents: {agent_ids}")
+            else:
+                logger.warning(f"No agent numbers found for user_ids: {user_list}")
+                filter_info = {
+                    "applied": False,
+                    "scope": "all_users",
+                    "warning": f"No agents found for provided user_ids: {user_list}"
+                }
+        
+        # Use TATA API to fetch summary data
         tata_response = await tata_admin_service.fetch_call_records_with_filters(
             params=tata_params
         )
@@ -1258,7 +1301,9 @@ async def get_summary_statistics(
         call_records = tata_data.get("results", [])
         total_count = tata_data.get("count", 0)
         
-        # Calculate statistics
+        logger.info(f"Analyzing {len(call_records)} call records - Scope: {filter_info.get('scope')}")
+        
+        # Calculate basic statistics
         total_calls = len(call_records)
         total_answered = sum(1 for r in call_records if r.get("status") == "answered")
         total_missed = total_calls - total_answered
@@ -1269,18 +1314,51 @@ async def get_summary_statistics(
         unique_agents = set(r.get("agent_number") for r in call_records if r.get("agent_number"))
         unique_users = len(unique_agents)
         
+        # Calculate number of days in the date range
+        date_range_start = datetime.strptime(date_from, "%Y-%m-%d")
+        date_range_end = datetime.strptime(date_to, "%Y-%m-%d")
+        days_in_range = (date_range_end - date_range_start).days + 1
+        
         # Calculate averages
-        avg_calls_per_day = total_calls / 7 if total_calls > 0 else 0
+        avg_calls_per_day = total_calls / days_in_range if total_calls > 0 and days_in_range > 0 else 0
         avg_duration = total_duration / total_answered if total_answered > 0 else 0
         success_rate = (total_answered / total_calls * 100) if total_calls > 0 else 0
         
-        # Calculate trends and peak hours
-        trend_data = performance_calculator.calculate_trend_analysis(call_records, 7)
-        peak_hours_data = performance_calculator.calculate_peak_hours(call_records)
+        # Calculate trends
+        trend_data = performance_calculator.calculate_trend_analysis(call_records, days_in_range)
         
-        return {
+        # Calculate comprehensive peak hours analysis
+        comprehensive_peak_hours = performance_calculator.calculate_comprehensive_peak_hours(
+            call_records=call_records
+        )
+        
+        # Get basic peak hours data (for backward compatibility)
+        basic_peak_hours = performance_calculator.calculate_peak_hours(call_records)
+        
+        # Combine peak hours data
+        combined_peak_hours = {
+            # Basic peak hours data (existing structure)
+            "peak_hours": basic_peak_hours.get("peak_hours", []),
+            "total_calls": basic_peak_hours.get("total_calls", total_calls),
+            "hourly_distribution": basic_peak_hours.get("hourly_distribution", {}),
+            
+            # Comprehensive analysis data
+            "peak_answered_hours": comprehensive_peak_hours.get("peak_answered_hours", []),
+            "peak_missed_hours": comprehensive_peak_hours.get("peak_missed_hours", []),
+            "insights": {
+                "best_calling_time": comprehensive_peak_hours.get("analysis_metadata", {}).get("most_active_hour"),
+                "best_answer_time": comprehensive_peak_hours.get("analysis_metadata", {}).get("best_answer_hour"), 
+                "worst_miss_time": comprehensive_peak_hours.get("analysis_metadata", {}).get("worst_miss_hour"),
+                "overall_answer_rate": round(success_rate, 2)
+            },
+            "analysis_metadata": comprehensive_peak_hours.get("analysis_metadata", {})
+        }
+        
+        # Build response
+        response_data = {
             "success": True,
             "date_range": f"{date_from} to {date_to}",
+            "filter_info": filter_info,
             "summary": {
                 "total_calls": total_calls,
                 "total_calls_all_pages": total_count,
@@ -1294,7 +1372,7 @@ async def get_summary_statistics(
                 "avg_call_duration_seconds": round(avg_duration, 2)
             },
             "trends": trend_data,
-            "peak_hours": peak_hours_data,
+            "peak_hours": combined_peak_hours,
             "optimization_info": {
                 "filtering_method": "tata_api_server_side",
                 "records_analyzed": total_calls,
@@ -1303,145 +1381,19 @@ async def get_summary_statistics(
             "calculated_at": datetime.utcnow()
         }
         
-    except Exception as e:
-        logger.error(f"Error getting summary statistics: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch summary statistics: {str(e)}"
-        )
-
-# =============================================================================
-# COMPREHENSIVE PEAK HOURS ENDPOINT - OPTIMIZED
-# =============================================================================
-
-@router.get("/analytics/comprehensive-peak-hours")
-async def get_comprehensive_peak_hours_analysis(
-    date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
-    date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
-    include_total: bool = Query(True, description="Include peak calling hours"),
-    include_answered: bool = Query(True, description="Include peak answered hours"),
-    include_missed: bool = Query(True, description="Include peak missed hours"),
-    user_ids: Optional[str] = Query(None, description="Comma-separated user IDs to filter"),
-    current_user: Dict = Depends(get_admin_user)
-):
-    """
-    Comprehensive peak hours analysis using TATA API filtering
-    """
-    try:
-        logger.info(f"Admin {current_user.get('email')} requesting comprehensive peak hours analysis")
-        
-        # Initialize agent mapping
-        await tata_admin_service.initialize_agent_mapping()
-        
-        # Set default date range
-        if not date_from or not date_to:
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=7)
-            date_from = start_date.strftime("%Y-%m-%d")
-            date_to = end_date.strftime("%Y-%m-%d")
-        
-        # Format dates
-        from_date = f"{date_from} 00:00:00"
-        to_date = f"{date_to} 23:59:59"
-        
-        # Build TATA params
-        tata_params = {
-            'from_date': from_date,
-            'to_date': to_date,
-            'page': '1',
-            'limit': '2000'
-        }
-        
-        # Apply user filtering if specified
-        filter_info = {"applied": False}
-        if user_ids:
-            user_list = [uid.strip() for uid in user_ids.split(",")]
-            agent_numbers = []
-            
-            for user_id in user_list:
-                for agent_number, mapping in tata_admin_service.agent_user_mapping.items():
-                    if mapping.get("user_id") == user_id:
-                        agent_numbers.append(agent_number)
-                        break
-            
-            if agent_numbers:
-                tata_params['agents'] = ",".join(agent_numbers)
-                filter_info = {
-                    "applied": True,
-                    "user_count": len(user_list),
-                    "agent_numbers": agent_numbers
-                }
-        
-        # Fetch data using TATA API
-        tata_response = await tata_admin_service.fetch_call_records_with_filters(
-            params=tata_params
-        )
-        
-        if not tata_response.get("success"):
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"TATA API call failed: {tata_response.get('error')}"
-            )
-        
-        # Extract filtered records
-        tata_data = tata_response.get("data", {})
-        filtered_call_records = tata_data.get("results", [])
-        
-        logger.info(f"Analyzing {len(filtered_call_records)} filtered call records")
-        
-        # Calculate comprehensive peak hours
-        peak_hours_analysis = performance_calculator.calculate_comprehensive_peak_hours(
-            call_records=filtered_call_records
-        )
-        
-        # Build response based on include flags
-        response_data = {
-            "success": True,
-            "date_range": f"{date_from} to {date_to}",
-            "analysis_type": "comprehensive_peak_hours_optimized",
-            "filter_info": filter_info
-        }
-        
-        if include_total:
-            response_data["peak_calling_hours"] = peak_hours_analysis["peak_calling_hours"]
-        
-        if include_answered:
-            response_data["peak_answered_hours"] = peak_hours_analysis["peak_answered_hours"]
-        
-        if include_missed:
-            response_data["peak_missed_hours"] = peak_hours_analysis["peak_missed_hours"]
-        
-        response_data.update({
-            "summary": peak_hours_analysis["summary"],
-            "analysis_metadata": peak_hours_analysis["analysis_metadata"],
-            "optimization_info": {
-                "filtering_method": "tata_api_server_side",
-                "records_analyzed": len(filtered_call_records)
-            },
-            "generated_at": datetime.utcnow(),
-            "requested_by": current_user.get("email", "unknown")
-        })
-        
-        # Add insights
-        summary = peak_hours_analysis["summary"]
-        if summary["total_calls"] > 0:
-            response_data["insights"] = {
-                "best_calling_time": peak_hours_analysis["analysis_metadata"].get("most_active_hour"),
-                "best_answer_time": peak_hours_analysis["analysis_metadata"].get("best_answer_hour"), 
-                "worst_miss_time": peak_hours_analysis["analysis_metadata"].get("worst_miss_hour"),
-                "overall_answer_rate": summary["answer_rate"]
-            }
-        
         # Log activity
         await tata_admin_service.log_admin_activity(
             admin_user_id=str(current_user.get("user_id") or current_user.get("_id", "unknown")),
             admin_email=current_user.get("email", "unknown"),
-            action="viewed_comprehensive_peak_hours_optimized",
+            action="viewed_summary_statistics_with_comprehensive_peak_hours",
             details={
                 "date_range": f"{date_from} to {date_to}",
-                "total_calls_analyzed": summary["total_calls"],
-                "user_filter_applied": bool(user_ids),
-                "filtering_method": "tata_api_server_side"
+                "total_calls_analyzed": total_calls,
+                "scope": filter_info.get("scope", "all_users"),
+                "user_filter_applied": filter_info.get("applied", False),
+                "filtered_user_count": filter_info.get("user_count", 0),
+                "filtering_method": "tata_api_server_side",
+                "days_in_range": days_in_range
             }
         )
         
@@ -1450,10 +1402,10 @@ async def get_comprehensive_peak_hours_analysis(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in comprehensive peak hours analysis: {str(e)}")
+        logger.error(f"Error getting summary statistics: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to analyze peak hours: {str(e)}"
+            detail=f"Failed to fetch summary statistics: {str(e)}"
         )
 
 # =============================================================================
