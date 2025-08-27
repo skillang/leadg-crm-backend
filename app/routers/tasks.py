@@ -462,37 +462,109 @@ async def get_my_tasks(
 @router.get("/tasks/assignable-users")
 @convert_dates_to_ist()
 async def get_assignable_users_for_tasks(
-    current_user: Dict[str, Any] = Depends(get_current_active_user)
+    lead_id: str = Query(..., description="Lead ID to get assigned users for"),
+    current_user: Dict[str, Any] = Depends(get_current_active_user)  # Removed admin requirement
 ):
     """
-    Get list of users that can be assigned tasks
+    Get list of users assigned to a specific lead (primary assignee + co-assignees)
+    This endpoint is accessible by all authenticated users, not just admins.
     """
     try:
-        logger.info(f"Getting assignable users by {current_user.get('email')}")
+        logger.info(f"Getting assignable users for lead {lead_id} by {current_user.get('email')}")
         
-        db = get_database()  # ✅ Removed await
+        db = get_database()
         
-        # Get all active users
+        # Find the lead by lead_id
+        lead = await db.leads.find_one({"lead_id": lead_id})
+        if not lead:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Lead {lead_id} not found"
+            )
+        
+        # Check permissions - users can only access leads they are assigned to
+        user_role = current_user.get("role", "user")
+        user_email = current_user.get("email")
+        
+        if user_role != "admin":
+            # Check if user is assigned to this lead (either as primary or co-assignee)
+            assigned_to = lead.get("assigned_to")
+            co_assignees = lead.get("co_assignees", [])
+            
+            if user_email not in [assigned_to] + co_assignees:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You don't have permission to view assignable users for this lead. You can only access leads assigned to you."
+                )
+        
+        # Collect all assigned user emails
+        assigned_user_emails = []
+        
+        # Add primary assignee
+        if lead.get("assigned_to"):
+            assigned_user_emails.append(lead.get("assigned_to"))
+        
+        # Add co-assignees
+        co_assignees = lead.get("co_assignees", [])
+        assigned_user_emails.extend(co_assignees)
+        
+        # Remove duplicates and filter out None values
+        assigned_user_emails = list(set(filter(None, assigned_user_emails)))
+        
+        if not assigned_user_emails:
+            return {
+                "success": True,
+                "users": [],
+                "message": "No users are currently assigned to this lead"
+            }
+        
+        # Get user details for all assigned users
         users = await db.users.find(
-            {"is_active": True},
+            {
+                "email": {"$in": assigned_user_emails},
+                "is_active": True
+            },
             {"first_name": 1, "last_name": 1, "email": 1, "role": 1, "department": 1}
         ).to_list(None)
         
+        # Build response with user details
         assignable_users = []
         for user in users:
-            assignable_users.append({
+            # Determine if user is primary assignee or co-assignee
+            is_primary = user["email"] == lead.get("assigned_to")
+            
+            user_info = {
                 "id": str(user["_id"]),
                 "name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
                 "email": user["email"],
                 "role": user["role"],
-                "department": user.get("department")
-            })
+                "department": user.get("department"),
+                "assignment_type": "primary" if is_primary else "co-assignee"
+            }
+            
+            # Fallback to email if name is empty
+            if not user_info["name"]:
+                user_info["name"] = user["email"]
+                
+            assignable_users.append(user_info)
+        
+        # Sort users: primary assignee first, then co-assignees
+        assignable_users.sort(key=lambda x: (x["assignment_type"] != "primary", x["name"]))
         
         return {
             "success": True,
-            "users": assignable_users
+            "users": assignable_users,
+            "lead_id": lead_id,
+            "total_assigned_users": len(assignable_users),
+            "assignment_summary": {
+                "primary_assignee": lead.get("assigned_to"),
+                "co_assignees_count": len(co_assignees),
+                "is_multi_assigned": lead.get("is_multi_assigned", False)
+            }
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Get assignable users error: {e}")
         import traceback
@@ -501,8 +573,7 @@ async def get_assignable_users_for_tasks(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to retrieve assignable users: {str(e)}"
         )
-
-
+    
 @router.post("/tasks/bulk-action")
 async def bulk_task_action(
     bulk_action: TaskBulkAction,

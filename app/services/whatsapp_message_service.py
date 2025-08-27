@@ -113,117 +113,123 @@ class WhatsAppMessageService:
             }
     
     async def _process_single_incoming_message(self, message_data: Dict[str, Any], raw_webhook: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        ENHANCED: Process incoming message and return structured data for real-time broadcasting
-        """
-        try:
-            db = get_database()
-            
-            # Extract message details from webhook format
-            message_id = message_data.get("id")
-            from_number = self._normalize_phone_number(message_data.get("from", ""))
-            message_type = message_data.get("type", "text")
-            timestamp_str = message_data.get("timestamp")
-            
-            # Convert timestamp
-            timestamp = self._parse_webhook_timestamp(timestamp_str)
-            
-            # Extract content based on message type
-            content = self._extract_message_content(message_data, message_type)
-            
-            # Find lead by phone number
-            lead = await self._find_lead_by_phone_number(from_number)
-            
-            if not lead:
-                logger.warning(f"No lead found for phone number: {from_number}")
-                return {
-                    "success": False,
-                    "error": "Lead not found",
-                    "phone_number": from_number,
-                    "message_id": message_id
-                }
-            
-            # Check if message already exists (prevent duplicates)
-            existing_message = await db.whatsapp_messages.find_one({"message_id": message_id})
-            if existing_message:
-                logger.info(f"Message {message_id} already exists, skipping")
-                return {
-                    "success": True,
-                    "action": "skipped",
-                    "reason": "duplicate",
-                    "message_id": message_id
-                }
-            
-            # Create message document
-            message_doc = {
-                "message_id": message_id,
-                "lead_id": lead["lead_id"],
-                "phone_number": from_number,
-                "direction": MessageDirection.INCOMING,
-                "message_type": self._normalize_message_type(message_type),
-                "content": content,
-                "timestamp": timestamp,
-                "status": MessageStatus.DELIVERED,
-                "is_read": False,
-                "sent_by_user_id": None,
-                "sent_by_name": None,
-                "media_url": message_data.get("media_url"),
-                "media_filename": message_data.get("filename"),
-                "raw_webhook_data": raw_webhook,
-                "created_at": datetime.utcnow()
-            }
-            
-            # Store message in database
-            result = await db.whatsapp_messages.insert_one(message_doc)
-            
-            # Update lead's WhatsApp activity with unread status
-            await self._update_lead_whatsapp_activity(
-                lead["lead_id"],
-                content,
-                increment_total=True,
-                increment_unread=True,
-                set_unread_status=True  # 🆕 NEW: Mark lead as having unread messages
-            )
-            await CommunicationService.log_whatsapp_communication(lead["lead_id"])
-
-            # Log activity in lead timeline
-            await self._log_whatsapp_activity(
-                lead["lead_id"],
-                f"Received WhatsApp message: {content[:100]}"
-            )
-            
-            logger.info(f"Processed incoming message for lead {lead['lead_id']}")
-            
-            # 🆕 NEW: Return structured message data for real-time broadcasting
-            return {
-                "success": True,
-                "action": "created",
-                "message_id": message_id,
-                "lead_id": lead["lead_id"],
-                "internal_id": str(result.inserted_id),
-                "message": {  # 🆕 NEW: Structured message data
-                    "id": str(result.inserted_id),
+            """
+            ENHANCED: Process incoming message and return structured data for real-time broadcasting
+            """
+            try:
+                db = get_database()
+                
+                # Extract message details from webhook format
+                message_id = message_data.get("id")
+                from_number = self._normalize_phone_number(message_data.get("from", ""))
+                message_type = message_data.get("type", "text")
+                timestamp_str = message_data.get("timestamp")
+                
+                # Convert timestamp
+                timestamp = self._parse_webhook_timestamp(timestamp_str)
+                
+                # Extract content based on message type
+                content = self._extract_message_content(message_data, message_type)
+                
+                # Find lead by phone number
+                lead = await self._find_lead_by_phone_number(from_number)
+                
+                if not lead:
+                    logger.warning(f"No lead found for phone number: {from_number}")
+                    return {
+                        "success": False,
+                        "error": "Lead not found",
+                        "phone_number": from_number,
+                        "message_id": message_id
+                    }
+                
+                # Check if message already exists (prevent duplicates)
+                existing_message = await db.whatsapp_messages.find_one({"message_id": message_id})
+                if existing_message:
+                    logger.info(f"Message {message_id} already exists, skipping")
+                    return {
+                        "success": True,
+                        "action": "skipped",
+                        "reason": "duplicate",
+                        "message_id": message_id
+                    }
+                
+                # Create message document
+                message_doc = {
                     "message_id": message_id,
                     "lead_id": lead["lead_id"],
-                    "lead_name": lead["name"],
                     "phone_number": from_number,
-                    "direction": "incoming",
+                    "direction": MessageDirection.INCOMING,
                     "message_type": self._normalize_message_type(message_type),
                     "content": content,
-                    "timestamp": timestamp.isoformat(),
+                    "timestamp": timestamp,
                     "status": MessageStatus.DELIVERED,
-                    "is_read": False
+                    "is_read": False,
+                    "sent_by_user_id": None,
+                    "sent_by_name": None,
+                    "media_url": message_data.get("media_url"),
+                    "media_filename": message_data.get("filename"),
+                    "raw_webhook_data": raw_webhook,
+                    "created_at": datetime.utcnow()
                 }
-            }
-            
-        except Exception as e:
-            logger.error(f"Error processing incoming message: {str(e)}")
-            return {
-                "success": False,
-                "error": str(e),
-                "message_data": message_data
-            }
-    
+                
+                # Store message in database
+                result = await db.whatsapp_messages.insert_one(message_doc)
+                
+                # Update lead's WhatsApp activity with unread status
+                await self._update_lead_whatsapp_activity(
+                    lead["lead_id"],
+                    content,
+                    increment_total=True,
+                    increment_unread=True,
+                    set_unread_status=True  # 🆕 NEW: Mark lead as having unread messages
+                )
+                
+                # 🔥 FIXED: Pass current_user=None and message_content for proper activity logging
+                await CommunicationService.log_whatsapp_communication(
+                    lead["lead_id"], 
+                    current_user=None,  # ✅ Webhook messages don't have user context
+                    message_content=content  # ✅ Pass message content for preview
+                )
+
+                # Log activity in lead timeline
+                await self._log_whatsapp_activity(
+                    lead["lead_id"],
+                    f"Received WhatsApp message: {content[:100]}"
+                )
+                
+                logger.info(f"Processed incoming message for lead {lead['lead_id']}")
+                
+                # 🆕 NEW: Return structured message data for real-time broadcasting
+                return {
+                    "success": True,
+                    "action": "created",
+                    "message_id": message_id,
+                    "lead_id": lead["lead_id"],
+                    "internal_id": str(result.inserted_id),
+                    "message": {  # 🆕 NEW: Structured message data
+                        "id": str(result.inserted_id),
+                        "message_id": message_id,
+                        "lead_id": lead["lead_id"],
+                        "lead_name": lead["name"],
+                        "phone_number": from_number,
+                        "direction": "incoming",
+                        "message_type": self._normalize_message_type(message_type),
+                        "content": content,
+                        "timestamp": timestamp.isoformat(),
+                        "status": MessageStatus.DELIVERED,
+                        "is_read": False
+                    }
+                }
+                
+            except Exception as e:
+                logger.error(f"Error processing incoming message: {str(e)}")
+                return {
+                    "success": False,
+                    "error": str(e),
+                    "message_data": message_data
+                }
+
     # ============================================================================
     # 🆕 NEW: REAL-TIME BROADCASTING METHODS
     # ============================================================================

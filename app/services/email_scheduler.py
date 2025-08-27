@@ -294,6 +294,54 @@ class EmailSchedulerService:
                 "is_running": self.is_running,
                 "error": str(e)
             }
+    async def _get_template_display_name(self, template_key: str) -> str:
+        """Get human-readable template name from CMS using template key"""
+        try:
+            if not template_key:
+                return "Unknown Template"
+            
+            # Fetch template from CMS to get the display name
+            import aiohttp
+            from app.config.settings import settings
+            
+            cms_url = f"{settings.cms_base_url}/{settings.email_templates_endpoint}"
+            
+            async with aiohttp.ClientSession() as session:
+                try:
+                    async with session.get(cms_url) as response:
+                        if response.status == 200:
+                            cms_data = await response.json()
+                            
+                            # Find template with matching key
+                            for template in cms_data.get("data", []):
+                                if template.get("key") == template_key:
+                                    return template.get("Template_Name", template_key)
+                            
+                            # If not found in CMS, return a cleaned version of the key
+                            return self._clean_template_key(template_key)
+                        else:
+                            # CMS not available, clean the key
+                            return self._clean_template_key(template_key)
+                            
+                except Exception as e:
+                    logger.error(f"Error fetching template from CMS: {e}")
+                    return self._clean_template_key(template_key)
+                    
+        except Exception as e:
+            logger.error(f"Error getting template display name: {e}")
+            return template_key or "Unknown Template"
+
+    def _clean_template_key(self, template_key: str) -> str:
+        """Clean template key for display when CMS is not available"""
+        if not template_key:
+            return "Unknown Template"
+        
+        # If it's a long cryptic key, just return "Email Template"
+        if len(template_key) > 50:
+            return "Email Template"
+        
+        # If it's a readable key, clean it up
+        return template_key.replace("_", " ").replace("-", " ").title()
 
 # Global scheduler instance
 email_scheduler = EmailSchedulerService()

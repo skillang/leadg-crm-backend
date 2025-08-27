@@ -683,10 +683,11 @@ async def send_template_to_lead(
             # Create readable message content for storage
             template_content = f"Template: {request.template_name} (Lead: {request.lead_name})"
             
+            # 🔥 REMOVE message_type parameter from this call:
             await store_outgoing_message(
                 contact=request.contact,
                 message_content=template_content,
-                message_type="template",
+                # message_type="template",  # ❌ REMOVE THIS LINE
                 current_user=current_user,
                 api_result=result,
                 template_name=request.template_name
@@ -694,17 +695,16 @@ async def send_template_to_lead(
         
         # 4. Return success response
         return {
-            "success": True,  # 🔥 Only True when actually successful
+            "success": True,
             "data": result,
             "template_name": request.template_name,
             "contact": request.contact,
             "lead_name": request.lead_name,
-            "message": "Template message sent successfully"  # 🔥 Success message
+            "message": "Template message sent successfully"
         }
         
     except Exception as e:
         logger.error(f"Error sending template: {str(e)}")
-        # 🔥 Return proper error response for exceptions too
         return {
             "success": False,
             "error": str(e),
@@ -713,6 +713,8 @@ async def send_template_to_lead(
             "lead_name": request.lead_name,
             "message": f"Failed to send template: {str(e)}"
         }
+
+
 
 @router.post("/send-text")
 async def send_text_message(
@@ -731,10 +733,11 @@ async def send_text_message(
         
         # 2. Store the outgoing message in database
         if result:  # If message sent successfully
+            # 🔥 REMOVE message_type parameter from this call:
             await store_outgoing_message(
                 contact=request.contact,
                 message_content=request.message,
-                message_type="text",
+                # message_type="text",  # ❌ REMOVE THIS LINE
                 current_user=current_user,
                 api_result=result
             )
@@ -748,17 +751,15 @@ async def send_text_message(
         
     except Exception as e:
         logger.error(f"Error sending text message: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to send text message: {str(e)}")
-    
+        raise HTTPException(status_code=500, detail=f"Failed to send text message: {str(e)}") 
 async def store_outgoing_message(
     contact: str,
     message_content: str,
-    message_type: str,
     current_user: Dict[str, Any],
     api_result: Dict[str, Any],
     template_name: Optional[str] = None
 ):
-    """Store outgoing WhatsApp message in database"""
+    """Store outgoing WhatsApp message in database with proper activity logging"""
     try:
         print(f"🔍 DEBUG: store_outgoing_message called for contact: {contact}")
         db = get_database()
@@ -782,46 +783,43 @@ async def store_outgoing_message(
             f"91{phone_10_digit}",             # 918531864229
             f"+91{phone_10_digit}",            # +918531864229
             f"+91 {phone_10_digit}",           # +91 8531864229
-            contact.strip()                     # Original format
+            f"91 {phone_10_digit}",            # 91 8531864229
         ]
         
-        print(f"🔍 DEBUG: Searching for formats: {possible_formats}")
+        print(f"🔍 DEBUG: Searching for lead with phone formats: {possible_formats}")
         
-        # Find lead by any of these phone number formats
+        # Find lead by phone number (try all formats)
         lead = await db.leads.find_one({
             "$or": [
-                {"phoneNumber": {"$in": possible_formats}},
-                {"contact_number": {"$in": possible_formats}},
-                # Also try exact matches with field variations
-                {"phoneNumber": phone_10_digit},
-                {"contact_number": phone_10_digit},
-                {"phoneNumber": f"91{phone_10_digit}"},
-                {"contact_number": f"91{phone_10_digit}"},
-                {"phoneNumber": f"+91{phone_10_digit}"},
-                {"contact_number": f"+91{phone_10_digit}"}
+                {"phone_number": {"$in": possible_formats}},
+                {"contact_number": {"$in": possible_formats}}
             ]
         })
         
-        print(f"🔍 DEBUG: Lead found: {lead is not None}")
-        if lead:
-            print(f"🔍 DEBUG: Lead ID: {lead.get('lead_id')}")
-            print(f"🔍 DEBUG: Lead phone in DB: {lead.get('phoneNumber')} / {lead.get('contact_number')}")
-        
         if not lead:
-            logger.warning(f"No lead found for contact {contact}")
-            return
+            print(f"🔍 DEBUG: No lead found for contact: {contact}")
+            logger.warning(f"No lead found for contact: {contact}")
+            return  # Exit early if no lead found
         
-        # Get user name for display
-        user_name = f"{current_user.get('first_name', '')} {current_user.get('last_name', '')}".strip()
-        if not user_name:
-            user_name = current_user.get('email', 'Unknown User')
+        print(f"🔍 DEBUG: Found lead: {lead.get('lead_id')} - {lead.get('name')}")
         
-        # Use the original contact format for storage (keeps consistency with how message was sent)
-        storage_phone = f"+91{phone_10_digit}" if not contact.startswith("+") else contact
+        # Get user name for message tracking
+        user_name = "Unknown User"
+        if current_user:
+            first_name = current_user.get('first_name', '')
+            last_name = current_user.get('last_name', '')
+            if first_name and last_name:
+                user_name = f"{first_name} {last_name}".strip()
+            else:
+                user_name = current_user.get('email', 'Unknown User')
+        
+        # Determine message type automatically
+        message_type = "template" if template_name else "text"
+        storage_phone = lead.get("phone_number", contact)
         
         # Create message document
         message_doc = {
-            "message_id": f"out_{int(time.time())}_{phone_10_digit}",  # Use 10-digit for unique ID
+            "message_id": f"msg_{int(datetime.utcnow().timestamp())}_{lead.get('lead_id')}",
             "lead_id": lead.get("lead_id"),
             "phone_number": storage_phone,
             "direction": "outgoing",
@@ -857,16 +855,22 @@ async def store_outgoing_message(
                 "$set": {
                     "last_whatsapp_activity": datetime.utcnow(),
                     "last_whatsapp_message": message_content[:100],
-                    "last_contacted": datetime.utcnow()  # Add this line
+                    "last_contacted": datetime.utcnow()
                 },
                 "$inc": {
                     "whatsapp_message_count": 1
                 }
             }
         )
-        await CommunicationService.log_whatsapp_communication(lead.get("lead_id"))
         
-        logger.info(f"✅ Stored outgoing message for lead {lead.get('lead_id')}")
+        # Log communication activity - ONLY ONCE
+        await CommunicationService.log_whatsapp_communication(
+            lead.get("lead_id"),
+            current_user=current_user,
+            message_content=message_content
+        )
+        
+        logger.info(f"✅ Stored outgoing message for lead {lead.get('lead_id')} by {user_name}")
         
     except Exception as e:
         print(f"🔍 DEBUG: Error in store_outgoing_message: {str(e)}")

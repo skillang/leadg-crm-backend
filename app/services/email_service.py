@@ -514,61 +514,39 @@ class EmailService:
     # ========================================================================
     
     async def _log_email_activities(self, email_doc: EmailDocument, send_result: Dict[str, Any]):
-        """Log email activities to lead_activities collection"""
-        try:
-            activities = []
-            
-            if email_doc.email_type == "single":
-                # Single lead activity
-                lead_id = email_doc.lead_id
-                recipient = email_doc.recipients[0]
+            """Log email activities to lead_activities collection"""
+            try:
+                activities = []
+                
+                if email_doc.email_type == "single":
+                    # Single lead activity
+                    lead_id = email_doc.lead_id
+                    recipient = email_doc.recipients[0]
 
-                # Update last_contacted if email was successful
-                if send_result["success"]:
-                    await CommunicationService.log_email_communication(
-                        lead_id=lead_id,
-                        email_subject=email_doc.template_key,
-                        template_key=email_doc.template_key
-                    )
-                
-                activity = {
-                    "_id": ObjectId(),
-                    "lead_id": lead_id,
-                    "activity_type": "email_sent" if send_result["success"] else "email_failed",
-                    "description": f"Email {'sent' if send_result['success'] else 'failed'} using template '{email_doc.template_key}'",
-                    "metadata": {
-                        "email_id": email_doc.email_id,
-                        "template_key": email_doc.template_key,
-                        "sender_email": email_doc.sender_email,
-                        "recipient_email": recipient.email,
-                        "scheduled": email_doc.is_scheduled,
-                        "success": send_result["success"]
-                    },
-                    "created_by": ObjectId(email_doc.created_by),
-                    "created_by_name": email_doc.created_by_name,
-                    "created_at": datetime.utcnow()
-                }
-                activities.append(activity)
-                
-            else:
-                # Bulk email activities (one per lead)
-                for lead_id in email_doc.lead_ids:
-                    if send_result["success"]:
-                        await CommunicationService.log_email_communication(
-                            lead_id=lead_id,
-                            template_key=email_doc.template_key
-                        )
+                    # 🔥 REMOVE THIS CALL - it's causing the duplicate
+                    # Update last_contacted if email was successful
+                    # if send_result["success"]:
+                    #     await CommunicationService.log_email_communication(
+                    #         lead_id=lead_id,
+                    #         email_subject=email_doc.template_key,
+                    #         template_key=email_doc.template_key
+                    #     )
+                    
+                    # Get template name instead of template key for better display
+                    template_display = await self._get_template_display_name(email_doc.template_key)
+                    
                     activity = {
                         "_id": ObjectId(),
                         "lead_id": lead_id,
-                        "activity_type": "bulk_email_sent",
-                        "description": f"Included in bulk email campaign using template '{email_doc.template_key}'",
+                        "activity_type": "email_sent" if send_result["success"] else "email_failed",
+                        "description": f"Email {'sent' if send_result['success'] else 'failed'} using template '{template_display}'",
                         "metadata": {
                             "email_id": email_doc.email_id,
                             "template_key": email_doc.template_key,
+                            "template_name": template_display,  # Add template name for better display
                             "sender_email": email_doc.sender_email,
-                            "total_recipients": email_doc.total_recipients,
-                            "bulk_campaign": True,
+                            "recipient_email": recipient.email,
+                            "scheduled": email_doc.is_scheduled,
                             "success": send_result["success"]
                         },
                         "created_by": ObjectId(email_doc.created_by),
@@ -576,66 +554,178 @@ class EmailService:
                         "created_at": datetime.utcnow()
                     }
                     activities.append(activity)
-            
-            # Insert all activities
-            if activities:
-                await self.db.lead_activities.insert_many(activities)
-                logger.info(f"Logged {len(activities)} email activities")
+                    
+                else:
+                    # Bulk email activities (one per lead)
+                    for lead_id in email_doc.lead_ids:
+                        # 🔥 REMOVE THIS CALL - it's causing the duplicate
+                        # if send_result["success"]:
+                        #     await CommunicationService.log_email_communication(
+                        #         lead_id=lead_id,
+                        #         template_key=email_doc.template_key
+                        #     )
+                        
+                        # Get template name for better display
+                        template_display = await self._get_template_display_name(email_doc.template_key)
+                        
+                        activity = {
+                            "_id": ObjectId(),
+                            "lead_id": lead_id,
+                            "activity_type": "bulk_email_sent",
+                            "description": f"Included in bulk email campaign using template '{template_display}'",
+                            "metadata": {
+                                "email_id": email_doc.email_id,
+                                "template_key": email_doc.template_key,
+                                "template_name": template_display,  # Add template name
+                                "sender_email": email_doc.sender_email,
+                                "total_recipients": email_doc.total_recipients,
+                                "bulk_campaign": True,
+                                "success": send_result["success"]
+                            },
+                            "created_by": ObjectId(email_doc.created_by),
+                            "created_by_name": email_doc.created_by_name,
+                            "created_at": datetime.utcnow()
+                        }
+                        activities.append(activity)
                 
-        except Exception as e:
-            logger.error(f"Error logging email activities: {e}")
+                # Insert all activities
+                if activities:
+                    await self.db.lead_activities.insert_many(activities)
+                    logger.info(f"Logged {len(activities)} email activities")
+                    
+            except Exception as e:
+                logger.error(f"Error logging email activities: {e}")
+
+
     
-    async def _log_email_scheduling_activities(self, email_doc: EmailDocument):
-        """Log email scheduling activities"""
+    async def _log_scheduled_email_activities(self, email_doc: Dict[str, Any], results: list, success: bool):
+            """Log email activities to lead_activities collection"""
+            try:
+                activities = []
+                
+                if email_doc.get("email_type") == "single":
+                    # Single lead activity
+                    lead_id = email_doc.get("lead_id")
+                    if lead_id:
+                        # 🔥 REMOVE THIS CALL - it's causing the duplicate
+                        # if success:
+                        #     await CommunicationService.log_email_communication(
+                        #         lead_id=lead_id,
+                        #         template_key=email_doc.get("template_key")
+                        #     )
+                        
+                        # Get template name for better display
+                        template_display = await self._get_template_display_name(email_doc.get("template_key"))
+                        
+                        activity = {
+                            "_id": ObjectId(),
+                            "lead_id": lead_id,
+                            "activity_type": "scheduled_email_sent" if success else "scheduled_email_failed",
+                            "description": f"Scheduled email {'sent' if success else 'failed'} using template '{template_display}'",
+                            "metadata": {
+                                "email_id": email_doc["email_id"],
+                                "template_key": email_doc.get("template_key"),
+                                "template_name": template_display,  # Add template name
+                                "sender_email": email_doc.get("sender_email"),
+                                "scheduled": True,
+                                "success": success,
+                                "recipients_count": len(results)
+                            },
+                            "created_by": email_doc.get("created_by"),
+                            "created_by_name": email_doc.get("created_by_name"),
+                            "created_at": datetime.utcnow()
+                        }
+                        activities.append(activity)
+                else:
+                    # Bulk email activities
+                    lead_ids = email_doc.get("lead_ids", [])
+                    for lead_id in lead_ids:
+                        # 🔥 REMOVE THIS CALL - it's causing the duplicate
+                        # if success:
+                        #     await CommunicationService.log_email_communication(
+                        #         lead_id=lead_id,
+                        #         template_key=email_doc.get("template_key")
+                        #     )
+                        
+                        # Get template name for better display
+                        template_display = await self._get_template_display_name(email_doc.get("template_key"))
+                        
+                        activity = {
+                            "_id": ObjectId(),
+                            "lead_id": lead_id,
+                            "activity_type": "scheduled_bulk_email_sent" if success else "scheduled_bulk_email_failed",
+                            "description": f"Scheduled bulk email {'sent' if success else 'failed'} using template '{template_display}'",
+                            "metadata": {
+                                "email_id": email_doc["email_id"],
+                                "template_key": email_doc.get("template_key"),
+                                "template_name": template_display,  # Add template name
+                                "sender_email": email_doc.get("sender_email"),
+                                "total_recipients": email_doc.get("total_recipients"),
+                                "scheduled": True,
+                                "success": success
+                            },
+                            "created_by": email_doc.get("created_by"),
+                            "created_by_name": email_doc.get("created_by_name"),
+                            "created_at": datetime.utcnow()
+                        }
+                        activities.append(activity)
+
+                # Insert all activities
+                if activities:
+                    await self.db.lead_activities.insert_many(activities)
+                    logger.info(f"Logged {len(activities)} scheduled email activities")
+                    
+            except Exception as e:
+                logger.error(f"Error logging scheduled email activities: {e}")
+
+    async def _get_template_display_name(self, template_key: str) -> str:
+        """Get human-readable template name from CMS using template key"""
         try:
-            activities = []
+            if not template_key:
+                return "Unknown Template"
             
-            if email_doc.email_type == "single":
-                # Single lead scheduling activity
-                activity = {
-                    "_id": ObjectId(),
-                    "lead_id": email_doc.lead_id,
-                    "activity_type": "email_scheduled",
-                    "description": f"Email scheduled for {email_doc.scheduled_time.strftime('%Y-%m-%d %H:%M')} using template '{email_doc.template_key}'",
-                    "metadata": {
-                        "email_id": email_doc.email_id,
-                        "template_key": email_doc.template_key,
-                        "scheduled_time": email_doc.scheduled_time.isoformat(),
-                        "sender_email": email_doc.sender_email
-                    },
-                    "created_by": ObjectId(email_doc.created_by),
-                    "created_by_name": email_doc.created_by_name,
-                    "created_at": datetime.utcnow()
-                }
-                activities.append(activity)
-                
-            else:
-                # Bulk email scheduling activities
-                for lead_id in email_doc.lead_ids:
-                    activity = {
-                        "_id": ObjectId(),
-                        "lead_id": lead_id,
-                        "activity_type": "bulk_email_scheduled",
-                        "description": f"Included in bulk email scheduled for {email_doc.scheduled_time.strftime('%Y-%m-%d %H:%M')}",
-                        "metadata": {
-                            "email_id": email_doc.email_id,
-                            "template_key": email_doc.template_key,
-                            "scheduled_time": email_doc.scheduled_time.isoformat(),
-                            "total_recipients": email_doc.total_recipients
-                        },
-                        "created_by": ObjectId(email_doc.created_by),
-                        "created_by_name": email_doc.created_by_name,
-                        "created_at": datetime.utcnow()
-                    }
-                    activities.append(activity)
+            # Fetch template from CMS to get the display name
+            import aiohttp
+            from app.config.settings import settings
             
-            # Insert activities
-            if activities:
-                await self.db.lead_activities.insert_many(activities)
-                logger.info(f"Logged {len(activities)} email scheduling activities")
-                
+            cms_url = f"{settings.cms_base_url}/{settings.email_templates_endpoint}"
+            
+            async with aiohttp.ClientSession() as session:
+                try:
+                    async with session.get(cms_url) as response:
+                        if response.status == 200:
+                            cms_data = await response.json()
+                            
+                            # Find template with matching key
+                            for template in cms_data.get("data", []):
+                                if template.get("key") == template_key:
+                                    return template.get("Template_Name", template_key)
+                            
+                            # If not found in CMS, return a cleaned version of the key
+                            return self._clean_template_key(template_key)
+                        else:
+                            # CMS not available, clean the key
+                            return self._clean_template_key(template_key)
+                            
+                except Exception as e:
+                    logger.error(f"Error fetching template from CMS: {e}")
+                    return self._clean_template_key(template_key)
+                    
         except Exception as e:
-            logger.error(f"Error logging email scheduling activities: {e}")
+            logger.error(f"Error getting template display name: {e}")
+            return template_key or "Unknown Template"
+
+    def _clean_template_key(self, template_key: str) -> str:
+        """Clean template key for display when CMS is not available"""
+        if not template_key:
+            return "Unknown Template"
+        
+        # If it's a long cryptic key, just return "Email Template"
+        if len(template_key) > 50:
+            return "Email Template"
+        
+        # If it's a readable key, clean it up
+        return template_key.replace("_", " ").replace("-", " ").title()
 
 # Global email service instance - using lazy initialization
 _email_service = None
