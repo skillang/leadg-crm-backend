@@ -321,86 +321,191 @@ class NoteService:
             return None
 
     async def update_note(self, note_id: str, note_data: NoteUpdate, user_id: str, user_role: str) -> bool:
-        """Update a note with auto-activity logging"""
-        try:
-            db = get_database()
-            
-            # Get current note for access control
-            current_note = await db.lead_notes.find_one({"_id": ObjectId(note_id)})
-            if not current_note:
-                return False
-            
-            # Access control - only creator or admin can update
-            if user_role != "admin" and str(current_note.get("created_by")) != str(user_id):
-                return False
-            
-            # Prepare update data
-            update_data = {}
-            for field, value in note_data.dict(exclude_unset=True).items():
-                if value is not None:
-                    update_data[field] = value
-            
-            # Get updater name
-            updater = await db.users.find_one({"_id": ObjectId(user_id)})
-            updated_by_name = "Unknown User"
-            if updater:
-                first_name = updater.get('first_name', '')
-                last_name = updater.get('last_name', '')
-                if first_name and last_name:
-                    updated_by_name = f"{first_name} {last_name}".strip()
-                else:
-                    updated_by_name = updater.get('email', 'Unknown User')
-            
-            update_data.update({
-                "updated_at": datetime.utcnow(),
-                "updated_by": ObjectId(user_id),
-                "updated_by_name": updated_by_name
-            })
-            
-            # Update note
-            result = await db.lead_notes.update_one(
-                {"_id": ObjectId(note_id)}, 
-                {"$set": update_data}
-            )
-            
-            if result.modified_count > 0:
-                # 🔥 AUTO-ACTIVITY LOGGING
-                try:
-                    # Check for duplicate activity
-                    existing_activity = await db.lead_activities.find_one({
-                        "lead_id": current_note["lead_id"],
-                        "activity_type": "note_updated",
-                        "metadata.note_id": note_id,
-                        "created_at": {"$gte": datetime.utcnow() - timedelta(seconds=10)}
-                    })
+            """Update a note with detailed auto-activity logging - FIXED ACCESS CONTROL"""
+            try:
+                db = get_database()
+                
+                # Get current note for access control
+                current_note = await db.lead_notes.find_one({"_id": ObjectId(note_id)})
+                if not current_note:
+                    return False
+                
+                # 🔑 LEAD-BASED ACCESS CONTROL (similar to tasks)
+                if user_role != "admin":
+                    # Get the lead for this note
+                    lead = await db.leads.find_one({"lead_id": current_note["lead_id"]})
+                    if not lead:
+                        return False
                     
-                    if not existing_activity:
-                        activity_doc = {
+                    # Get user info to check email
+                    user_info = await db.users.find_one({"_id": ObjectId(user_id)})
+                    if not user_info:
+                        return False
+                    
+                    user_email = user_info.get("email", "")
+                    lead_assigned_to = lead.get("assigned_to", "")
+                    lead_co_assignees = lead.get("co_assignees", [])
+                    
+                    # Check if user has access to this lead OR is the note creator (for private notes)
+                    note_creator = str(current_note.get("created_by", ""))
+                    has_lead_access = (
+                        lead_assigned_to == user_email or 
+                        user_email in lead_co_assignees or
+                        note_creator == str(user_id)  # Allow note creator to edit their own notes
+                    )
+                    
+                    if not has_lead_access:
+                        logger.warning(f"User {user_email} has no access to note {note_id}")
+                        return False
+                
+                # Prepare update data and track changes with detailed information
+                update_data = {}
+                changes = []  # Track detailed changes for timeline
+                
+                # Field mapping for better display names
+                field_display_names = {
+                    "title": "Title",
+                    "content": "Content", 
+                    "note_type": "Type",
+                    "tags": "Tags",
+                    "is_important": "Importance",
+                    "is_private": "Privacy"
+                }
+                
+                for field, value in note_data.dict(exclude_unset=True).items():
+                    if value is not None:
+                        old_value = current_note.get(field)
+                        display_name = field_display_names.get(field, field.replace('_', ' ').title())
+                        
+                        # Handle different field types
+                        if field == "tags":
+                            # Handle tags array - show added/removed tags
+                            old_tags = set(old_value or [])
+                            new_tags = set(value or [])
+                            
+                            if old_tags != new_tags:
+                                update_data[field] = value
+                                added_tags = new_tags - old_tags
+                                removed_tags = old_tags - new_tags
+                                
+                                tag_changes = []
+                                if added_tags:
+                                    tag_changes.append(f"added {', '.join(sorted(added_tags))}")
+                                if removed_tags:
+                                    tag_changes.append(f"removed {', '.join(sorted(removed_tags))}")
+                                
+                                if tag_changes:
+                                    changes.append(f"{display_name}: {'; '.join(tag_changes)}")
+                                    
+                        elif field == "is_important":
+                            # Handle boolean importance flag
+                            if old_value != value:
+                                update_data[field] = value
+                                old_display = "Important" if old_value else "Normal"
+                                new_display = "Important" if value else "Normal"
+                                changes.append(f"{display_name}: {old_display} → {new_display}")
+                                
+                        elif field == "is_private":
+                            # Handle boolean privacy flag
+                            if old_value != value:
+                                update_data[field] = value
+                                old_display = "Private" if old_value else "Public"
+                                new_display = "Private" if value else "Public"
+                                changes.append(f"{display_name}: {old_display} → {new_display}")
+                                
+                        elif field == "content":
+                            # Handle content changes - show truncated preview
+                            if old_value != value:
+                                update_data[field] = value
+                                old_preview = (old_value[:50] + "...") if old_value and len(str(old_value)) > 50 else (old_value or "Empty")
+                                new_preview = (value[:50] + "...") if value and len(str(value)) > 50 else value
+                                changes.append(f"{display_name}: '{old_preview}' → '{new_preview}'")
+                                
+                        else:
+                            # Handle other fields (title, note_type, etc.)
+                            if old_value != value:
+                                update_data[field] = value
+                                old_display = str(old_value) if old_value else "Not set"
+                                new_display = str(value)
+                                changes.append(f"{display_name}: '{old_display}' → '{new_display}'")
+                
+                if not update_data:
+                    return True  # No changes needed
+                
+                # Get updater name
+                updater = await db.users.find_one({"_id": ObjectId(user_id)})
+                updated_by_name = "Unknown User"
+                if updater:
+                    first_name = updater.get('first_name', '')
+                    last_name = updater.get('last_name', '')
+                    if first_name and last_name:
+                        updated_by_name = f"{first_name} {last_name}".strip()
+                    else:
+                        updated_by_name = updater.get('email', 'Unknown User')
+                
+                update_data.update({
+                    "updated_at": datetime.utcnow(),
+                    "updated_by": ObjectId(user_id),
+                    "updated_by_name": updated_by_name
+                })
+                
+                # Update note
+                result = await db.lead_notes.update_one(
+                    {"_id": ObjectId(note_id)}, 
+                    {"$set": update_data}
+                )
+                
+                if result.modified_count > 0 and changes:
+                    # Enhanced AUTO-ACTIVITY LOGGING with detailed changes
+                    try:
+                        # Check for duplicate activity
+                        existing_activity = await db.lead_activities.find_one({
                             "lead_id": current_note["lead_id"],
                             "activity_type": "note_updated",
-                            "description": f"Note '{current_note['title']}' updated",
-                            "created_by": ObjectId(user_id),
-                            "created_by_name": updated_by_name,
-                            "created_at": datetime.utcnow(),
-                            "is_system_generated": True,
-                            "metadata": {
-                                "note_id": note_id,
-                                "note_title": current_note['title'],
-                                "updated_fields": list(update_data.keys())
+                            "metadata.note_id": note_id,
+                            "created_at": {"$gte": datetime.utcnow() - timedelta(seconds=10)}
+                        })
+                        
+                        if not existing_activity:
+                            # Create detailed description with changes
+                            changes_text = "; ".join(changes[:5])  # Limit to first 5 changes
+                            if len(changes) > 5:
+                                changes_text += f" (+{len(changes) - 5} more)"
+                            
+                            description = f"Note '{current_note['title']}' updated by {updated_by_name}. Changes: {changes_text}"
+                            
+                            activity_doc = {
+                                "lead_id": current_note["lead_id"],
+                                "activity_type": "note_updated",
+                                "title": f"Note Updated: {current_note['title']}",
+                                "description": description,  # Now includes the changes
+                                "created_by": ObjectId(user_id),
+                                "created_by_name": updated_by_name,
+                                "created_at": datetime.utcnow(),
+                                "updated_at": datetime.utcnow(),
+                                "is_system_generated": True,
+                                "metadata": {
+                                    "note_id": note_id,
+                                    "note_title": current_note['title'],
+                                    "changes": changes,  # Full list of changes
+                                    "changes_count": len(changes),
+                                    "updated_by": updated_by_name,
+                                    "updated_fields": list(update_data.keys())  # Keep for backward compatibility
+                                }
                             }
-                        }
-                        await db.lead_activities.insert_one(activity_doc)
-                        logger.info("✅ Note update activity logged")
-                    else:
-                        logger.info("⚠️ Recent update activity exists, skipping duplicate")
-                except Exception as activity_error:
-                    logger.warning(f"⚠️ Failed to log note update activity: {activity_error}")
-            
-            return result.modified_count > 0
-            
-        except Exception as e:
-            logger.error(f"❌ Error updating note: {str(e)}")
-            return False
+                            await db.lead_activities.insert_one(activity_doc)
+                            logger.info(f"✅ Note update activity logged with {len(changes)} changes")
+                        else:
+                            logger.info("⚠️ Recent update activity exists, skipping duplicate")
+                            
+                    except Exception as activity_error:
+                        logger.warning(f"⚠️ Failed to log note update activity: {activity_error}")
+                
+                return result.modified_count > 0
+                
+            except Exception as e:
+                logger.error(f"❌ Error updating note: {str(e)}")
+                return False
 
     async def delete_note(self, note_id: str, user_id: str, user_role: str) -> bool:
         """Delete a note with auto-activity logging"""

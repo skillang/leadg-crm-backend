@@ -20,8 +20,8 @@ class TaskService:
             logger.info(f"Creating task for lead_id: {lead_id}")
             logger.info(f"Task data: {task_data.dict()}")
             
-            # Direct database call (like your working lead service)
-            db = get_database()  # ✅ No await
+            # Direct database call
+            db = get_database()
             
             # Verify lead exists
             lead = await db.leads.find_one({"lead_id": lead_id})
@@ -30,23 +30,45 @@ class TaskService:
             
             logger.info(f"Lead found: {lead.get('company_name')}")
             
+            # 🔑 Get creator user details for timeline
+            created_by_name = "Unknown User"
+            created_by_email = ""
+            if created_by:
+                creator_user = await db.users.find_one({"_id": ObjectId(created_by)})
+                if creator_user:
+                    first_name = creator_user.get('first_name', '')
+                    last_name = creator_user.get('last_name', '')
+                    full_name = creator_user.get('full_name', '')
+                    created_by_email = creator_user.get('email', '')
+                    
+                    # Build creator name
+                    if first_name and last_name:
+                        created_by_name = f"{first_name} {last_name}".strip()
+                    elif full_name:
+                        created_by_name = full_name
+                    elif created_by_email:
+                        created_by_name = created_by_email
+                    
+                    logger.info(f"Created by: {created_by_name}")
+            
             # Get assigned user name if provided
             assigned_to_name = "Unassigned"
+            assigned_to_email = ""
             if task_data.assigned_to:
                 assigned_user = await db.users.find_one({"_id": ObjectId(task_data.assigned_to)})
                 if assigned_user:
                     first_name = assigned_user.get('first_name', '')
                     last_name = assigned_user.get('last_name', '')
                     full_name = assigned_user.get('full_name', '')
-                    email = assigned_user.get('email', '')
+                    assigned_to_email = assigned_user.get('email', '')
                     
-                    # Try different name combinations
+                    # Build assigned user name
                     if first_name and last_name:
                         assigned_to_name = f"{first_name} {last_name}".strip()
                     elif full_name:
                         assigned_to_name = full_name
-                    elif email:
-                        assigned_to_name = email
+                    elif assigned_to_email:
+                        assigned_to_name = assigned_to_email
                     
                     logger.info(f"Assigned to: {assigned_to_name}")
             
@@ -102,25 +124,67 @@ class TaskService:
             
             logger.info(f"Task created successfully: {task_doc['id']}")
             
-            # Create activity log (optional, can comment out if causing issues)
+            # 🔥 ENHANCED TIMELINE LOGGING - Following established pattern from notes service
             try:
-                activity_doc = {
-                    "lead_object_id": lead["lead_id"],
+                # Check if activity already exists to prevent duplicates
+                existing_activity = await db.lead_activities.find_one({
+                    "lead_id": lead["lead_id"],
                     "activity_type": "task_created",
-                    "description": f"Task '{task_data.task_title}' created",
-                    "created_by": ObjectId(created_by),
-                    "created_at": datetime.utcnow(),
-                    "metadata": {
+                    "metadata.task_id": str(result.inserted_id)
+                })
+                
+                if not existing_activity:
+                    # Create detailed activity description
+                    if assigned_to_name != "Unassigned":
+                        description = f"Task '{task_data.task_title}' created and assigned to {assigned_to_name}"
+                    else:
+                        description = f"Task '{task_data.task_title}' created"
+                    
+                    # Build comprehensive metadata for timeline display
+                    activity_metadata = {
                         "task_id": str(result.inserted_id),
                         "task_title": task_data.task_title,
-                        "assigned_to": assigned_to_name
+                        "task_type": task_data.task_type,
+                        "priority": task_data.priority,
+                        "assigned_to": assigned_to_name,
+                        "due_date": due_date_str,
+                        "due_time": due_time_str,
+                        "status": status,
                     }
-                }
-                await db.lead_activities.insert_one(activity_doc)
-                logger.info("Activity logged successfully")
+                    
+                    # Add task description if provided
+                    if task_data.task_description:
+                        activity_metadata["task_description"] = task_data.task_description[:100] + "..." if len(task_data.task_description) > 100 else task_data.task_description
+                    
+                    # Add notes if provided
+                    if task_data.notes:
+                        activity_metadata["notes"] = task_data.notes[:100] + "..." if len(task_data.notes) > 100 else task_data.notes
+                    
+                    # Create timeline activity document
+                    activity_doc = {
+                        "lead_id": lead["lead_id"],  # ✅ String reference for timeline queries
+                        "activity_type": "task_created",
+                        "title": f"Task Created: {task_data.task_title}",  # Title for timeline display
+                        "description": description,  # Description for timeline display
+                        "created_by": ObjectId(created_by),
+                        "created_by_name": created_by_name,
+                        "created_at": datetime.utcnow(),
+                        "updated_at": datetime.utcnow(),
+                        "is_system_generated": True,
+                        "metadata": activity_metadata
+                    }
+                    
+                    # Insert timeline activity
+                    activity_result = await db.lead_activities.insert_one(activity_doc)
+                    logger.info(f"✅ Timeline activity logged successfully: {activity_result.inserted_id}")
+                else:
+                    logger.info("⚠️ Timeline activity already exists, skipping duplicate")
+                    
             except Exception as activity_error:
-                logger.warning(f"Failed to log activity: {activity_error}")
-                # Don't fail the whole task creation if activity logging fails
+                logger.warning(f"⚠️ Failed to log timeline activity: {activity_error}")
+                # Don't fail the whole task creation if timeline logging fails
+                import traceback
+                logger.warning(f"Timeline logging error traceback: {traceback.format_exc()}")
             
             return task_doc
             
@@ -130,30 +194,329 @@ class TaskService:
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
             raise Exception(f"Failed to create task: {str(e)}")
-    
+
+    async def complete_task(self, task_id: str, completion_notes: Optional[str], user_id: str, user_role: str) -> bool:
+        """Mark task as completed and log timeline activity - FIXED ACCESS CONTROL"""
+        try:
+            db = get_database()
+            
+            # Get current task first
+            current_task = await db.lead_tasks.find_one({"_id": ObjectId(task_id)})
+            if not current_task:
+                return False
+            
+            # 🔑 LEAD-BASED ACCESS CONTROL (not task-based)
+            if user_role != "admin":
+                # Get the lead for this task
+                lead = await db.leads.find_one({"lead_id": current_task["lead_id"]})
+                if not lead:
+                    return False
+                
+                # Get user info to check email
+                user_info = await db.users.find_one({"_id": ObjectId(user_id)})
+                if not user_info:
+                    return False
+                
+                user_email = user_info.get("email", "")
+                lead_assigned_to = lead.get("assigned_to", "")
+                lead_co_assignees = lead.get("co_assignees", [])
+                
+                # Check if user has access to this lead
+                has_lead_access = (
+                    lead_assigned_to == user_email or 
+                    user_email in lead_co_assignees
+                )
+                
+                if not has_lead_access:
+                    logger.warning(f"User {user_email} has no access to lead for task {task_id}")
+                    return False
+            
+            # Get user details for timeline
+            user_name = "Unknown User"
+            user_details = await db.users.find_one({"_id": ObjectId(user_id)})
+            if user_details:
+                first_name = user_details.get('first_name', '')
+                last_name = user_details.get('last_name', '')
+                if first_name and last_name:
+                    user_name = f"{first_name} {last_name}".strip()
+                else:
+                    user_name = user_details.get('email', 'Unknown User')
+            
+            # Update task
+            update_data = {
+                "status": "completed",
+                "completed_at": datetime.utcnow(),
+                "updated_at": datetime.utcnow()
+            }
+            
+            if completion_notes:
+                update_data["completion_notes"] = completion_notes
+            
+            result = await db.lead_tasks.update_one({"_id": ObjectId(task_id)}, {"$set": update_data})
+            
+            if result.modified_count > 0:
+                # 🔥 LOG TASK COMPLETION TIMELINE ACTIVITY
+                try:
+                    description = f"Task '{current_task['task_title']}' completed by {user_name}"
+                    
+                    activity_metadata = {
+                        "task_id": str(current_task["_id"]),
+                        "task_title": current_task["task_title"],
+                        "task_type": current_task.get("task_type"),
+                        "completed_by": user_name,
+                    }
+                    
+                    if completion_notes:
+                        activity_metadata["completion_notes"] = completion_notes[:200] + "..." if len(completion_notes) > 200 else completion_notes
+                    
+                    activity_doc = {
+                        "lead_id": current_task["lead_id"],
+                        "activity_type": "task_completed",
+                        "title": f"Task Completed: {current_task['task_title']}",
+                        "description": description,
+                        "created_by": ObjectId(user_id),
+                        "created_by_name": user_name,
+                        "created_at": datetime.utcnow(),
+                        "updated_at": datetime.utcnow(),
+                        "is_system_generated": True,
+                        "metadata": activity_metadata
+                    }
+                    
+                    await db.lead_activities.insert_one(activity_doc)
+                    logger.info("✅ Task completion timeline activity logged")
+                    
+                except Exception as activity_error:
+                    logger.warning(f"⚠️ Failed to log task completion activity: {activity_error}")
+            
+            return result.modified_count > 0
+            
+        except Exception as e:
+            logger.error(f"Error completing task: {str(e)}")
+            return False
+
+    async def update_task(self, task_id: str, task_data: TaskUpdate, user_id: str, user_role: str) -> bool:
+        """Update a task and log timeline activity - FIXED ACCESS CONTROL WITH DETAILED CHANGES"""
+        try:
+            db = get_database()
+            
+            # Get current task first
+            current_task = await db.lead_tasks.find_one({"_id": ObjectId(task_id)})
+            if not current_task:
+                return False
+            
+            # 🔑 LEAD-BASED ACCESS CONTROL (not task-based)
+            if user_role != "admin":
+                # Get the lead for this task
+                lead = await db.leads.find_one({"lead_id": current_task["lead_id"]})
+                if not lead:
+                    return False
+                
+                # Get user info to check email
+                user_info = await db.users.find_one({"_id": ObjectId(user_id)})
+                if not user_info:
+                    return False
+                
+                user_email = user_info.get("email", "")
+                lead_assigned_to = lead.get("assigned_to", "")
+                lead_co_assignees = lead.get("co_assignees", [])
+                
+                # Check if user has access to this lead
+                has_lead_access = (
+                    lead_assigned_to == user_email or 
+                    user_email in lead_co_assignees
+                )
+                
+                if not has_lead_access:
+                    logger.warning(f"User {user_email} has no access to lead for task {task_id}")
+                    return False
+            
+            # Get user details for timeline
+            user_name = "Unknown User"
+            user_details = await db.users.find_one({"_id": ObjectId(user_id)})
+            if user_details:
+                first_name = user_details.get('first_name', '')
+                last_name = user_details.get('last_name', '')
+                if first_name and last_name:
+                    user_name = f"{first_name} {last_name}".strip()
+                else:
+                    user_name = user_details.get('email', 'Unknown User')
+            
+            # Prepare update data and track changes with better formatting
+            update_data = {}
+            changes = []  # Track what changed for timeline
+            
+            # Field mapping for better display names
+            field_display_names = {
+                "task_title": "Title",
+                "task_description": "Description", 
+                "task_type": "Type",
+                "priority": "Priority",
+                "assigned_to": "Assigned To",
+                "due_date": "Due Date",
+                "due_time": "Due Time",
+                "status": "Status",
+                "notes": "Notes"
+            }
+            
+            for field, value in task_data.dict(exclude_unset=True).items():
+                if value is not None:
+                    old_value = current_task.get(field)
+                    display_name = field_display_names.get(field, field.replace('_', ' ').title())
+                    
+                    if field == "due_date" and isinstance(value, date):
+                        new_value = value.isoformat()
+                        update_data[field] = new_value
+                        if old_value != new_value:
+                            old_display = old_value if old_value else "Not set"
+                            new_display = new_value
+                            changes.append(f"{display_name}: {old_display} → {new_display}")
+                            
+                    elif field == "due_time" and isinstance(value, time):
+                        new_value = value.isoformat()
+                        update_data[field] = new_value  
+                        if old_value != new_value:
+                            old_display = old_value if old_value else "Not set"
+                            new_display = new_value
+                            changes.append(f"{display_name}: {old_display} → {new_display}")
+                            
+                    elif field == "assigned_to":
+                        # Handle assigned_to - convert ObjectId to name
+                        update_data[field] = value
+                        if old_value != value:
+                            # Get old assigned user name
+                            old_name = "Unassigned"
+                            if old_value:
+                                try:
+                                    old_user = await db.users.find_one({"_id": ObjectId(old_value)})
+                                    if old_user:
+                                        old_first = old_user.get('first_name', '')
+                                        old_last = old_user.get('last_name', '')
+                                        if old_first and old_last:
+                                            old_name = f"{old_first} {old_last}".strip()
+                                        else:
+                                            old_name = old_user.get('email', 'Unknown User')
+                                except:
+                                    old_name = "Unknown User"
+                            
+                            # Get new assigned user name  
+                            new_name = "Unassigned"
+                            if value:
+                                try:
+                                    new_user = await db.users.find_one({"_id": ObjectId(value)})
+                                    if new_user:
+                                        new_first = new_user.get('first_name', '')
+                                        new_last = new_user.get('last_name', '')
+                                        if new_first and new_last:
+                                            new_name = f"{new_first} {new_last}".strip()
+                                        else:
+                                            new_name = new_user.get('email', 'Unknown User')
+                                except:
+                                    new_name = "Unknown User"
+                            
+                            changes.append(f"{display_name}: {old_name} → {new_name}")
+                            # Also update the assigned_to_name field
+                            update_data["assigned_to_name"] = new_name
+                            
+                    else:
+                        # Handle other fields
+                        update_data[field] = value
+                        if old_value != value:
+                            old_display = str(old_value) if old_value else "Not set"
+                            new_display = str(value)
+                            changes.append(f"{display_name}: {old_display} → {new_display}")
+            
+            if not update_data:
+                return True  # No changes needed
+            
+            update_data["updated_at"] = datetime.utcnow()
+            
+            # Update task
+            result = await db.lead_tasks.update_one({"_id": ObjectId(task_id)}, {"$set": update_data})
+            
+            if result.modified_count > 0 and changes:
+                # 🔥 LOG TASK UPDATE TIMELINE ACTIVITY WITH DETAILED CHANGES
+                try:
+                    # Create detailed description with changes
+                    changes_text = "; ".join(changes[:5])  # Limit to first 5 changes
+                    if len(changes) > 5:
+                        changes_text += f" (+{len(changes) - 5} more)"
+                    
+                    description = f"Task '. Changes: {changes_text}"
+                    
+                    activity_metadata = {
+                        "task_id": str(current_task["_id"]),
+                        "task_title": current_task["task_title"],
+                        "changes": changes,  # Full list in metadata
+                        "changes_count": len(changes),
+                        "updated_by": user_name,
+                    }
+                    
+                    activity_doc = {
+                        "lead_id": current_task["lead_id"],
+                        "activity_type": "task_updated",
+                        # "title": f"Task Updated: {current_task['task_title']}",
+                        "description": description,  # Now includes the changes
+                        "created_by": ObjectId(user_id),
+                        "created_by_name": user_name,
+                        "created_at": datetime.utcnow(),
+                        "updated_at": datetime.utcnow(),
+                        "is_system_generated": True,
+                        "metadata": activity_metadata
+                    }
+                    
+                    await db.lead_activities.insert_one(activity_doc)
+                    logger.info(f"✅ Task update timeline activity logged with {len(changes)} changes")
+                    
+                except Exception as activity_error:
+                    logger.warning(f"⚠️ Failed to log task update activity: {activity_error}")
+            
+            return result.modified_count > 0
+            
+        except Exception as e:
+            logger.error(f"Error updating task: {str(e)}")
+            return False
+
+
+
     async def get_lead_tasks(self, lead_id: str, user_id: str, user_role: str, status_filter: Optional[str] = None) -> Dict[str, Any]:
-        """Get all tasks for a lead"""
+        """Get all tasks for a lead - FIXED ACCESS CONTROL"""
         try:
             logger.info(f"Getting tasks for lead: {lead_id}, user: {user_id}, role: {user_role}")
             
-            db = get_database()  # ✅ No await
+            db = get_database()
             
-            # Get lead first to get ObjectId
+            # Get lead first to check access and get ObjectId
             lead = await db.leads.find_one({"lead_id": lead_id})
             if not lead:
                 raise ValueError(f"Lead {lead_id} not found")
             
-            # Build query using lead ObjectId
+            # 🔑 LEAD ACCESS CONTROL (not task access control)
+            if user_role != "admin":
+                # Get user info to check email
+                user_info = await db.users.find_one({"_id": ObjectId(user_id)})
+                if not user_info:
+                    raise ValueError("User not found")
+                
+                user_email = user_info.get("email", "")
+                lead_assigned_to = lead.get("assigned_to", "")
+                lead_co_assignees = lead.get("co_assignees", [])
+                
+                # Check if user has access to this lead (primary assignee or co-assignee)
+                has_lead_access = (
+                    lead_assigned_to == user_email or 
+                    user_email in lead_co_assignees
+                )
+                
+                if not has_lead_access:
+                    logger.warning(f"User {user_email} has no access to lead {lead_id}")
+                    logger.warning(f"Lead assigned to: {lead_assigned_to}")
+                    logger.warning(f"Lead co-assignees: {lead_co_assignees}")
+                    raise ValueError("You don't have access to this lead")
+            
+            # ✅ BUILD QUERY - Show ALL tasks for the lead (no user filtering on tasks)
             query = {"lead_object_id": lead["_id"]}
             
-            # Role-based filtering
-            if user_role != "admin":
-                query["$or"] = [
-                    {"assigned_to": user_id},
-                    {"created_by": ObjectId(user_id)}
-                ]
-            
-            # Status filtering
+            # Status filtering only
             if status_filter and status_filter != "all":
                 if status_filter == "overdue":
                     query["status"] = "overdue"
@@ -168,21 +531,21 @@ class TaskService:
             
             logger.info(f"Query: {query}")
             
-            # Get tasks
+            # Get ALL tasks for this lead
             tasks_cursor = db.lead_tasks.find(query).sort("created_at", -1)
             tasks = await tasks_cursor.to_list(None)
             
-            logger.info(f"Found {len(tasks)} tasks")
+            logger.info(f"Found {len(tasks)} tasks for lead {lead_id}")
             
-            # 🔧 FIX: Populate user names for each task
+            # Populate user names for each task
             enriched_tasks = []
             for task in tasks:
                 # Convert ObjectIds to strings and add user names
                 task["id"] = str(task["_id"])
-                task["created_by"] = str(task["created_by"])  # Convert ObjectId to string
+                task["created_by"] = str(task["created_by"])
                 task["lead_object_id"] = str(task["lead_object_id"])
                 
-                # 🔑 Get creator name
+                # 🔑 Get creator name (ALWAYS show who created the task)
                 try:
                     creator = await db.users.find_one({"_id": ObjectId(task["created_by"])})
                     if creator:
@@ -209,8 +572,13 @@ class TaskService:
                                 task["assigned_to_name"] = f"{first_name} {last_name}".strip()
                             else:
                                 task["assigned_to_name"] = assigned_user.get('email', 'Unknown User')
+                        else:
+                            task["assigned_to_name"] = "Unassigned"
                     except Exception as e:
                         logger.warning(f"Could not get assigned user name: {e}")
+                        task["assigned_to_name"] = "Unassigned"
+                else:
+                    task["assigned_to_name"] = "Unassigned"
                 
                 # Add overdue status
                 if task.get("due_datetime") and task["status"] not in ["completed", "cancelled"]:
@@ -223,7 +591,7 @@ class TaskService:
             return {
                 "tasks": enriched_tasks,
                 "total": len(enriched_tasks),
-                "stats": {}  # Can add stats here if needed
+                "stats": {}
             }
             
         except Exception as e:
@@ -231,129 +599,84 @@ class TaskService:
             raise Exception(f"Failed to get lead tasks: {str(e)}")
 
     async def get_task_by_id(self, task_id: str, user_id: str, user_role: str) -> Optional[Dict[str, Any]]:
-        """Get a specific task by ID - simple working version"""
-        print("=" * 50)
-        print(f"GET_TASK_BY_ID CALLED!")
-        print(f"Task ID: {task_id}")
-        print(f"User ID: {user_id}")
-        print(f"User Role: {user_role}")
-        print("=" * 50)
-        
+        """Get a specific task by ID"""
         try:
-            print("Step 1: Getting database...")
             db = get_database()
-            print("Step 1: ✅ Database connection successful")
             
-            print("Step 2: Converting task_id to ObjectId...")
             task_obj_id = ObjectId(task_id)
-            print(f"Step 2: ✅ ObjectId: {task_obj_id}")
-            
-            print("Step 3: Querying database...")
             task = await db.lead_tasks.find_one({"_id": task_obj_id})
-            print(f"Step 3: Task found: {task is not None}")
             
             if not task:
-                print("Step 3: ❌ Task not found")
                 return None
             
-            print("Step 4: Processing task...")
+            # Convert ObjectIds and add user names
             result = {
                 "id": str(task["_id"]),
                 "task_title": task.get("task_title"),
+                "task_description": task.get("task_description"),
+                "task_type": task.get("task_type"),
+                "priority": task.get("priority"),
                 "lead_id": task.get("lead_id"), 
                 "status": task.get("status"),
+                "due_date": task.get("due_date"),
+                "due_time": task.get("due_time"),
+                "notes": task.get("notes"),
                 "created_by": str(task.get("created_by", "")),
                 "assigned_to": task.get("assigned_to", ""),
-                "created_by_name": "Debug User",
-                "assigned_to_name": "Debug Assignee", 
-                "is_overdue": False,
-                "debug": "simple_version"
+                "created_at": task.get("created_at"),
+                "updated_at": task.get("updated_at"),
+                "completed_at": task.get("completed_at"),
+                "completion_notes": task.get("completion_notes"),
+                "is_overdue": False
             }
             
-            print("Step 4: ✅ Task processed successfully")
-            print(f"Result keys: {list(result.keys())}")
+            # Get creator name
+            try:
+                creator = await db.users.find_one({"_id": ObjectId(task["created_by"])})
+                if creator:
+                    first_name = creator.get('first_name', '')
+                    last_name = creator.get('last_name', '')
+                    if first_name and last_name:
+                        result["created_by_name"] = f"{first_name} {last_name}".strip()
+                    else:
+                        result["created_by_name"] = creator.get('email', 'Unknown User')
+                else:
+                    result["created_by_name"] = "Unknown User"
+            except:
+                result["created_by_name"] = "Unknown User"
+            
+            # Get assigned user name
+            if task.get("assigned_to"):
+                try:
+                    assigned_user = await db.users.find_one({"_id": ObjectId(task["assigned_to"])})
+                    if assigned_user:
+                        first_name = assigned_user.get('first_name', '')
+                        last_name = assigned_user.get('last_name', '')
+                        if first_name and last_name:
+                            result["assigned_to_name"] = f"{first_name} {last_name}".strip()
+                        else:
+                            result["assigned_to_name"] = assigned_user.get('email', 'Unknown User')
+                    else:
+                        result["assigned_to_name"] = "Unassigned"
+                except:
+                    result["assigned_to_name"] = "Unassigned"
+            else:
+                result["assigned_to_name"] = "Unassigned"
+            
+            # Calculate overdue status
+            if task.get("due_datetime") and task["status"] not in ["completed", "cancelled"]:
+                result["is_overdue"] = task["due_datetime"] < datetime.utcnow()
+            
             return result
             
         except Exception as e:
-            print(f"❌ ERROR: {str(e)}")
-            print(f"ERROR TYPE: {type(e)}")
-            import traceback
-            print(f"TRACEBACK: {traceback.format_exc()}")
+            logger.error(f"Error getting task by ID: {str(e)}")
             raise e
 
-    async def update_task(self, task_id: str, task_data: TaskUpdate, user_id: str, user_role: str) -> bool:
-        """Update a task"""
-        try:
-            db = get_database()  # ✅ No await
-            
-            # Build query with access control
-            query = {"_id": ObjectId(task_id)}
-            if user_role != "admin":
-                query["$or"] = [
-                    {"assigned_to": user_id},
-                    {"created_by": ObjectId(user_id)}
-                ]
-            
-            # Get current task
-            current_task = await db.lead_tasks.find_one(query)
-            if not current_task:
-                return False
-            
-            # Prepare update data
-            update_data = {}
-            for field, value in task_data.dict(exclude_unset=True).items():
-                if value is not None:
-                    if field == "due_date" and isinstance(value, date):
-                        update_data[field] = value.isoformat()
-                    elif field == "due_time" and isinstance(value, time):
-                        update_data[field] = value.isoformat()
-                    else:
-                        update_data[field] = value
-            
-            update_data["updated_at"] = datetime.utcnow()
-            
-            # Update task
-            result = await db.lead_tasks.update_one(query, {"$set": update_data})
-            return result.modified_count > 0
-            
-        except Exception as e:
-            logger.error(f"Error updating task: {str(e)}")
-            return False
-
-    async def complete_task(self, task_id: str, completion_notes: Optional[str], user_id: str, user_role: str) -> bool:
-        """Mark task as completed"""
-        try:
-            db = get_database()  # ✅ No await
-            
-            # Build query with access control
-            query = {"_id": ObjectId(task_id)}
-            if user_role != "admin":
-                query["$or"] = [
-                    {"assigned_to": user_id},
-                    {"created_by": ObjectId(user_id)}
-                ]
-            
-            # Update task
-            update_data = {
-                "status": "completed",
-                "completed_at": datetime.utcnow(),
-                "updated_at": datetime.utcnow()
-            }
-            
-            if completion_notes:
-                update_data["completion_notes"] = completion_notes
-            
-            result = await db.lead_tasks.update_one(query, {"$set": update_data})
-            return result.modified_count > 0
-            
-        except Exception as e:
-            logger.error(f"Error completing task: {str(e)}")
-            return False
-    
     async def delete_task(self, task_id: str, user_id: str, user_role: str) -> bool:
         """Delete a task"""
         try:
-            db = get_database()  # ✅ No await
+            db = get_database()
             
             # Build query with access control
             query = {"_id": ObjectId(task_id)}
@@ -370,7 +693,7 @@ class TaskService:
     async def get_user_tasks(self, user_id: str, status_filter: Optional[str] = None) -> Dict[str, Any]:
         """Get all tasks assigned to a user across all leads"""
         try:
-            db = get_database()  # ✅ No await
+            db = get_database()
             
             query = {"assigned_to": user_id}
             
@@ -427,22 +750,37 @@ class TaskService:
             return {"tasks": [], "total": 0}
     
     async def _calculate_task_stats(self, lead_id: str, user_id: str, user_role: str) -> Dict[str, int]:
-        """Calculate task statistics for a lead"""
+        """Calculate task statistics for a lead - FIXED ACCESS CONTROL"""
         try:
-            db = get_database()  # ✅ No await
+            db = get_database()
             
-            # Get lead ObjectId
+            # Get lead ObjectId and check access
             lead = await db.leads.find_one({"lead_id": lead_id})
             if not lead:
                 return {}
             
-            # Build base query
-            base_query = {"lead_object_id": lead["_id"]}
+            # 🔑 LEAD ACCESS CONTROL
             if user_role != "admin":
-                base_query["$or"] = [
-                    {"assigned_to": user_id},
-                    {"created_by": ObjectId(user_id)}
-                ]
+                # Get user info to check email
+                user_info = await db.users.find_one({"_id": ObjectId(user_id)})
+                if not user_info:
+                    return {}
+                
+                user_email = user_info.get("email", "")
+                lead_assigned_to = lead.get("assigned_to", "")
+                lead_co_assignees = lead.get("co_assignees", [])
+                
+                # Check if user has access to this lead
+                has_lead_access = (
+                    lead_assigned_to == user_email or 
+                    user_email in lead_co_assignees
+                )
+                
+                if not has_lead_access:
+                    return {}
+            
+            # Build base query - ALL tasks for this lead (no user filtering)
+            base_query = {"lead_object_id": lead["_id"]}
             
             # Calculate various stats
             total_tasks = await db.lead_tasks.count_documents(base_query)
