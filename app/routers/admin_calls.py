@@ -6,7 +6,6 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from typing import Dict, Any, Optional, List
 import logging
 from datetime import datetime, timedelta
-import calendar
 from collections import defaultdict
 
 from ..services.tata_admin_service import tata_admin_service
@@ -32,8 +31,7 @@ router = APIRouter()
 async def get_admin_call_dashboard(
     date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
-    period: str = Query("daily", description="Performance period"),
-    
+   
     # TATA API Filter Parameters
     agents: Optional[str] = Query(None, description="Comma-separated agent numbers or user IDs"),
     call_type: Optional[str] = Query(None, description="Call type filter: c=answered, m=missed"),
@@ -178,17 +176,7 @@ async def get_admin_call_dashboard(
         
         # Calculate statistics directly from TATA filtered data
         user_stats_dict = {}
-        if call_records:
-            if period == "daily":
-                user_stats_dict = tata_admin_service.calculate_daily_stats(call_records, date_from)
-            elif period == "weekly":
-                week_start = datetime.strptime(date_from, "%Y-%m-%d")
-                week_key = f"{week_start.year}-W{week_start.isocalendar()[1]:02d}"
-                user_stats_dict = tata_admin_service.calculate_period_stats(call_records, "weekly", week_key)
-            elif period == "monthly":
-                month_key = date_from[:7]
-                user_stats_dict = tata_admin_service.calculate_period_stats(call_records, "monthly", month_key)
-        
+      
         # Process recent calls
         recent_calls = []
         for record in call_records:
@@ -205,7 +193,7 @@ async def get_admin_call_dashboard(
             try:
                 top_performers = performance_calculator.rank_performers(
                     user_stats=user_stats_dict,
-                    period=period,
+                   
                     top_n=10
                 )
             except Exception as e:
@@ -239,7 +227,7 @@ async def get_admin_call_dashboard(
             "filters_applied": {
                 "date_from": date_from,
                 "date_to": date_to,
-                "period": period,
+                
                 "tata_filters": {k: v for k, v in tata_params.items() if k not in ['from_date', 'to_date', 'page', 'limit']}
             },
             "optimization_info": {
@@ -258,7 +246,7 @@ async def get_admin_call_dashboard(
                 action="viewed_call_dashboard_optimized",
                 details={
                     "date_range": f"{date_from} to {date_to}",
-                    "period": period,
+                   
                     "total_records": total_calls,
                     "filtering_method": "tata_api_server_side",
                     "filters_used": len([k for k, v in tata_params.items() if k not in ['from_date', 'to_date', 'page', 'limit']])
@@ -288,26 +276,39 @@ async def get_admin_call_dashboard(
 # =============================================================================
 # USER PERFORMANCE ENDPOINT - OPTIMIZED
 # =============================================================================
-
 @router.get("/user-performance/{user_id}")
 async def get_user_call_performance(
     user_id: str,
-    period: str = Query("weekly", description="Analysis period"),
     date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
-    include_day_comparison: bool = Query(True, description="Include day-to-day comparison"),
-    current_user: Dict = Depends(get_admin_user)
+    current_user: Dict = Depends(get_current_active_user)  # CHANGED: Role-based access
 ):
     """
-    OPTIMIZED User performance using TATA API filtering by agent
+    User performance analytics with role-based access
+    - Admins can view any user's performance
+    - Users can only view their own performance
     """
     try:
-        logger.info(f"Admin {current_user.get('email')} requesting optimized performance for user {user_id}")
+        # ROLE-BASED ACCESS CONTROL
+        user_role = current_user.get("role", "user")
+        current_user_id = str(current_user.get("user_id") or current_user.get("_id"))
         
-        # Initialize agent mapping
+        if user_role == "admin":
+            # Admins can see any user's performance
+            pass
+        elif current_user_id == user_id:
+            # Users can see their own performance
+            pass
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only view your own performance data"
+            )
+        
+        # INITIALIZE AGENT MAPPING
         await tata_admin_service.initialize_agent_mapping()
         
-        # Find user's agent number
+        # FIND USER'S AGENT NUMBER
         user_agent_number = None
         user_name = "Unknown"
         for agent_number, mapping in tata_admin_service.agent_user_mapping.items():
@@ -317,269 +318,49 @@ async def get_user_call_performance(
                 break
         
         if not user_agent_number:
-            available_users = [
-                {"user_id": m["user_id"], "user_name": m["user_name"]}
-                for m in tata_admin_service.agent_user_mapping.values()
-                if m.get("user_id") and m.get("user_name")
-            ]
-            
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={
-                    "error": "user_not_found",
-                    "message": f"User {user_id} not found in agent mapping",
-                    "available_users": available_users[:10]
-                }
+                status_code=404,
+                detail=f"User {user_id} not found in agent mapping"
             )
         
-        # Set date range
-        if not date_from or not date_to:
-            end_date = datetime.now()
-            if period == "daily":
-                start_date = end_date
-            elif period == "weekly":
-                start_date = end_date - timedelta(days=7)
-            else:  # monthly
-                start_date = end_date - timedelta(days=30)
-            
-            date_from = start_date.strftime("%Y-%m-%d")
-            date_to = end_date.strftime("%Y-%m-%d")
+        # SET DEFAULT DATES TO TODAY
+        if not date_from:
+            date_from = datetime.now().strftime("%Y-%m-%d")
+        if not date_to:
+            date_to = datetime.now().strftime("%Y-%m-%d")
         
-        # Format dates for TATA API
-        from_date = f"{date_from} 00:00:00"
-        to_date = f"{date_to} 23:59:59"
-        
-        logger.info(f"Fetching optimized user performance for {user_name} ({user_agent_number})")
-        
-        # Use TATA API filtering by agent
-        tata_params = {
-            'from_date': from_date,
-            'to_date': to_date,
-            'agents': user_agent_number,  # Filter by specific agent
-            'page': '1',
-            'limit': '1000'  # Get enough records for analysis
-        }
-        
-        # Make TATA API call with agent filter
-        tata_response = await tata_admin_service.fetch_call_records_with_filters(
-            params=tata_params
+        # FETCH ALL USER RECORDS IN DATE RANGE
+        all_user_records = await tata_admin_service.fetch_all_user_call_records(
+            user_agent_number=user_agent_number,
+            from_date=f"{date_from} 00:00:00",
+            to_date=f"{date_to} 23:59:59"
         )
         
-        if not tata_response.get("success"):
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"TATA API call failed: {tata_response.get('error')}"
-            )
+        # CALCULATE PERFORMANCE FROM ALL RECORDS
+        performance_stats = tata_admin_service.calculate_user_performance_from_records(
+            user_id=user_id,
+            user_name=user_name,
+            call_records=all_user_records,
+            date_from=date_from,
+            date_to=date_to
+        )
         
-        # Extract filtered user call records
-        tata_data = tata_response.get("data", {})
-        user_call_records = tata_data.get("results", [])
-        
-        logger.info(f"TATA API returned {len(user_call_records)} records for user {user_name}")
-        
-        # Calculate stats from TATA filtered data
-        if user_call_records:
-            total_calls = len(user_call_records)
-            answered_calls = sum(1 for r in user_call_records if r.get("status") == "answered")
-            missed_calls = total_calls - answered_calls
-            total_duration = sum(r.get("call_duration", 0) for r in user_call_records if r.get("status") == "answered")
-            recordings_count = sum(1 for r in user_call_records if r.get("recording_url"))
-            
-            success_rate = (answered_calls / total_calls * 100) if total_calls > 0 else 0.0
-            avg_duration = (total_duration / answered_calls) if answered_calls > 0 else 0.0
-            
-            # Build period-specific stats
-            user_stats_data = {
-                "user_id": user_id,
-                "user_name": user_name,
-                "agent_number": user_agent_number,
-                "success_rate": round(success_rate, 2),
-                "avg_call_duration": round(avg_duration, 2)
-            }
-            
-            # Set period-specific fields
-            if period == "daily":
-                user_stats_data.update({
-                    "daily_calls": total_calls,
-                    "daily_answered": answered_calls,
-                    "daily_missed": missed_calls,
-                    "daily_duration": total_duration,
-                    "daily_recordings": recordings_count
-                })
-            elif period == "weekly":
-                user_stats_data.update({
-                    "weekly_calls": total_calls,
-                    "weekly_answered": answered_calls,
-                    "weekly_missed": missed_calls,
-                    "weekly_duration": total_duration,
-                    "weekly_recordings": recordings_count
-                })
-            else:  # monthly
-                user_stats_data.update({
-                    "monthly_calls": total_calls,
-                    "monthly_answered": answered_calls,
-                    "monthly_missed": missed_calls,
-                    "monthly_duration": total_duration,
-                    "monthly_recordings": recordings_count
-                })
-        else:
-            # No records found
-            user_stats_data = {
-                "user_id": user_id,
-                "user_name": user_name,
-                "agent_number": user_agent_number,
-                "daily_calls": 0,
-                "daily_answered": 0,
-                "daily_missed": 0,
-                "success_rate": 0.0,
-                "avg_call_duration": 0.0
-            }
-        
-        # Calculate day-to-day comparison if requested
-        day_comparison = []
-        if include_day_comparison and user_call_records:
-            daily_breakdown = defaultdict(lambda: {
-                "total_calls": 0, "answered_calls": 0, "missed_calls": 0, 
-                "total_duration": 0, "recordings_count": 0
-            })
-            
-            for record in user_call_records:
-                record_date = record.get("date", "")
-                if record_date:
-                    daily_breakdown[record_date]["total_calls"] += 1
-                    if record.get("status") == "answered":
-                        daily_breakdown[record_date]["answered_calls"] += 1
-                        daily_breakdown[record_date]["total_duration"] += record.get("call_duration", 0)
-                    else:
-                        daily_breakdown[record_date]["missed_calls"] += 1
-                    
-                    if record.get("recording_url"):
-                        daily_breakdown[record_date]["recordings_count"] += 1
-            
-            # Convert to comparison format
-            sorted_dates = sorted(daily_breakdown.keys())
-            for i, date in enumerate(sorted_dates):
-                stats = daily_breakdown[date]
-                success_rate = (stats["answered_calls"] / stats["total_calls"] * 100) if stats["total_calls"] > 0 else 0.0
-                
-                calls_change = 0
-                calls_change_percent = 0.0
-                trend = "stable"
-                
-                if i > 0:
-                    prev_date = sorted_dates[i - 1]
-                    prev_stats = daily_breakdown[prev_date]
-                    calls_change = stats["total_calls"] - prev_stats["total_calls"]
-                    if prev_stats["total_calls"] > 0:
-                        calls_change_percent = (calls_change / prev_stats["total_calls"]) * 100
-                    
-                    if calls_change > 0:
-                        trend = "up"
-                    elif calls_change < 0:
-                        trend = "down"
-                
-                day_comparison.append({
-                    "date": date,
-                    "total_calls": stats["total_calls"],
-                    "answered_calls": stats["answered_calls"],
-                    "missed_calls": stats["missed_calls"],
-                    "total_duration": stats["total_duration"],
-                    "success_rate": round(success_rate, 2),
-                    "recordings_count": stats["recordings_count"],
-                    "calls_change": calls_change,
-                    "calls_change_percent": round(calls_change_percent, 2),
-                    "trend": trend
-                })
-        
-        # Parse recent call records
-        call_records_parsed = []
-        for record in user_call_records[:50]:
-            try:
-                parsed_record = tata_admin_service.parse_call_record(record)
-                call_records_parsed.append({
-                    "call_id": parsed_record.call_id,
-                    "direction": parsed_record.direction,
-                    "status": parsed_record.status,
-                    "date": parsed_record.date,
-                    "time": parsed_record.time,
-                    "agent_number": parsed_record.agent_number,
-                    "client_number": parsed_record.client_number,
-                    "call_duration": parsed_record.call_duration,
-                    "recording_url": parsed_record.recording_url
-                })
-            except Exception as e:
-                logger.warning(f"Error parsing call record: {e}")
-                continue
-        
-        # Calculate ranking
-        ranking = None
-        if user_stats_data["success_rate"] > 0:
-            period_calls = user_stats_data.get(f"{period}_calls", user_stats_data.get("daily_calls", 0))
-            ranking = {
-                "rank": 1,
-                "user_id": user_id,
-                "user_name": user_name,
-                "score": user_stats_data["success_rate"],
-                "total_calls": period_calls
-            }
-        
-        # Log admin activity
-        try:
-            await tata_admin_service.log_admin_activity(
-                admin_user_id=str(current_user.get("user_id") or current_user.get("_id", "unknown")),
-                admin_email=current_user.get("email", "unknown"),
-                action="viewed_user_performance_optimized",
-                target_user_id=user_id,
-                target_user_name=user_name,
-                details={
-                    "period": period,
-                    "date_range": f"{date_from} to {date_to}",
-                    "records_analyzed": len(user_call_records),
-                    "filtering_method": "tata_api_agent_filter"
-                }
-            )
-        except Exception as e:
-            logger.warning(f"Error logging admin activity: {e}")
-        
-        # Build response
-        response = {
+        return {
             "success": True,
-            "user_id": user_id,
-            "user_name": user_name,
-            "agent_number": user_agent_number,
-            "stats": user_stats_data,
-            "day_comparison": day_comparison,
-            "call_records": call_records_parsed,
-            "ranking": ranking,
-            "period_analyzed": f"{period.title()} ({date_from} to {date_to})",
-            "analysis_date": datetime.utcnow(),
-            "optimization_info": {
-                "filtering_method": "tata_api_agent_filter",
-                "user_records_found": len(user_call_records),
-                "agent_number_used": user_agent_number
-            }
+            "user_performance": performance_stats,
+            "records_analyzed": len(all_user_records),
+            "date_range": f"{date_from} to {date_to}",
+            "access_level": user_role
         }
-        
-        logger.info(f"Optimized user performance analysis complete: {len(user_call_records)} records for {user_name}")
-        
-        return response
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting optimized user performance: {str(e)}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        
+        logger.error(f"Error getting user performance: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={
-                "error": "internal_error",
-                "message": f"Failed to fetch optimized user performance: {str(e)}",
-                "user_id": user_id
-            }
+            status_code=500,
+            detail=f"Failed to fetch user performance: {str(e)}"
         )
-
 # =============================================================================
 # PERFORMANCE RANKING ENDPOINTS - OPTIMIZED
 # =============================================================================
@@ -1202,7 +983,7 @@ async def get_filter_options(
             max_date=max_date,
             call_statuses=["all", "answered", "missed"],
             call_directions=["all", "inbound", "outbound"],
-            performance_periods=["daily", "weekly", "monthly"]
+           
         )
         
     except Exception as e:
