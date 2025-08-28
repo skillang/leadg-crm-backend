@@ -9,8 +9,7 @@ from collections import defaultdict
 import calendar
 
 from ..models.admin_dashboard import (
-    UserCallStats, PerformerRanking, DayComparisonStats, 
-    PerformancePeriod
+    UserCallStats, DayComparisonStats, 
 )
 
 logger = logging.getLogger(__name__)
@@ -32,138 +31,87 @@ class PerformanceCalculator:
             "recordings": 0.1        # 10% weight for recordings
         }
     
-    def calculate_performance_score(
-        self,
-        total_calls: int,
-        success_rate: float,
-        total_duration: int,
-        recordings_count: int,
-        max_calls: int = 100,
-        max_duration: int = 3600  # 1 hour
-    ) -> float:
-        """
-        Calculate weighted performance score
+    # def calculate_performance_score(
+    #     self,
+    #     total_calls: int,
+    #     success_rate: float,
+    #     total_duration: int,
+    #     recordings_count: int,
+    #     max_calls: int = 100,
+    #     max_duration: int = 3600  # 1 hour
+    # ) -> float:
+    #     """
+    #     Calculate weighted performance score
         
-        Args:
-            total_calls: Total number of calls
-            success_rate: Success rate percentage (0-100)
-            total_duration: Total call duration in seconds
-            recordings_count: Number of recordings
-            max_calls: Maximum calls for normalization
-            max_duration: Maximum duration for normalization
+    #     Args:
+    #         total_calls: Total number of calls
+    #         success_rate: Success rate percentage (0-100)
+    #         total_duration: Total call duration in seconds
+    #         recordings_count: Number of recordings
+    #         max_calls: Maximum calls for normalization
+    #         max_duration: Maximum duration for normalization
             
-        Returns:
-            Performance score (0-100)
-        """
-        try:
-            # Normalize metrics to 0-1 scale
-            normalized_calls = min(total_calls / max_calls, 1.0) if max_calls > 0 else 0
-            normalized_success = success_rate / 100.0 if success_rate <= 100 else 1.0
-            normalized_duration = min(total_duration / max_duration, 1.0) if max_duration > 0 else 0
-            normalized_recordings = min(recordings_count / max_calls, 1.0) if max_calls > 0 else 0
+    #     Returns:
+    #         Performance score (0-100)
+    #     """
+    #     try:
+    #         # Normalize metrics to 0-1 scale
+    #         normalized_calls = min(total_calls / max_calls, 1.0) if max_calls > 0 else 0
+    #         normalized_success = success_rate / 100.0 if success_rate <= 100 else 1.0
+    #         normalized_duration = min(total_duration / max_duration, 1.0) if max_duration > 0 else 0
+    #         normalized_recordings = min(recordings_count / max_calls, 1.0) if max_calls > 0 else 0
             
-            # Calculate weighted score
-            score = (
-                normalized_calls * self.scoring_weights["call_volume"] +
-                normalized_success * self.scoring_weights["success_rate"] +
-                normalized_duration * self.scoring_weights["call_duration"] +
-                normalized_recordings * self.scoring_weights["recordings"]
-            ) * 100
+    #         # Calculate weighted score
+    #         score = (
+    #             normalized_calls * self.scoring_weights["call_volume"] +
+    #             normalized_success * self.scoring_weights["success_rate"] +
+    #             normalized_duration * self.scoring_weights["call_duration"] +
+    #             normalized_recordings * self.scoring_weights["recordings"]
+    #         ) * 100
             
-            return round(score, 2)
+    #         return round(score, 2)
             
-        except Exception as e:
-            logger.error(f"Error calculating performance score: {e}")
-            return 0.0
+    #     except Exception as e:
+    #         logger.error(f"Error calculating performance score: {e}")
+    #         return 0.0
     
     def rank_performers(
-        self,
-        user_stats: Dict[str, UserCallStats],
-        period: PerformancePeriod,
-        top_n: Optional[int] = None
-    ) -> List[PerformerRanking]:
+    self,
+    user_stats: List[Dict],  # Changed from Dict[str, UserCallStats]
+    top_n: Optional[int] = None
+) -> List[Dict]:
         """
-        Rank users by performance for a given period
+        Simple ranking based on user performance data
         
         Args:
-            user_stats: Dictionary of user statistics
-            period: Performance period (daily, weekly, monthly)
-            top_n: Number of top performers to return (None for all)
+            user_stats: List of user performance dictionaries
+            top_n: Number of top performers to return
             
         Returns:
             List of ranked performers
         """
         try:
-            performers = []
+            if not user_stats:
+                return []
             
-            # Get max values for normalization
-            max_calls = max([
-                getattr(stats, f"{period.value}_calls", 0) 
-                for stats in user_stats.values()
-            ], default=100)
+            # Sort by success rate, then by total calls
+            sorted_performers = sorted(
+                user_stats, 
+                key=lambda x: (x.get("success_rate", 0), x.get("total_calls", 0)), 
+                reverse=True
+            )
             
-            max_duration = max([
-                getattr(stats, f"{period.value}_duration", 0) 
-                for stats in user_stats.values()
-            ], default=3600)
+            # Add rank
+            for i, performer in enumerate(sorted_performers):
+                performer["rank"] = i + 1
             
-            for user_id, stats in user_stats.items():
-                # Get period-specific metrics
-                total_calls = getattr(stats, f"{period.value}_calls", 0)
-                answered_calls = getattr(stats, f"{period.value}_answered", 0)
-                total_duration = getattr(stats, f"{period.value}_duration", 0)
-                recordings_count = getattr(stats, f"{period.value}_recordings", 0)
-                
-                # Calculate success rate
-                success_rate = (
-                    (answered_calls / total_calls) * 100 
-                    if total_calls > 0 else 0.0
-                )
-                
-                # Calculate average duration
-                avg_duration = (
-                    total_duration / answered_calls 
-                    if answered_calls > 0 else 0.0
-                )
-                
-                # Calculate performance score
-                score = self.calculate_performance_score(
-                    total_calls=total_calls,
-                    success_rate=success_rate,
-                    total_duration=total_duration,
-                    recordings_count=recordings_count,
-                    max_calls=max_calls,
-                    max_duration=max_duration
-                )
-                
-                performers.append(PerformerRanking(
-                    rank=0,  # Will be set after sorting
-                    user_id=user_id,
-                    user_name=stats.user_name,
-                    agent_number=stats.agent_number,
-                    score=score,
-                    total_calls=total_calls,
-                    success_rate=round(success_rate, 2),
-                    total_duration=total_duration,
-                    avg_duration=round(avg_duration, 2),
-                    recordings_count=recordings_count
-                ))
-            
-            # Sort by score (descending) and assign ranks
-            performers.sort(key=lambda x: x.score, reverse=True)
-            for i, performer in enumerate(performers):
-                performer.rank = i + 1
-            
-            # Return top N if specified
-            if top_n:
-                performers = performers[:top_n]
-            
-            return performers
+            return sorted_performers[:top_n] if top_n else sorted_performers
             
         except Exception as e:
             logger.error(f"Error ranking performers: {e}")
             return []
-    
+
+
     def calculate_day_comparison(
         self,
         call_records: List[Dict],
@@ -453,60 +401,7 @@ class PerformanceCalculator:
         except Exception as e:
             logger.error(f"Error calculating monthly stats: {e}")
             return {}
-    
-    def get_date_range_for_period(
-        self,
-        period: PerformancePeriod,
-        reference_date: Optional[datetime] = None
-    ) -> Tuple[datetime, datetime]:
-        """
-        Get date range for a given performance period
-        
-        Args:
-            period: Performance period
-            reference_date: Reference date (defaults to today)
-            
-        Returns:
-            Tuple of (start_date, end_date)
-        """
-        if reference_date is None:
-            reference_date = datetime.now()
-        
-        try:
-            if period == PerformancePeriod.DAILY:
-                # Current day
-                start_date = reference_date.replace(hour=0, minute=0, second=0, microsecond=0)
-                end_date = reference_date.replace(hour=23, minute=59, second=59, microsecond=999999)
-                
-            elif period == PerformancePeriod.WEEKLY:
-                # Current week (Monday to Sunday)
-                days_since_monday = reference_date.weekday()
-                start_date = (reference_date - timedelta(days=days_since_monday)).replace(hour=0, minute=0, second=0, microsecond=0)
-                end_date = (start_date + timedelta(days=6)).replace(hour=23, minute=59, second=59, microsecond=999999)
-                
-            elif period == PerformancePeriod.MONTHLY:
-                # Current month
-                start_date = reference_date.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-                # Get last day of month
-                last_day = calendar.monthrange(reference_date.year, reference_date.month)[1]
-                end_date = reference_date.replace(day=last_day, hour=23, minute=59, second=59, microsecond=999999)
-                
-            else:
-                # Default to daily
-                start_date = reference_date.replace(hour=0, minute=0, second=0, microsecond=0)
-                end_date = reference_date.replace(hour=23, minute=59, second=59, microsecond=999999)
-            
-            return start_date, end_date
-            
-        except Exception as e:
-            logger.error(f"Error getting date range for period: {e}")
-            # Return current day as fallback
-            today = datetime.now()
-            return (
-                today.replace(hour=0, minute=0, second=0, microsecond=0),
-                today.replace(hour=23, minute=59, second=59, microsecond=999999)
-            )
-    
+
     def calculate_trend_analysis(
         self,
         call_records: List[Dict],

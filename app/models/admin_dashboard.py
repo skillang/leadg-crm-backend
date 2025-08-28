@@ -20,14 +20,6 @@ class CallDirectionFilter(str, Enum):
     INBOUND = "inbound"
     OUTBOUND = "outbound"
 
-class PerformancePeriod(str, Enum):
-    """Enum for performance analysis periods"""
-    DAILY = "daily"
-    WEEKLY = "weekly"
-    MONTHLY = "monthly"
-    QUARTERLY = "quarterly"
-    YEARLY = "yearly"
-
 # ============================================================================
 # CALL RECORD MODEL - FIXED for null circle values
 # ============================================================================
@@ -167,7 +159,6 @@ class DashboardFilters(BaseModel):
     """Filters for admin call dashboard"""
     date_from: str = Field(..., description="Start date (YYYY-MM-DD)")
     date_to: str = Field(..., description="End date (YYYY-MM-DD)")
-    period: str = Field(default="daily", description="Period type (daily/weekly/monthly)")
     user_ids: Optional[List[str]] = Field(None, description="Filter by specific users")
     call_status: CallStatusFilter = Field(default=CallStatusFilter.ALL, description="Call status filter")
     call_direction: CallDirectionFilter = Field(default=CallDirectionFilter.ALL, description="Call direction filter")
@@ -398,14 +389,8 @@ class UserPerformanceResponse(BaseModel):
     efficiency_rating: str = Field(default="average", description="Efficiency rating")
     productivity_rank: Optional[int] = Field(None, description="Rank among team members")
     
-    # Time-based breakdown
-    daily_stats: Optional[Dict[str, int]] = Field(None, description="Daily call breakdown")
-    weekly_stats: Optional[Dict[str, int]] = Field(None, description="Weekly call breakdown")
-    monthly_stats: Optional[Dict[str, int]] = Field(None, description="Monthly call breakdown")
-    
     # Metadata
     last_call_at: Optional[datetime] = Field(None, description="Timestamp of last call")
-    analysis_period: str = Field(..., description="Period analyzed (daily/weekly/monthly)")
     analyzed_at: datetime = Field(default_factory=datetime.utcnow, description="Analysis timestamp")
 
 class CallStatistics(BaseModel):
@@ -586,12 +571,10 @@ class FilterOptionsResponse(BaseModel):
     max_date: str = Field(..., description="Maximum selectable date (YYYY-MM-DD)")
     call_statuses: List[str] = Field(..., description="Available call status options")
     call_directions: List[str] = Field(..., description="Available call direction options")
-    performance_periods: List[str] = Field(..., description="Available performance period options")
 
 class UserPerformanceRequest(BaseModel):
     """Request model for user performance data"""
     user_id: str = Field(..., description="User ID to analyze")
-    period: str = Field(default="weekly", description="Analysis period")
     date_from: Optional[str] = Field(None, description="Start date (YYYY-MM-DD)")
     date_to: Optional[str] = Field(None, description="End date (YYYY-MM-DD)")
     include_comparisons: bool = Field(default=True, description="Include period comparisons")
