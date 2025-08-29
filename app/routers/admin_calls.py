@@ -51,8 +51,8 @@ async def get_admin_call_dashboard(
     call_status: str = Query("all", description="Call status: all/answered/missed (converted to call_type)"),
     call_direction: str = Query("all", description="Call direction: all/inbound/outbound (converted to direction)"),
     
-    # Pagination
-    limit: int = Query(500, ge=1, le=500, description="Records per page"),
+    # Pagination for tata teli
+    limit: int = Query(2000, ge=1, le=500, description="Records per page"),
     page: int = Query(1, ge=1, description="Page number"),
     current_user: Dict = Depends(get_admin_user)
 ):
@@ -1145,7 +1145,7 @@ async def get_summary_statistics(
     date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     user_ids: Optional[str] = Query(None, description="Comma-separated user IDs to filter"),
     user_id: Optional[str] = Query(None, description="Individual user ID for detailed view"),
-    charts: Optional[str] = Query("all", description="Comma-separated chart types: gauge,scatter,trends,heatmap,duration,peaks,forecast,matrix"),
+    charts: Optional[str] = Query("all", description="Comma-separated chart types: gauge,scatter,historical trends,heatmap,duration,peaks,forecast,matrix"),
     current_user: Dict = Depends(get_admin_user)
 ):
     """Get summary statistics with comprehensive peak hours analysis using TATA API filtering"""
@@ -1332,7 +1332,7 @@ async def get_summary_statistics(
             ) if stats["answered_calls"] > 0 else 0.0
 
         requested_charts = [c.strip() for c in charts.split(",")] if charts and charts != "all" else [
-            "gauge", "scatter", "trends", "heatmap", "duration", "peaks", "forecast", "matrix"
+            "gauge", "scatter", "trends", "heatmap", "duration", "peaks", "matrix"
         ]
 
         if "gauge" in requested_charts:
@@ -1362,8 +1362,8 @@ async def get_summary_statistics(
         if "peaks" in requested_charts:
             trend_data["peak_hours_analysis"] = analytics_service.analyze_peak_hours(call_records)
 
-        if "forecast" in requested_charts and trend_data.get("temporal_trends"):
-            trend_data["trend_forecast"] = analytics_service.forecast_trends(
+        if "trends" in requested_charts and trend_data.get("temporal_trends"):
+            trend_data["historical_analysis"] = analytics_service.calculate_historical_trends(
                 trend_data["temporal_trends"]["daily_series"]
             )
 

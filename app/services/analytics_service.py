@@ -460,29 +460,20 @@ class AnalyticsService:
                 "analysis_metadata": {"total_active_hours": 0}
             }
     
-    def forecast_trends(
-        self, 
-        daily_series: List[Dict[str, Any]],
-        forecast_days: int = 3
-    ) -> Dict[str, Any]:
+    def calculate_historical_trends(
+            self, 
+            daily_series: List[Dict[str, Any]]
+        ) -> Dict[str, Any]:
         """
-        Generate performance trend forecast
-        
-        Args:
-            daily_series: Historical daily performance data
-            forecast_days: Number of days to forecast
-            
-        Returns:
-            Trend forecast data
+        Calculate historical trends without forecasting
         """
         try:
-            if len(daily_series) < 3:
+            if len(daily_series) < 2:
                 return {
                     "historical": daily_series,
-                    "forecast": [],
                     "trend_direction": "insufficient_data",
-                    "projected_monthly_rate": 0,
-                    "confidence": 0
+                    "trend_strength": "none",
+                    "slope": 0
                 }
             
             # Extract success rates for trend calculation
@@ -492,37 +483,14 @@ class AnalyticsService:
             n = len(success_rates)
             x_values = list(range(n))
             
-            # Calculate slope and intercept
+            # Calculate slope
             x_mean = statistics.mean(x_values)
             y_mean = statistics.mean(success_rates)
             
             numerator = sum((x - x_mean) * (y - y_mean) for x, y in zip(x_values, success_rates))
             denominator = sum((x - x_mean) ** 2 for x in x_values)
             
-            if denominator == 0:
-                slope = 0
-            else:
-                slope = numerator / denominator
-            
-            intercept = y_mean - slope * x_mean
-            
-            # Generate forecast
-            forecast = []
-            last_date = datetime.strptime(daily_series[-1]["date"], "%Y-%m-%d")
-            
-            for i in range(1, forecast_days + 1):
-                forecast_date = last_date + timedelta(days=i)
-                predicted_rate = slope * (n + i - 1) + intercept
-                predicted_rate = max(0, min(100, predicted_rate))  # Clamp to 0-100%
-                
-                # Calculate confidence (decreases with distance)
-                confidence = max(50, 95 - (i * 10))
-                
-                forecast.append({
-                    "date": forecast_date.strftime("%Y-%m-%d"),
-                    "predicted_rate": round(predicted_rate, 1),
-                    "confidence": confidence
-                })
+            slope = numerator / denominator if denominator != 0 else 0
             
             # Determine trend direction
             if slope > 1:
@@ -532,29 +500,38 @@ class AnalyticsService:
             else:
                 trend_direction = "stable"
             
-            # Project monthly rate (30 days out)
-            projected_monthly_rate = slope * (n + 30 - 1) + intercept
-            projected_monthly_rate = max(0, min(100, projected_monthly_rate))
-            
             return {
                 "historical": daily_series,
-                "forecast": forecast,
                 "trend_direction": trend_direction,
-                "projected_monthly_rate": round(projected_monthly_rate, 1),
-                "confidence": round(max(50, 95 - (forecast_days * 5)), 0),
-                "slope": round(slope, 3)
+                "trend_strength": self._calculate_trend_strength(slope),
+                "slope": round(slope, 3),
+                "analysis_period": f"{len(daily_series)} days"
             }
             
         except Exception as e:
-            logger.error(f"Error forecasting trends: {e}")
+            logger.error(f"Error calculating historical trends: {e}")
             return {
                 "historical": daily_series,
-                "forecast": [],
                 "trend_direction": "error",
-                "projected_monthly_rate": 0,
-                "confidence": 0
+                "trend_strength": "none",
+                "slope": 0
             }
-    
+
+    def _calculate_trend_strength(self, slope: float) -> str:
+        """Calculate trend strength from slope"""
+        abs_slope = abs(slope)
+        if abs_slope > 3:
+            return "very_strong"
+        elif abs_slope > 2:
+            return "strong"
+        elif abs_slope > 1:
+            return "moderate"
+        elif abs_slope > 0.5:
+            return "weak"
+        else:
+            return "minimal"
+
+
     def calculate_efficiency_matrix(
         self, 
         user_stats: List[Dict[str, Any]]
