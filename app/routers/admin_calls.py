@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 from ..utils.performance_calculator import performance_calculator
 from ..services.tata_admin_service import tata_admin_service
+from ..services.analytics_service import analytics_service
 from ..services.tata_auth_service import tata_auth_service
 from ..models.admin_dashboard import (
     AdminDashboardResponse, UserPerformanceResponse, PerformanceRankingResponse,
@@ -29,6 +30,7 @@ router = APIRouter()
 async def get_admin_call_dashboard(
     date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    user_id: Optional[str] = Query(None, description="Individual user ID for detailed view"),
    
     # TATA API Filter Parameters
     agents: Optional[str] = Query(None, description="Comma-separated agent numbers or user IDs"),
@@ -63,6 +65,19 @@ async def get_admin_call_dashboard(
         
         # Initialize agent mapping
         await tata_admin_service.initialize_agent_mapping()
+        individual_user_filter = None
+        if user_id:
+            # Find user's agent for filtering
+            for agent_number, mapping in tata_admin_service.agent_user_mapping.items():
+                if mapping.get("user_id") == user_id:
+                    individual_user_filter = mapping.get("tata_agent_id")
+                    break
+            filter_info = {"applied": False, "scope": "all_users"}
+            if individual_user_filter:
+                tata_params['agents'] = individual_user_filter
+                filter_info["applied"] = True
+                filter_info["scope"] = "individual_user"
+                filter_info["user_id"] = user_id
         
         # Set default date range
         if not date_from or not date_to:
@@ -1129,6 +1144,8 @@ async def get_summary_statistics(
     date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     user_ids: Optional[str] = Query(None, description="Comma-separated user IDs to filter"),
+    user_id: Optional[str] = Query(None, description="Individual user ID for detailed view"),
+    charts: Optional[str] = Query("all", description="Comma-separated chart types: gauge,scatter,trends,heatmap,duration,peaks,forecast,matrix"),
     current_user: Dict = Depends(get_admin_user)
 ):
     """Get summary statistics with comprehensive peak hours analysis using TATA API filtering"""
@@ -1261,6 +1278,105 @@ async def get_summary_statistics(
             "analysis_metadata": comprehensive_peak_hours.get("analysis_metadata", {})
         }
         
+        chart_data = {}
+        
+        user_stats_dict = {}
+
+        # Process call records to build user statistics (add this entire block)
+        for record in call_records:
+            agent_number = record.get("agent_number", "")
+            if not agent_number:
+                continue
+            
+            # Map agent to user
+            user_mapping = tata_admin_service.map_agent_to_user(agent_number)
+            user_id = user_mapping.get("user_id")
+            
+            if not user_id or user_id.startswith("unknown_"):
+                continue
+            
+            # Initialize user stats if not exists
+            if user_id not in user_stats_dict:
+                user_stats_dict[user_id] = {
+                    "user_id": user_id,
+                    "user_name": user_mapping.get("user_name", "Unknown"),
+                    "agent_number": agent_number,
+                    "total_calls": 0,
+                    "answered_calls": 0,
+                    "missed_calls": 0,
+                    "total_duration": 0,
+                    "recordings_count": 0
+                }
+            
+            # Update stats
+            stats = user_stats_dict[user_id]
+            stats["total_calls"] += 1
+            
+            if record.get("status") == "answered":
+                stats["answered_calls"] += 1
+                stats["total_duration"] += record.get("call_duration", 0)
+            else:
+                stats["missed_calls"] += 1
+            
+            if record.get("recording_url"):
+                stats["recordings_count"] += 1
+
+        # Calculate success rates
+        for user_id, stats in user_stats_dict.items():
+            stats["success_rate"] = round(
+                (stats["answered_calls"] / stats["total_calls"]) * 100, 2
+            ) if stats["total_calls"] > 0 else 0.0
+            
+            stats["avg_call_duration"] = round(
+                stats["total_duration"] / stats["answered_calls"], 2
+            ) if stats["answered_calls"] > 0 else 0.0
+
+        requested_charts = [c.strip() for c in charts.split(",")] if charts and charts != "all" else [
+            "gauge", "scatter", "trends", "heatmap", "duration", "peaks", "forecast", "matrix"
+        ]
+
+        if "gauge" in requested_charts:
+            trend_data["performance_gauge"] = analytics_service.calculate_performance_gauge(
+                current_success_rate=success_rate,
+                previous_period_rate=None
+            )
+
+        if "scatter" in requested_charts and not user_id:
+            trend_data["volume_efficiency_scatter"] = analytics_service.generate_scatter_plot_data(
+                list(user_stats_dict.values()) if user_stats_dict else []
+            )
+
+        if "trends" in requested_charts:
+            trend_data["temporal_trends"] = analytics_service.calculate_temporal_trends(
+                call_records=call_records,
+                date_from=date_from,
+                date_to=date_to
+            )
+
+        if "heatmap" in requested_charts:
+            trend_data["hourly_heatmap"] = analytics_service.generate_hourly_heatmap(call_records)
+
+        if "duration" in requested_charts:
+            trend_data["duration_distribution"] = analytics_service.calculate_duration_distribution(call_records)
+
+        if "peaks" in requested_charts:
+            trend_data["peak_hours_analysis"] = analytics_service.analyze_peak_hours(call_records)
+
+        if "forecast" in requested_charts and trend_data.get("temporal_trends"):
+            trend_data["trend_forecast"] = analytics_service.forecast_trends(
+                trend_data["temporal_trends"]["daily_series"]
+            )
+
+        if "matrix" in requested_charts and not user_id:
+            trend_data["efficiency_matrix"] = analytics_service.calculate_efficiency_matrix(
+                list(user_stats_dict.values()) if user_stats_dict else []
+            )
+
+        # Add metadata about available charts
+        trend_data["charts_available"] = list(requested_charts)
+        trend_data["view_type"] = "individual" if user_id else "team"
+
+
         # Build response
         response_data = {
             "success": True,

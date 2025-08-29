@@ -504,7 +504,260 @@ class TataAdminService:
             "tata_agent_id": None,
             "tata_extension": None
         }
+
     
+    def group_records_by_hour(
+        self,
+        call_records: List[Dict]
+    ) -> Dict[int, List[Dict]]:
+        """
+        Group call records by hour for temporal analysis
+        
+        Args:
+            call_records: List of call records
+            
+        Returns:
+            Dict with hour as key and list of records as value
+        """
+        try:
+            hourly_groups = defaultdict(list)
+            
+            for record in call_records:
+                record_time = record.get("time", "")
+                if not record_time:
+                    continue
+                
+                try:
+                    hour = int(record_time.split(":")[0])
+                    hourly_groups[hour].append(record)
+                except (ValueError, IndexError):
+                    logger.warning(f"Invalid time format: {record_time}")
+                    continue
+            
+            return dict(hourly_groups)
+            
+        except Exception as e:
+            logger.error(f"Error grouping records by hour: {e}")
+            return {}
+
+    def group_records_by_date(
+        self,
+        call_records: List[Dict]
+    ) -> Dict[str, List[Dict]]:
+        """
+        Group call records by date for daily analysis
+        
+        Args:
+            call_records: List of call records
+            
+        Returns:
+            Dict with date as key and list of records as value
+        """
+        try:
+            daily_groups = defaultdict(list)
+            
+            for record in call_records:
+                record_date = record.get("date", "")
+                if record_date:
+                    daily_groups[record_date].append(record)
+            
+            return dict(daily_groups)
+            
+        except Exception as e:
+            logger.error(f"Error grouping records by date: {e}")
+            return {}
+
+    def group_records_by_user(
+        self,
+        call_records: List[Dict]
+    ) -> Dict[str, List[Dict]]:
+        """
+        Group call records by user for individual analysis
+        
+        Args:
+            call_records: List of call records
+            
+        Returns:
+            Dict with user_id as key and list of records as value
+        """
+        try:
+            user_groups = defaultdict(list)
+            
+            for record in call_records:
+                agent_number = record.get("agent_number", "")
+                if not agent_number:
+                    continue
+                
+                user_mapping = self.map_agent_to_user(agent_number)
+                user_id = user_mapping.get("user_id")
+                
+                if user_id and not user_id.startswith("unknown_"):
+                    user_groups[user_id].append(record)
+            
+            return dict(user_groups)
+            
+        except Exception as e:
+            logger.error(f"Error grouping records by user: {e}")
+            return {}
+
+    def calculate_user_efficiency_scores(
+        self,
+        user_stats_dict: Dict[str, Dict]
+    ) -> Dict[str, float]:
+        """
+        Calculate efficiency scores for all users
+        
+        Args:
+            user_stats_dict: Dictionary of user statistics
+            
+        Returns:
+            Dict with user_id as key and efficiency score as value
+        """
+        try:
+            efficiency_scores = {}
+            
+            for user_id, stats in user_stats_dict.items():
+                success_rate = stats.get("success_rate", 0)
+                avg_duration = stats.get("avg_call_duration", 0)
+                total_calls = stats.get("total_calls", 0)
+                recordings_rate = (stats.get("recordings_count", 0) / total_calls * 100) if total_calls > 0 else 0
+                
+                # Multi-factor efficiency calculation
+                efficiency_score = self._calculate_composite_efficiency(
+                    success_rate=success_rate,
+                    avg_duration=avg_duration,
+                    total_calls=total_calls,
+                    recordings_rate=recordings_rate
+                )
+                
+                efficiency_scores[user_id] = round(efficiency_score, 2)
+            
+            return efficiency_scores
+            
+        except Exception as e:
+            logger.error(f"Error calculating user efficiency scores: {e}")
+            return {}
+
+    def aggregate_hourly_performance(
+        self,
+        call_records: List[Dict]
+    ) -> Dict[int, Dict[str, Any]]:
+        """
+        Aggregate performance metrics by hour
+        
+        Args:
+            call_records: List of call records
+            
+        Returns:
+            Dict with hour as key and aggregated metrics as value
+        """
+        try:
+            hourly_aggregates = defaultdict(lambda: {
+                "total_calls": 0,
+                "answered_calls": 0,
+                "missed_calls": 0,
+                "total_duration": 0,
+                "unique_agents": set(),
+                "recordings_count": 0
+            })
+            
+            for record in call_records:
+                record_time = record.get("time", "")
+                if not record_time:
+                    continue
+                
+                try:
+                    hour = int(record_time.split(":")[0])
+                    stats = hourly_aggregates[hour]
+                    
+                    stats["total_calls"] += 1
+                    
+                    if record.get("status") == "answered":
+                        stats["answered_calls"] += 1
+                        stats["total_duration"] += record.get("call_duration", 0)
+                    else:
+                        stats["missed_calls"] += 1
+                    
+                    agent = record.get("agent_number", "")
+                    if agent:
+                        stats["unique_agents"].add(agent)
+                    
+                    if record.get("recording_url"):
+                        stats["recordings_count"] += 1
+                        
+                except (ValueError, IndexError):
+                    continue
+            
+            # Convert sets to counts and calculate rates
+            result = {}
+            for hour, stats in hourly_aggregates.items():
+                success_rate = (stats["answered_calls"] / stats["total_calls"] * 100) if stats["total_calls"] > 0 else 0
+                avg_duration = (stats["total_duration"] / stats["answered_calls"]) if stats["answered_calls"] > 0 else 0
+                agent_count = len(stats["unique_agents"])
+                
+                result[hour] = {
+                    "total_calls": stats["total_calls"],
+                    "answered_calls": stats["answered_calls"],
+                    "missed_calls": stats["missed_calls"],
+                    "success_rate": round(success_rate, 2),
+                    "avg_duration": round(avg_duration, 2),
+                    "agent_count": agent_count,
+                    "recordings_count": stats["recordings_count"],
+                    "efficiency_index": round(success_rate * (stats["total_calls"] / max(agent_count, 1)), 2)
+                }
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error aggregating hourly performance: {e}")
+            return {}
+
+    def _calculate_composite_efficiency(
+        self,
+        success_rate: float,
+        avg_duration: float,
+        total_calls: int,
+        recordings_rate: float
+    ) -> float:
+        """
+        Calculate composite efficiency score using multiple factors
+        
+        Args:
+            success_rate: Call success rate percentage
+            avg_duration: Average call duration in seconds
+            total_calls: Total number of calls
+            recordings_rate: Recording coverage percentage
+            
+        Returns:
+            Composite efficiency score (0-10 scale)
+        """
+        try:
+            # Success rate component (40% weight)
+            success_component = (success_rate / 100) * 4
+            
+            # Call quality component based on duration (25% weight)
+            if avg_duration == 0:
+                quality_component = 0
+            elif 60 <= avg_duration <= 180:  # Optimal conversation length
+                quality_component = 2.5
+            elif 30 <= avg_duration < 60 or 180 < avg_duration <= 300:
+                quality_component = 1.5
+            else:
+                quality_component = 0.5
+            
+            # Volume consistency component (20% weight)
+            volume_component = min(2, total_calls / 25)  # Normalize to max 2 points
+            
+            # Recording compliance component (15% weight)
+            compliance_component = (recordings_rate / 100) * 1.5
+            
+            return success_component + quality_component + volume_component + compliance_component
+            
+        except Exception as e:
+            logger.error(f"Error calculating composite efficiency: {e}")
+            return 0.0
+
+
     def parse_call_record(self, record: Dict) -> CallRecord:
         """
         Parse TATA API call record into our CallRecord model
@@ -973,7 +1226,6 @@ class TataAdminService:
         except Exception as e:
             logger.error(f"Error ensuring authentication: {e}")
             return False
-
 
 # Create singleton instance
 tata_admin_service = TataAdminService()
