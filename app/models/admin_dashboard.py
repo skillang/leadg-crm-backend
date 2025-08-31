@@ -664,6 +664,109 @@ class AdminDashboardResponse(BaseModel):
     total_pages: int = Field(default=1, description="Total pages available")
     current_page: int = Field(default=1, description="Current page number")
 
+
+# ============================================================================
+# CHART DATA MODELS - Enhanced Analytics for Visualizations
+# ============================================================================
+
+class PerformanceGaugeData(BaseModel):
+    """Model for performance gauge chart data"""
+    current_rate: float = Field(..., description="Current success rate percentage")
+    target_rate: float = Field(..., description="Target success rate percentage")
+    status: str = Field(..., description="Performance status: above_target, on_target, below_target")
+    color_zone: str = Field(..., description="Color indicator: green, yellow, red")
+    previous_period: Optional[float] = Field(None, description="Previous period rate for comparison")
+    improvement: Optional[float] = Field(None, description="Improvement from previous period")
+    progress_to_target: float = Field(..., description="Progress percentage towards target")
+
+class VolumeEfficiencyScatterData(BaseModel):
+    """Model for call volume vs success rate scatter plot"""
+    user_id: str = Field(..., description="User identifier")
+    user_name: str = Field(..., description="User display name")
+    total_calls: int = Field(..., description="Total calls made")
+    success_rate: float = Field(..., description="Success rate percentage")
+    avg_duration: float = Field(..., description="Average call duration")
+    efficiency_score: float = Field(..., description="Composite efficiency score")
+    recordings_count: int = Field(..., description="Number of recorded calls")
+    bubble_size: int = Field(..., description="Bubble size for chart display")
+
+class TemporalTrendsData(BaseModel):
+    """Model for temporal trend analysis data"""
+    daily_series: List[Dict[str, Any]] = Field(default=[], description="Daily performance data points")
+    hourly_series: List[Dict[str, Any]] = Field(default=[], description="Hourly performance data points")
+    date_range: str = Field(..., description="Date range analyzed")
+    total_days: int = Field(..., description="Total days in analysis")
+    active_hours: int = Field(..., description="Hours with call activity")
+
+class HourlyHeatmapData(BaseModel):
+    """Model for hourly activity heatmap"""
+    data: List[Dict[str, Any]] = Field(..., description="Hourly heatmap data points")
+    max_calls: int = Field(..., description="Maximum calls in any hour for normalization")
+    best_hour: Dict[str, Any] = Field(..., description="Best performing hour information")
+    total_active_hours: int = Field(..., description="Total hours with activity")
+
+class DurationDistributionData(BaseModel):
+    """Model for call duration distribution histogram"""
+    buckets: List[Dict[str, Any]] = Field(..., description="Duration distribution buckets")
+    avg_duration: float = Field(..., description="Average call duration")
+    quality_threshold: int = Field(..., description="Quality duration threshold in seconds")
+    quality_calls: int = Field(..., description="Number of quality calls")
+    quality_percentage: float = Field(..., description="Percentage of quality calls")
+    total_analyzed: int = Field(..., description="Total calls analyzed")
+    median_duration: float = Field(..., description="Median call duration")
+
+class PeakHoursAnalysisData(BaseModel):
+    """Model for peak hours column chart analysis"""
+    hourly_data: List[Dict[str, Any]] = Field(..., description="Hour-by-hour performance data")
+    active_hours: List[Dict[str, Any]] = Field(..., description="Hours with significant activity")
+    peak_summary: Dict[str, Any] = Field(..., description="Summary of peak hours insights")
+    analysis_metadata: Dict[str, Any] = Field(..., description="Analysis metadata and thresholds")
+
+class TrendForecastData(BaseModel):
+    """Model for performance trend forecasting"""
+    historical: List[Dict[str, Any]] = Field(..., description="Historical performance data")
+    forecast: List[Dict[str, Any]] = Field(..., description="Forecasted performance data")
+    trend_direction: str = Field(..., description="Trend direction: improving, declining, stable")
+    projected_monthly_rate: float = Field(..., description="Projected monthly success rate")
+    confidence: float = Field(..., description="Forecast confidence percentage")
+    slope: Optional[float] = Field(None, description="Trend slope for technical analysis")
+
+class EfficiencyMatrixData(BaseModel):
+    """Model for efficiency matrix quadrant analysis"""
+    quadrants: List[Dict[str, Any]] = Field(..., description="Quadrant data with user categorization")
+    thresholds: Dict[str, float] = Field(..., description="Volume and efficiency thresholds")
+    summary: Dict[str, int] = Field(..., description="Summary statistics across quadrants")
+
+
+# ============================================================================
+# ENHANCED TREND DATA MODEL - Contains All Chart Data
+# ============================================================================
+
+class EnhancedTrendData(BaseModel):
+    """Enhanced trend data model containing all chart visualizations"""
+    # Original trend fields
+    trend: str = Field(..., description="Trend direction")
+    change_percent: float = Field(..., description="Percentage change")
+    success_rate_change: Optional[float] = Field(None, description="Success rate change")
+    first_half_avg: float = Field(..., description="First half average")
+    second_half_avg: float = Field(..., description="Second half average")
+    trend_strength: str = Field(..., description="Trend strength classification")
+    daily_averages: Dict[str, Any] = Field(default={}, description="Daily averages")
+    
+    # Chart data fields
+    performance_gauge: Optional[PerformanceGaugeData] = Field(None, description="Performance gauge chart data")
+    volume_efficiency_scatter: Optional[List[VolumeEfficiencyScatterData]] = Field(None, description="Scatter plot data")
+    temporal_trends: Optional[TemporalTrendsData] = Field(None, description="Temporal trends data")
+    hourly_heatmap: Optional[HourlyHeatmapData] = Field(None, description="Hourly heatmap data")
+    duration_distribution: Optional[DurationDistributionData] = Field(None, description="Duration distribution data")
+    peak_hours_analysis: Optional[PeakHoursAnalysisData] = Field(None, description="Peak hours analysis data")
+    trend_forecast: Optional[TrendForecastData] = Field(None, description="Trend forecast data")
+    efficiency_matrix: Optional[EfficiencyMatrixData] = Field(None, description="Efficiency matrix data")
+    
+    # Metadata
+    charts_available: List[str] = Field(default=[], description="Available chart types")
+    view_type: str = Field(..., description="View type: team or individual")
+
 # ============================================================================
 # IMPORT VALIDATION HELPER
 # ============================================================================
