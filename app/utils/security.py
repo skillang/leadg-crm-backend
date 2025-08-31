@@ -6,6 +6,8 @@ from ..config.settings import settings
 from ..config.database import get_database
 import uuid
 import logging
+import secrets
+import hashlib
 from bson import ObjectId
 
 logger = logging.getLogger(__name__)
@@ -241,6 +243,45 @@ class SecurityManager:
             logger.error(f"Error fetching users with permissions: {e}")
             return []
 
+    def generate_reset_token(self) -> str:
+        """Generate secure password reset token"""
+        return secrets.token_urlsafe(32)
+    
+    def hash_reset_token(self, token: str) -> str:
+        """Hash reset token for secure storage"""
+        return hashlib.sha256(token.encode()).hexdigest()
+    
+    def create_password_reset_token(self, data: Dict[str, Any], expire_minutes: int = 30) -> str:
+        """Create JWT-based password reset token"""
+        to_encode = data.copy()
+        expire = datetime.utcnow() + timedelta(minutes=expire_minutes)
+        
+        to_encode.update({
+            "exp": expire,
+            "iat": datetime.utcnow(),
+            "jti": str(uuid.uuid4()),
+            "type": "password_reset"
+        })
+        
+        return jwt.encode(to_encode, self.secret_key, algorithm=self.algorithm)
+    
+    def verify_reset_token(self, token: str) -> Optional[Dict[str, Any]]:
+        """Verify password reset token"""
+        try:
+            payload = jwt.decode(token, self.secret_key, algorithms=[self.algorithm])
+            
+            # Check if it's a password reset token
+            if payload.get("type") != "password_reset":
+                return None
+                
+            return payload
+        except jwt.ExpiredSignatureError:
+            logger.warning("Password reset token has expired")
+            return None
+        except jwt.JWTError as e:
+            logger.warning(f"Password reset token validation failed: {e}")
+            return None
+
 # Global security manager instance
 security = SecurityManager()
 
@@ -256,6 +297,18 @@ def create_access_token(data: Dict[str, Any]) -> str:
 
 def create_refresh_token(data: Dict[str, Any]) -> str:
     return security.create_refresh_token(data)
+
+def generate_reset_token() -> str:
+    return security.generate_reset_token()
+
+def hash_reset_token(token: str) -> str:
+    return security.hash_reset_token(token)
+
+def create_password_reset_token(data: Dict[str, Any], expire_minutes: int = 30) -> str:
+    return security.create_password_reset_token(data, expire_minutes)
+
+def verify_reset_token(token: str) -> Optional[Dict[str, Any]]:
+    return security.verify_reset_token(token)
 
 # 🆕 NEW: Permission-related utility functions
 async def get_user_with_permissions(user_id: str) -> Optional[Dict[str, Any]]:

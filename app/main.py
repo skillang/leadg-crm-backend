@@ -14,7 +14,7 @@ from .routers import (
     auth, leads, tasks, notes, documents, timeline, contacts, lead_categories, 
     stages, statuses, course_levels, sources, whatsapp, emails, permissions, 
     tata_auth, tata_calls, tata_users, bulk_whatsapp, realtime, notifications, 
-    integrations, admin_calls  # NEW: Admin dashboard router
+    integrations, admin_calls, password_reset    # NEW: Admin dashboard router
 )
 
 logging.basicConfig(
@@ -94,6 +94,22 @@ async def lifespan(app: FastAPI):
     
     await close_mongo_connection()
     logger.info("✅ Application shutdown complete")
+
+
+async def startup_event():
+    from .services.password_reset_service import password_reset_service
+    import asyncio
+    
+    async def cleanup_tokens_periodically():
+        while True:
+            try:
+                await password_reset_service.cleanup_expired_tokens()
+                await asyncio.sleep(4 * 60 * 60)  # 4 hours
+            except Exception as e:
+                logger.error(f"Token cleanup error: {e}")
+                await asyncio.sleep(60 * 60)  # Retry in 1 hour
+    
+    asyncio.create_task(cleanup_tokens_periodically())
 
 async def setup_default_stages():
     """Setup default stages on startup"""
@@ -377,6 +393,13 @@ app.include_router(
     prefix="/auth",
     tags=["Authentication"]
 )
+
+app.include_router(
+    password_reset.router,
+    prefix="/api/auth/password-reset",
+    tags=["Password Reset"]
+)
+
 
 app.include_router(
     leads.router,
