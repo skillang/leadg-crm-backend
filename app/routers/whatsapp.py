@@ -877,3 +877,71 @@ async def store_outgoing_message(
         logger.error(f"Error storing outgoing message: {str(e)}")
         import traceback
         print(f"🔍 DEBUG: Full traceback: {traceback.format_exc()}")
+
+
+# Add this to your app/routers/whatsapp.py webhook endpoint
+# This will log EXACTLY what mydreamstechnology sends
+
+@router.post("/webhook", response_model=WebhookProcessingResponse)
+async def handle_whatsapp_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks
+):
+    """Handle incoming WhatsApp webhook - WITH DETAILED LOGGING"""
+    try:
+        # 🔍 LOG EVERYTHING FROM MYDREAMSTECHNOLOGY
+        raw_body = await request.body()
+        headers = dict(request.headers)
+        
+        # Log raw data
+        logger.info("=" * 60)
+        logger.info("🚀 MYDREAMSTECHNOLOGY WEBHOOK RECEIVED")
+        logger.info(f"📝 Raw Body: {raw_body.decode('utf-8', errors='ignore')}")
+        logger.info(f"🔧 Headers: {headers}")
+        logger.info("=" * 60)
+        
+        # Parse JSON
+        webhook_payload = await request.json()
+        
+        # 🔍 LOG STRUCTURED DATA
+        logger.info("📊 PARSED WEBHOOK DATA:")
+        logger.info(f"   - Root keys: {list(webhook_payload.keys())}")
+        logger.info(f"   - Messages count: {len(webhook_payload.get('messages', []))}")
+        logger.info(f"   - Statuses count: {len(webhook_payload.get('statuses', []))}")
+        
+        # Log each message in detail
+        messages = webhook_payload.get('messages', [])
+        for i, msg in enumerate(messages):
+            logger.info(f"📨 MESSAGE {i+1}:")
+            logger.info(f"   - From: {msg.get('from', 'MISSING')}")
+            logger.info(f"   - ID: {msg.get('id', 'MISSING')}")
+            logger.info(f"   - Type: {msg.get('type', 'MISSING')}")
+            logger.info(f"   - Timestamp: {msg.get('timestamp', 'MISSING')}")
+            if msg.get('type') == 'text':
+                text_body = msg.get('text', {}).get('body', 'NO_TEXT')
+                logger.info(f"   - Text: {text_body}")
+            logger.info(f"   - Full message data: {msg}")
+        
+        logger.info("=" * 60)
+        
+        # Continue with normal processing
+        background_tasks.add_task(
+            whatsapp_message_service.process_incoming_webhook,
+            webhook_payload
+        )
+        
+        return WebhookProcessingResponse(
+            success=True,
+            processed_messages=len(messages),
+            processed_statuses=len(webhook_payload.get('statuses', [])),
+            errors=0,
+            details={"status": "processing_in_background"}
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ WEBHOOK ERROR: {str(e)}")
+        logger.error(f"Raw body was: {raw_body.decode('utf-8', errors='ignore') if 'raw_body' in locals() else 'FAILED_TO_READ'}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Webhook processing failed: {str(e)}"
+        )
