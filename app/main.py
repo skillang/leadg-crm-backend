@@ -396,7 +396,7 @@ app.include_router(
 
 app.include_router(
     password_reset.router,
-    prefix="/api/auth/password-reset",
+    prefix="/auth/password-reset",
     tags=["Password Reset"]
 )
 
