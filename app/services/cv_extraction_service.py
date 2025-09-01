@@ -29,10 +29,6 @@ class CVExtractionService:
         self.medium_confidence = 0.60
         self.low_confidence = 0.40
     
-    # ============================================================================
-    # FILE VALIDATION AND TEXT EXTRACTION
-    # ============================================================================
-    
     def validate_file(self, file_content: bytes, filename: str, mime_type: str) -> Dict[str, Any]:
         """Validate uploaded CV file"""
         validation_result = {
@@ -157,10 +153,6 @@ class CVExtractionService:
         except Exception as e:
             raise Exception(f"Error processing DOCX: {str(e)}")
     
-    # ============================================================================
-    # STRUCTURED DATA EXTRACTION METHODS
-    # ============================================================================
-    
     def extract_name(self, text: str) -> Tuple[str, float]:
         """Extract name with confidence score"""
         lines = [line.strip() for line in text.split('\n') if line.strip()]
@@ -170,24 +162,24 @@ class CVExtractionService:
         
         # Skip patterns that are unlikely to be names
         skip_patterns = [
-            r'resume|curriculum|vitae|cv',
-            r'email|phone|mobile|address',
-            r'objective|summary|profile',
-            r'experience|education|skills',
-            r'www\.|http|\.com|\.org',
-            r'^\d+',  # Lines starting with numbers
-            r'[<>@#$%^&*(){}[\]]'  # Special characters
+            r'resume|curriculum|vitae|cv|personal\s+information',
+            r'email|phone|mobile|address|contact',
+            r'objective|summary|profile|experience|education|skills',
+            r'www\.|http|\.com|\.org|@',
+            r'^\d+',
+            r'[<>@#$%^&*(){}[\]]'
         ]
         
         # Name patterns with confidence scoring
         name_patterns = [
-            (r'^([A-Z][a-z]+ [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)$', 0.95),  # Perfect name format
-            (r'^([A-Z][A-Z\s]+)$', 0.85),  # All caps name
-            (r'^([A-Za-z]+\s+[A-Za-z]+(?:\s+[A-Za-z]+)?)$', 0.80),  # Mixed case name
+            (r'^([A-Z][a-z]+ [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)$', 0.98),
+            (r'(?:CURRICULUM VITAE|CV|RESUME)\s*\n+([A-Z][a-z]+ [A-Z][a-z]+)', 0.95),
+            (r'^([A-Z][A-Z\s]+)$', 0.85),
+            (r'^([A-Za-z]+\s+[A-Za-z]+(?:\s+[A-Za-z]+)?)$', 0.80),
         ]
         
         # Check first few lines for name
-        for line in lines[:5]:
+        for line in lines[:10]:
             # Skip if matches skip patterns
             if any(re.search(pattern, line, re.IGNORECASE) for pattern in skip_patterns):
                 continue
@@ -197,66 +189,72 @@ class CVExtractionService:
                 match = re.search(pattern, line)
                 if match:
                     name = self._clean_name(match.group(1))
-                    if len(name.split()) >= 2:  # At least first and last name
+                    if len(name.split()) >= 2:
                         return name, confidence
         
-        # Fallback: return first non-empty line with lower confidence
-        first_line = self._clean_name(lines[0]) if lines else ""
-        confidence = 0.5 if first_line and len(first_line.split()) >= 2 else 0.2
+        # Additional extraction for specific resume patterns
+        cv_pattern = r'(?:CURRICULUM VITAE|CV|RESUME)\s*\n+([A-Za-z\s]+?)(?:\n|E-mail|Email|Contact)'
+        match = re.search(cv_pattern, text, re.IGNORECASE | re.MULTILINE)
+        if match:
+            name = self._clean_name(match.group(1))
+            if len(name.split()) >= 2:
+                return name, 0.90
         
-        return first_line[:50], confidence  # Limit length
+        # Fallback: return first non-empty line that looks like a name
+        for line in lines[:5]:
+            if not any(re.search(pattern, line, re.IGNORECASE) for pattern in skip_patterns):
+                cleaned = self._clean_name(line)
+                if 2 <= len(cleaned.split()) <= 4:
+                    return cleaned[:50], 0.5
+        
+        return "Name not found", 0.2
     
     def extract_email(self, text: str) -> Tuple[str, float]:
         """Extract email with confidence score"""
-        email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
-        emails = re.findall(email_pattern, text, re.IGNORECASE)
+        email_patterns = [
+            (r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', 0.95),
+            (r'(?:Email|E-mail|E-mail id):\s*([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,})', 0.98),
+            (r'(?:PERSONAL INFORMATION|Email)\s*\n*[^\n]*?([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,})', 0.92),
+        ]
         
-        if not emails:
-            return "", 0.0
-        
-        # Filter out common false positives
         exclude_domains = ['example.com', 'test.com', 'domain.com', 'email.com', 'mail.com']
-        valid_emails = []
         
-        for email in emails:
-            email = email.lower().strip()
-            domain = email.split('@')[1] if '@' in email else ''
-            
-            if domain not in exclude_domains and '.' in domain:
-                valid_emails.append(email)
-        
-        if valid_emails:
-            # Return first valid email with high confidence
-            return valid_emails[0], 0.95
-        elif emails:
-            # Return first email found with lower confidence
-            return emails[0].lower().strip(), 0.60
+        for pattern, confidence in email_patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            for email in matches:
+                email = email.lower().strip()
+                domain = email.split('@')[1] if '@' in email else ''
+                
+                if domain not in exclude_domains and '.' in domain and len(domain) > 3:
+                    return email, confidence
         
         return "", 0.0
     
     def extract_phone(self, text: str) -> Tuple[str, float]:
         """Extract phone number with confidence score"""
         phone_patterns = [
-            (r'\+\d{1,3}[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', 0.95),  # International format
-            (r'\(\d{3}\)\s*\d{3}[-.\s]?\d{4}', 0.90),  # (123) 456-7890
-            (r'\+91[-.\s]?\d{10}', 0.88),  # Indian format
-            (r'\b\d{10}\b', 0.75),  # Simple 10 digits
-            (r'\d{3}[-.\s]?\d{3}[-.\s]?\d{4}', 0.70),  # 123-456-7890
+            (r'\(\+91\)\s*(\d{10})', 0.95),
+            (r'\+91[-.\s]?(\d{10})', 0.95),
+            (r'(?:Contact No|Mobile|Phone):\s*\+?91[-.\s]?(\d{10})', 0.98),
+            (r'\b([6-9]\d{9})\b', 0.80),
+            (r'\+\d{1,3}[-.\s]?\(?\d{3,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{4}', 0.90),
+            (r'\(\d{3,4}\)\s*\d{3,4}[-.\s]?\d{4}', 0.85),
         ]
         
         for pattern, confidence in phone_patterns:
             matches = re.findall(pattern, text)
             if matches:
-                # Clean and validate phone number
-                phone = re.sub(r'[^\d+]', '', matches[0])
+                phone = matches[0] if isinstance(matches[0], str) else matches[0]
+                phone = re.sub(r'[^\d+]', '', phone)
                 if 10 <= len(phone.replace('+', '')) <= 15:
+                    if len(phone) == 10 and phone[0] in ['6', '7', '8', '9']:
+                        phone = '+91' + phone
                     return phone, confidence
         
         return "", 0.0
     
     def extract_age(self, text: str) -> Tuple[Optional[int], float]:
         """Extract age with confidence score"""
-        # Direct age patterns
         age_patterns = [
             (r'age\s*[:\-]?\s*(\d{2})', 0.90),
             (r'(\d{2})\s*years?\s*old', 0.85),
@@ -267,7 +265,7 @@ class CVExtractionService:
             matches = re.findall(pattern, text, re.IGNORECASE)
             for match in matches:
                 age = int(match)
-                if 18 <= age <= 65:  # Reasonable age range
+                if 18 <= age <= 65:
                     return age, confidence
         
         # Date of birth patterns
@@ -281,7 +279,7 @@ class CVExtractionService:
             for match in matches:
                 try:
                     parsed_date = dateutil.parser.parse(match)
-                    if 1940 <= parsed_date.year <= 2010:  # Reasonable birth year range
+                    if 1940 <= parsed_date.year <= 2010:
                         age = datetime.now().year - parsed_date.year
                         return age, 0.75
                 except:
@@ -291,41 +289,49 @@ class CVExtractionService:
     
     def extract_skills(self, text: str) -> Tuple[str, float]:
         """Extract skills with confidence score"""
-        # Look for explicit skills sections
         skills_patterns = [
-            (r'(?:key\s*skills|technical\s*skills|skills|competencies|technologies)[:\-]?\s*([^\n]*(?:\n[^\n]*){0,10})', 0.90),
-            (r'(?:programming|software|tools)[:\-]?\s*([^\n]*(?:\n[^\n]*){0,5})', 0.80),
+            (r'(?:KEY\s*SKILLS|SKILLS|COMPETENCIES|TECHNOLOGIES)[:\-]?\s*([^\n]*(?:\n[^\n]*){0,8})', 0.90),
+            (r'(?:TECHNICAL\s*SKILLS|PROFESSIONAL\s*SKILLS)[:\-]?\s*([^\n]*(?:\n[^\n]*){0,5})', 0.85),
         ]
         
         for pattern, base_confidence in skills_patterns:
             match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
             if match:
                 skills_text = match.group(1)
-                # Clean and split skills
-                skills = re.split(r'[,;•\n\t]', skills_text)
+                skills = re.split(r'[,;\n\t]', skills_text)
                 skills = [s.strip() for s in skills if s.strip() and len(s.strip()) > 1]
                 
-                # Filter out common non-skills
                 exclude_words = ['years', 'experience', 'knowledge', 'familiar', 'working', 'other', 'personal', 'details', 'including']
                 skills = [s for s in skills if not any(e in s.lower() for e in exclude_words) and len(s) < 50]
                 
                 if skills:
-                    return ', '.join(skills[:15]), base_confidence  # Limit to 15 skills
+                    return ', '.join(skills[:12]), base_confidence
         
-        # Strategy 2: Look for technology keywords
-        tech_keywords = re.findall(r'\b(?:Python|Java|JavaScript|React|Node\.?js|Angular|Vue|PHP|C\+\+|C#|Ruby|Go|Swift|Kotlin|HTML|CSS|SQL|MongoDB|PostgreSQL|MySQL|AWS|Azure|Docker|Kubernetes|Git|Linux|Windows|MacOS|Apache|Nginx|Redis|Elasticsearch|Hadoop|Spark|TensorFlow|PyTorch|Pandas|NumPy|Matplotlib|Django|Flask|Express|Spring|Laravel|Bootstrap|jQuery|TypeScript|Scala|Perl|Rust|Dart|Flutter|Unity|Blender|Photoshop|Illustrator|Figma|Sketch|Jira|Confluence|Slack|Trello|Salesforce|HubSpot|Mailchimp|Google Analytics|Facebook Ads|LinkedIn Ads|SEO|SEM|PPC|CRO|A/B Testing|Scrum|Agile|Kanban|DevOps|CI/CD|Jenkins|Travis CI|CircleCI|Terraform|Ansible|Chef|Puppet|Vagrant|VirtualBox|VMware|Hyper-V|Office 365|SharePoint|Power BI|Tableau|Excel|PowerPoint|Word|Outlook|Teams|Zoom|WebEx|Skype)\b', text, re.IGNORECASE)
+        # Look for medical/nursing specific skills
+        medical_keywords = re.findall(
+            r'\b(?:ICU|Medical|Surgical|Nursing|BSc|BLS|ECMO|CRRT|Ventilator|Cardiac|Intensive Care|Emergency|Critical Care|Patient Care|NABH|JCI|Multispeciality|TL|Team Leader|Life Support|Defibrillator|Corona Warrior|Staff Nurse|Registered Nurse)\b', 
+            text, 
+            re.IGNORECASE
+        )
         
-        if tech_keywords:
-            # Remove duplicates and limit
-            unique_skills = list(dict.fromkeys([skill.title() for skill in tech_keywords]))
+        # Look for technical keywords
+        tech_keywords = re.findall(
+            r'\b(?:Python|Java|JavaScript|React|Node\.?js|Angular|Vue|PHP|C\+\+|C#|Ruby|Go|Swift|Kotlin|HTML|CSS|SQL|MongoDB|PostgreSQL|MySQL|AWS|Azure|Docker|Kubernetes|Git|Linux|Windows|Computer|Internet|Basic|Knowledge)\b', 
+            text, 
+            re.IGNORECASE
+        )
+        
+        # Look for general professional skills
+        professional_keywords = re.findall(
+            r'\b(?:Management|Leadership|Team|Communication|Problem Solving|Critical Thinking|Training|Supervision|Patient Care|Quality|Safety|Compliance|Documentation|Coordination)\b',
+            text, 
+            re.IGNORECASE
+        )
+        
+        all_keywords = medical_keywords + tech_keywords + professional_keywords
+        if all_keywords:
+            unique_skills = list(dict.fromkeys([skill.title() for skill in all_keywords]))
             return ', '.join(unique_skills[:12]), 0.75
-        
-        # Strategy 3: Look for domain-specific skills
-        domain_keywords = re.findall(r'\b(?:Marketing|Sales|Finance|Accounting|HR|Recruitment|Management|Leadership|Project Management|Business Analysis|Data Analysis|Research|Writing|Content Creation|Social Media|Digital Marketing|Email Marketing|Customer Service|Support|Training|Consulting|Strategy|Planning|Budgeting|Forecasting|Reporting|Presentations|Public Speaking|Team Building|Negotiation|Problem Solving|Critical Thinking|Communication|Collaboration|Time Management|Organization|Multitasking|Adaptability|Creativity|Innovation|Quality Assurance|Testing|Documentation|Translation|Language|Fluent|Native|Proficient|Beginner|Intermediate|Advanced|Expert|Certified|Licensed|Qualified)\b', text, re.IGNORECASE)
-        
-        if domain_keywords:
-            unique_skills = list(dict.fromkeys([skill.title() for skill in domain_keywords]))
-            return ', '.join(unique_skills[:10]), 0.60
         
         return "", 0.0
     
@@ -348,9 +354,8 @@ class CVExtractionService:
                 else:
                     edu_text = match.strip()
                 
-                # Clean education text
-                edu_text = ' '.join(edu_text.split()[:25])  # Limit length
-                edu_text = re.sub(r'\d{4}', '', edu_text)  # Remove years for cleaner display
+                edu_text = ' '.join(edu_text.split()[:25])
+                edu_text = re.sub(r'\d{4}', '', edu_text)
                 edu_text = edu_text.strip()
                 
                 if len(edu_text) > 10 and confidence > best_confidence:
@@ -362,10 +367,11 @@ class CVExtractionService:
     def extract_experience(self, text: str) -> Tuple[str, float]:
         """Extract experience with confidence score"""
         experience_patterns = [
-            (r'(?:total\s*work\s*experience|work\s*experience|experience)[:\-]?\s*([^\n]*(?:\n[^\n]*){0,3})', 0.85),
-            (r'(\d+(?:\.\d+)?\+?\s*years?\s*(?:\d+\s*months?)?\s*(?:of\s*)?(?:work\s*)?experience)', 0.90),
-            (r'(?:worked|working)\s*(?:as|at|for)\s*([^\n]*)', 0.70),
-            (r'(\d+\s*years?\s*\d*\s*months?)', 0.80),  # Pattern like "5 years 3 months"
+            (r'(?:Total work experience|Work experience|Experience):\s*([^.\n]+)', 0.95),
+            (r'(\d+\+?\s*[Yy]ears?\s*\d*\s*[Mm]onths?)', 0.90),
+            (r'(\d+\+?\s*years?\s+experience)', 0.85),
+            (r'(?:worked|working)\s*(?:as|at|for)\s*([^\n]+)', 0.70),
+            (r'(?:total\s*work\s*experience|work\s*experience|experience)[:\-]?\s*([^\n]*(?:\n[^\n]*){0,2})', 0.80),
         ]
         
         best_experience = ""
@@ -375,17 +381,23 @@ class CVExtractionService:
             matches = re.findall(pattern, text, re.IGNORECASE | re.MULTILINE)
             for match in matches:
                 exp_text = match.strip()
-                exp_text = ' '.join(exp_text.split()[:20])  # Limit length
+                exp_text = ' '.join(exp_text.split()[:15])
                 
-                if len(exp_text) > 5 and confidence > best_confidence:
+                if len(exp_text) > 3 and confidence > best_confidence:
                     best_experience = exp_text
                     best_confidence = confidence
         
+        # Look in profile summary for experience mentions
+        profile_match = re.search(r'(?:PROFILE SUMMARY|SUMMARY|OBJECTIVE)(.*?)(?:EDUCATION|WORK EXPERIENCE|KEY SKILLS)', 
+                                 text, re.IGNORECASE | re.DOTALL)
+        if profile_match:
+            profile_text = profile_match.group(1)
+            exp_in_profile = re.search(r'(\d+\+?\s*years?\s+experience[^.]*)', profile_text, re.IGNORECASE)
+            if exp_in_profile and best_confidence < 0.88:
+                best_experience = exp_in_profile.group(1)
+                best_confidence = 0.88
+        
         return best_experience, best_confidence
-    
-    # ============================================================================
-    # MAIN EXTRACTION METHOD
-    # ============================================================================
     
     def extract_all_details(self, text: str, filename: str) -> Dict[str, Any]:
         """Extract all structured data from CV text"""
@@ -461,10 +473,6 @@ class CVExtractionService:
                 'recommended_review': overall_confidence < self.medium_confidence or len(quality_issues) > 2
             }
         }
-    
-    # ============================================================================
-    # UTILITY METHODS
-    # ============================================================================
     
     def _clean_name(self, name: str) -> str:
         """Clean and format extracted name"""

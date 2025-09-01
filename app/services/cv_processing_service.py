@@ -699,8 +699,39 @@ class CVProcessingService:
         if isinstance(extraction_doc.get("converted_by"), ObjectId):
             extraction_doc["converted_by"] = str(extraction_doc["converted_by"])
         
-        # Remove internal fields
-        response_doc = {k: v for k, v in extraction_doc.items() if not k.startswith("_")}
+        # Build file_metadata structure expected by Pydantic model
+        file_metadata = {
+            "original_filename": extraction_doc.get("original_filename", ""),
+            "file_size": extraction_doc.get("file_size", 0),
+            "mime_type": extraction_doc.get("mime_type", ""),
+            "processing_time_ms": int(extraction_doc.get("processing_time_ms", 0)),
+            "extractor_version": extraction_doc.get("extraction_metadata", {}).get("extractor_version", "1.0")
+        }
+        
+        # Build response document matching Pydantic model structure
+        response_doc = {
+            "processing_id": extraction_doc.get("processing_id"),
+            "status": extraction_doc.get("status"),
+            "extracted_data": extraction_doc.get("extracted_data", {}),
+            "file_metadata": file_metadata,
+            "uploaded_by": extraction_doc.get("uploaded_by"),
+            "uploaded_by_email": extraction_doc.get("uploaded_by_email"),
+            "created_at": extraction_doc.get("created_at"),
+            "updated_at": extraction_doc.get("updated_at"),
+            "reviewed": extraction_doc.get("reviewed", False),
+            "reviewed_by": extraction_doc.get("reviewed_by"),
+            "reviewed_at": extraction_doc.get("reviewed_at"),
+            "converted_to_lead": extraction_doc.get("converted_to_lead", False),
+            "lead_id": extraction_doc.get("lead_id"),
+            "converted_by": extraction_doc.get("converted_by"),
+            "converted_at": extraction_doc.get("converted_at"),
+            "error_message": extraction_doc.get("error_message"),
+            "extraction_errors": extraction_doc.get("extraction_errors", []),
+            "processing_notes": extraction_doc.get("processing_notes", "")
+        }
+        
+        # Remove None values
+        response_doc = {k: v for k, v in response_doc.items() if v is not None}
         
         return response_doc
     
