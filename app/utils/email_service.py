@@ -80,7 +80,7 @@ class EmailService:
                 }
             
             # Build reset link
-            reset_link = f"{settings.skillang_frontend_domain}/reset-password?token={reset_token}"
+            reset_link = f"https://leadg.in/reset-password?token={reset_token}"
             
             # Prepare merge data based on reset type
             if reset_type == "admin_initiated":

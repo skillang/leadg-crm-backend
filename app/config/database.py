@@ -272,7 +272,21 @@ async def create_indexes():
         await db.sources.create_index("created_at")  # For sorting by creation date
         await db.sources.create_index("created_by")  # Track who created sources
         logger.info("✅ Sources indexes created")
-        
+
+
+        # ============================================================================
+# 🆕 NEW: CV EXTRACTIONS COLLECTION INDEXES
+# ============================================================================
+        await db.cv_extractions.create_index("processing_id", unique=True)  # Unique processing identifier
+        await db.cv_extractions.create_index([("uploaded_by", 1), ("created_at", -1)])  # User's CVs by date
+        await db.cv_extractions.create_index([("status", 1), ("created_at", -1)])  # CVs by status and date
+        await db.cv_extractions.create_index("uploaded_by_email")  # Quick user email lookup
+        await db.cv_extractions.create_index("converted_to_lead")  # Filter converted/unconverted CVs
+        await db.cv_extractions.create_index([("status", 1), ("uploaded_by", 1)])  # User's CVs by status
+        await db.cv_extractions.create_index("created_at")  # Sort by upload time
+        await db.cv_extractions.create_index([("converted_to_lead", 1), ("created_at", -1)])  # Conversion tracking
+        logger.info("✅ CV Extractions indexes created")
+                
         # ============================================================================
         # TASKS COLLECTION INDEXES (ENHANCED)
         # ============================================================================

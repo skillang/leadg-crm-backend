@@ -14,7 +14,7 @@ from .routers import (
     auth, leads, tasks, notes, documents, timeline, contacts, lead_categories, 
     stages, statuses, course_levels, sources, whatsapp, emails, permissions, 
     tata_auth, tata_calls, tata_users, bulk_whatsapp, realtime, notifications, 
-    integrations, admin_calls, password_reset    # NEW: Admin dashboard router
+    integrations, admin_calls, password_reset ,cv_processing   # NEW: Admin dashboard router
 )
 
 logging.basicConfig(
@@ -349,7 +349,7 @@ async def health_check():
             "auth", "leads", "tasks", "notes", "documents", "timeline", "contacts", 
             "stages", "statuses", "course-levels", "sources", "whatsapp", "realtime", 
             "emails", "permissions", "tata-auth", "tata-calls", "tata-users", 
-            "bulk-whatsapp", "integrations", "admin-calls"
+            "bulk-whatsapp", "integrations", "admin-calls" , "cv-processing"
         ]
     }
 
@@ -533,6 +533,13 @@ app.include_router(
     prefix="/admin",
     tags=["Admin Dashboard"]
 )
+
+app.include_router(
+    cv_processing.router,
+    prefix="/cv",
+    tags=["CV Processing"]
+)
+
 
 if __name__ == "__main__":
     import uvicorn

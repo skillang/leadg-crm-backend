@@ -29,7 +29,7 @@ class PasswordResetService:
         self.db = None
         
         # 🔧 FIXED: Use your actual ZeptoMail template ID
-        self.template_id = "2518b.3027c48fe4ab851b.m4.2bcde980-859d-11f0-a8ed-8e9a6c33ddc2.198faf59018"
+        self.template_id = "2518b.3027c48fe4ab851b.k1.44ad7230-859e-11f0-a35a-cabf48e1bf81.198fafcc0d3"
         self.sender_email = "noreply@skillang.com"
         
         # Password reset configuration
@@ -157,90 +157,55 @@ class PasswordResetService:
             return False
     
     async def _send_reset_email(
-        self, 
-        user_email: str, 
-        user_name: str, 
-        reset_token: str,
-        token_type: ResetTokenType,
-        created_by: str = None,
-        notification_message: str = None
-    ) -> bool:
-        """Send password reset email using ZeptoMail - FIXED VERSION"""
-        try:
-            # Build reset link
-            reset_link = f"{settings.skillang_frontend_domain}/reset-password?token={reset_token}"
-            
-            # Determine email content based on reset type
-            if token_type == ResetTokenType.USER_INITIATED:
-                email_type = "Password Reset Request"
-                button_text = "Reset My Password"
-                message_content = f"""
-                <p>We received a request to reset your password for your {settings.app_name} account.</p>
-                <p>If you didn't request this password reset, please ignore this email or contact our support team.</p>
+            self, 
+            user_email: str, 
+            user_name: str, 
+            reset_token: str,
+            token_type: ResetTokenType,
+            created_by: str = None,
+            notification_message: str = None
+        ) -> bool:
+            """Send password reset email using ZeptoMail - SIMPLIFIED VERSION"""
+            try:
+                # Build reset link
+                reset_link = f"https://leadg.in/reset-password?token={reset_token}"
                 
-                <div style="background: #fff8e1; border-left: 4px solid #ffc107; padding: 15px 20px; margin: 20px 0; border-radius: 4px;">
-                    <p><strong>⏰ Important:</strong> This password reset link will expire in <strong>{self.reset_token_expire_minutes} minutes</strong> for security reasons.</p>
-                </div>
+                # Calculate expiration time based on token type
+                if token_type == ResetTokenType.USER_INITIATED:
+                    expires_in = self.reset_token_expire_minutes
+                else:  # ADMIN_INITIATED
+                    expires_in = self.admin_token_expire_hours * 60  # Convert hours to minutes
                 
-                <div style="background: #e8f5e8; border-left: 4px solid #4caf50; padding: 15px 20px; margin: 20px 0; border-radius: 4px;">
-                    <h4 style="margin-top: 0; color: #2e7d32;">🛡️ Security Tips:</h4>
-                    <ul style="margin: 10px 0; padding-left: 20px; color: #2e7d32;">
-                        <li>Never share your password with anyone</li>
-                        <li>Use a strong, unique password</li>
-                        <li>Consider using a password manager</li>
-                    </ul>
-                </div>
-                """
-            else:  # ADMIN_INITIATED
-                email_type = "Admin Password Reset"
-                button_text = "Set New Password"
-                message_content = f"""
-                <div style="background: #fff3cd; border: 1px solid #ffeaa7; padding: 20px; margin: 25px 0; border-radius: 6px;">
-                    <h3 style="margin-top: 0; color: #856404;">📝 Administrator Message:</h3>
-                    <p style="margin-bottom: 0; color: #856404; font-style: italic;">"{notification_message or 'Your password has been reset by an administrator.'}"</p>
-                    <p style="color: #856404; font-size: 14px; margin-bottom: 0;">Reset initiated by: <strong>{created_by or 'Administrator'}</strong></p>
-                </div>
+                # 🔧 SIMPLIFIED: Only send variables that template expects
+                merge_data = {
+                    "username": user_name,
+                    "reset_link": reset_link,
+                    "expires_in": str(expires_in)
+                }
                 
-                <p>An administrator has initiated a password reset for your {settings.app_name} account.</p>
+                logger.debug(f"Sending email with merge data: {merge_data}")
                 
-                <div style="background: #ffebee; border-left: 4px solid #f44336; padding: 15px 20px; margin: 25px 0; border-radius: 4px;">
-                    <p><strong>⏰ Important:</strong> This password reset link will expire in <strong>{self.admin_token_expire_hours * 60} minutes</strong>.</p>
-                    <p><strong>🔐 Security Requirement:</strong> You will be required to change your password again after logging in for additional security.</p>
-                </div>
-                """
-            
-            # 🔧 FIXED: Use correct ZeptoMail template ID and sender
-            merge_data = {
-                "username": user_name,
-                "app_name": settings.app_name,
-                "email_type": email_type,
-                "message_content": message_content,
-                "reset_link": reset_link,
-                "button_text": button_text,
-                "support_email": settings.smtp_from_email or "support@skillang.com",
-                "current_year": str(datetime.now().year)
-            }
-            
-            # Send email using ZeptoMail with CORRECT template ID
-            result = await zepto_client.send_template_email(
-                template_key=self.template_id,  # 🔧 FIXED: Use actual template ID
-                sender_email=self.sender_email,  # 🔧 FIXED: Use correct sender
-                recipient_email=user_email,
-                recipient_name=user_name,
-                merge_data=merge_data
-            )
-            
-            if result.get("success"):
-                logger.info(f"Password reset email sent to {user_email} (type: {token_type})")
-                return True
-            else:
-                logger.error(f"Failed to send password reset email to {user_email}: {result}")
+                # Send email using ZeptoMail with CORRECT template ID
+                result = await zepto_client.send_template_email(
+                    template_key=self.template_id,
+                    sender_email=self.sender_email,
+                    recipient_email=user_email,
+                    recipient_name=user_name,
+                    merge_data=merge_data
+                )
+                
+                if result.get("success"):
+                    logger.info(f"Password reset email sent to {user_email} (type: {token_type})")
+                    return True
+                else:
+                    logger.error(f"Failed to send password reset email to {user_email}: {result}")
+                    return False
+                    
+            except Exception as e:
+                logger.error(f"Error sending password reset email to {user_email}: {e}")
                 return False
-                
-        except Exception as e:
-            logger.error(f"Error sending password reset email to {user_email}: {e}")
-            return False
-    
+
+
     async def forgot_password(
         self, 
         email: str, 
