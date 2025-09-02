@@ -1061,6 +1061,10 @@ async def get_leads(
     course_level: Optional[str] = Query(None),
     created_from: Optional[str] = Query(None),
     created_to: Optional[str] = Query(None),
+    updated_from: Optional[str] = Query(None),     
+    updated_to: Optional[str] = Query(None),       
+    last_contacted_from: Optional[str] = Query(None),  
+    last_contacted_to: Optional[str] = Query(None),    
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):
     """
@@ -1125,6 +1129,30 @@ async def get_leads(
                 query = {"$and": [{"assigned_to": assigned_to}, {"$or": query["$or"]}]}
             else:
                 query["assigned_to"] = assigned_to
+
+        # Handle updated_at date range
+        if updated_from or updated_to:
+            date_query = {}
+            if updated_from:
+                date_query["$gte"] = datetime.fromisoformat(updated_from)
+            if updated_to:
+                # Add end of day to include full day
+                end_date = datetime.fromisoformat(updated_to)
+                if updated_to == updated_from:  # Same day filter
+                    end_date = end_date.replace(hour=23, minute=59, second=59)
+                date_query["$lte"] = end_date
+            if date_query:
+                query["updated_at"] = date_query
+
+        # Handle last_contacted date range  
+        if last_contacted_from or last_contacted_to:
+            date_query = {}
+            if last_contacted_from:
+                date_query["$gte"] = datetime.fromisoformat(last_contacted_from)
+            if last_contacted_to:
+                date_query["$lte"] = datetime.fromisoformat(last_contacted_to)
+            if date_query:
+                query["last_contacted"] = date_query
         
         # Handle search
         if search:
@@ -1182,8 +1210,6 @@ async def get_leads(
             detail="Failed to retrieve leads"
         )
 
-
-
 @router.get("/my-leads", response_model=LeadListResponse)
 @convert_lead_dates()
 async def get_my_leads(
@@ -1199,6 +1225,10 @@ async def get_my_leads(
     course_level: Optional[str] = Query(None),
     created_from: Optional[str] = Query(None),
     created_to: Optional[str] = Query(None),
+    updated_from: Optional[str] = Query(None),    
+    updated_to: Optional[str] = Query(None),      
+    last_contacted_from: Optional[str] = Query(None), 
+    last_contacted_to: Optional[str] = Query(None),   
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):
     """
@@ -1245,6 +1275,30 @@ async def get_my_leads(
                     pass
             if date_query:
                 query["created_at"] = date_query
+        
+        # Handle updated_at date range
+        if updated_from or updated_to:
+            date_query = {}
+            if updated_from:
+                date_query["$gte"] = datetime.fromisoformat(updated_from)
+            if updated_to:
+                # Add end of day to include full day
+                end_date = datetime.fromisoformat(updated_to)
+                if updated_to == updated_from:  # Same day filter
+                    end_date = end_date.replace(hour=23, minute=59, second=59)
+                date_query["$lte"] = end_date
+            if date_query:
+                query["updated_at"] = date_query
+
+        # Handle last_contacted date range  
+        if last_contacted_from or last_contacted_to:
+            date_query = {}
+            if last_contacted_from:
+                date_query["$gte"] = datetime.fromisoformat(last_contacted_from)
+            if last_contacted_to:
+                date_query["$lte"] = datetime.fromisoformat(last_contacted_to)
+            if date_query:
+                query["last_contacted"] = date_query
         
         # Handle search
         if search:
