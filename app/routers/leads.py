@@ -1364,78 +1364,61 @@ async def get_my_leads(
 @router.get("/stats", response_model=LeadStatsResponse)
 @convert_dates_to_ist()
 async def get_lead_stats(
-    # 🆕 NEW: Include multi-assignment stats
     include_multi_assignment_stats: bool = Query(True, description="Include multi-assignment statistics"),
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):
-    """Get lead statistics with enhanced multi-assignment support"""
+    """Get lead statistics with enhanced breakdown support"""
     try:
         db = get_database()
         user_role = current_user.get("role", "user")
         user_email = current_user.get("email")
         
-        # Base pipeline
-        pipeline = []
+        # Base query based on role
         if user_role != "admin":
             if include_multi_assignment_stats:
-                # Include both primary and co-assignments
-                pipeline.append({
-                    "$match": {
-                        "$or": [
-                            {"assigned_to": user_email},
-                            {"co_assignees": user_email}
-                        ]
-                    }
-                })
-            else:
-                pipeline.append({"$match": {"assigned_to": user_email}})
-        
-        pipeline.extend([
-            {
-                "$group": {
-                    "_id": "$status",
-                    "count": {"$sum": 1}
+                base_query = {
+                    "$or": [
+                        {"assigned_to": user_email},
+                        {"co_assignees": user_email}
+                    ]
                 }
-            }
-        ])
+            else:
+                base_query = {"assigned_to": user_email}
+        else:
+            base_query = {}
         
-        result = await db.leads.aggregate(pipeline).to_list(None)
+        # Get total leads
+        total_leads = await db.leads.count_documents(base_query)
         
-        # Initialize stats
-        stats = {
-            "followup": 0,
-            "warm": 0,
-            "prospect": 0,
-            "junk": 0,
-            "enrolled": 0,
-            "yet_to_call": 0,
-            "counseled": 0,
-            "dnp": 0,
-            "invalid": 0,
-            "call_back": 0,
-            "busy": 0,
-            "ni": 0,
-            "ringing": 0,
-            "wrong_number": 0,
-            "total_leads": 0,
-            "my_leads": 0,
-            "unassigned_leads": 0
-        }
+        # Get status breakdown
+        status_pipeline = [
+            {"$match": base_query},
+            {"$group": {"_id": "$status", "count": {"$sum": 1}}},
+            {"$sort": {"count": -1}}
+        ]
+        status_result = await db.leads.aggregate(status_pipeline).to_list(None)
         
-        # Process aggregation result with migration awareness
-        for item in result:
-            status_val = item["_id"]
-            count = item["count"]
-            stats["total_leads"] += count
-            
-           # Just use the status as-is and map to stats key
-        if status_val:
-            key = status_val.lower().replace(" ", "_")
-            if key in stats:
-                stats[key] += count
-        # Calculate additional stats
+        # Get stage breakdown
+        stage_pipeline = [
+            {"$match": base_query},
+            {"$group": {"_id": "$stage", "count": {"$sum": 1}}},
+            {"$sort": {"count": -1}}
+        ]
+        stage_result = await db.leads.aggregate(stage_pipeline).to_list(None)
+        
+        # Process breakdowns into dictionaries
+        status_breakdown = {item["_id"]: item["count"] for item in status_result if item["_id"]}
+        stage_breakdown = {item["_id"]: item["count"] for item in stage_result if item["_id"]}
+        
+        # Calculate core metrics
+        dnp_count = status_breakdown.get("DNP", 0)
+        counseled_count = status_breakdown.get("Counseled", 0)
+        conversion_rate = round((counseled_count / total_leads * 100), 1) if total_leads > 0 else 0.0
+        
+        # Calculate my_leads and unassigned_leads
         if user_role != "admin":
-            stats["my_leads"] = stats["total_leads"]
+            my_leads = total_leads
+            unassigned_leads = 0
         else:
             if include_multi_assignment_stats:
                 my_leads_count = await db.leads.count_documents({
@@ -1447,16 +1430,54 @@ async def get_lead_stats(
             else:
                 my_leads_count = await db.leads.count_documents({"assigned_to": user_email})
             
-            stats["my_leads"] = my_leads_count
-            stats["unassigned_leads"] = await db.leads.count_documents({"assigned_to": None})
+            my_leads = my_leads_count
+            unassigned_leads = await db.leads.count_documents({"assigned_to": None})
         
-        # Add multi-assignment stats if requested
-        if include_multi_assignment_stats and user_role == "admin":
+        # Build response
+        response_data = {
+            "total_leads": total_leads,
+            "my_leads": my_leads,
+            "unassigned_leads": unassigned_leads,
+            "dnp_count": dnp_count,
+            "counseled_count": counseled_count,
+            "conversion_rate": conversion_rate,
+            "status_breakdown": status_breakdown,
+            "stage_breakdown": stage_breakdown
+        }
+        
+        # Add assignment stats for admins
+        if user_role == "admin" and include_multi_assignment_stats:
+            # Get workload distribution
+            workload_pipeline = [
+                {"$match": {"assigned_to": {"$ne": None}}},
+                {"$group": {"_id": "$assigned_to", "count": {"$sum": 1}}},
+                {"$sort": {"count": -1}}
+            ]
+            workload_result = await db.leads.aggregate(workload_pipeline).to_list(None)
+            
+            workload_distribution = {item["_id"]: item["count"] for item in workload_result}
+            
             multi_assigned_count = await db.leads.count_documents({"is_multi_assigned": True})
-            stats["multi_assigned_leads"] = multi_assigned_count
+            
+            # Calculate balance score (simple variance-based metric)
+            if workload_result:
+                counts = [item["count"] for item in workload_result]
+                avg_leads = sum(counts) / len(counts)
+                variance = sum((x - avg_leads) ** 2 for x in counts) / len(counts)
+                balance_score = max(0, 100 - (variance / avg_leads * 10)) if avg_leads > 0 else 100
+            else:
+                avg_leads = 0
+                balance_score = 100
+            
+            response_data["assignment_stats"] = {
+                "multi_assigned_leads": multi_assigned_count,
+                "workload_distribution": workload_distribution,
+                "average_leads_per_user": round(avg_leads, 1),
+                "assignment_balance_score": round(balance_score, 1)
+            }
         
-        return LeadStatsResponse(**stats)
-    
+        return LeadStatsResponse(**response_data)
+        
     except Exception as e:
         logger.error(f"Get lead stats error: {e}")
         raise HTTPException(

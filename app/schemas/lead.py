@@ -59,22 +59,22 @@ class LeadBulkAssignResponse(BaseModel):
     failed_leads: List[str] = []
 
 class LeadStatsResponse(BaseModel):
-    """Lead statistics response with dynamic statuses, stages, sources, and course levels"""
+    """Lead statistics response with dynamic breakdowns"""
     total_leads: int
     my_leads: int
     unassigned_leads: int
     
-    # ✅ UPDATED: Dynamic breakdowns instead of hardcoded fields
-    status_breakdown: Optional[Dict[str, int]] = None  # Dynamic status counts
-    stage_breakdown: Optional[Dict[str, int]] = None   # 🆕 NEW: Dynamic stage counts
-    source_breakdown: Optional[Dict[str, int]] = None  # 🆕 NEW: Dynamic source counts
-    course_level_breakdown: Optional[Dict[str, int]] = None  # 🆕 NEW: Dynamic course level counts
-    category_breakdown: Optional[Dict[str, int]] = None  # 🆕 NEW: Category breakdown
+    # Core metrics for dashboard cards
+    dnp_count: int
+    counseled_count: int
+    conversion_rate: float
     
-    # 🆕 NEW: Additional statistics
-    experience_breakdown: Optional[Dict[str, int]] = None  # Experience level counts
-    nationality_breakdown: Optional[Dict[str, int]] = None  # Top nationalities
-    age_group_breakdown: Optional[Dict[str, int]] = None  # Age group distribution
+    # Dynamic breakdowns for charts
+    status_breakdown: Optional[Dict[str, int]] = None
+    stage_breakdown: Optional[Dict[str, int]] = None
+    
+    # Assignment efficiency (admin only)
+    assignment_stats: Optional[Dict[str, Any]] = None
 
 # 🆕 NEW: Advanced Filter Models
 class AdvancedLeadFilterParams(BaseModel):
