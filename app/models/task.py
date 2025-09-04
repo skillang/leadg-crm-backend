@@ -72,6 +72,7 @@ class TaskResponse(TaskBase):
     """Task response model"""
     id: str
     lead_id: str
+    lead_name: str   
     status: TaskStatus
     assigned_to_name: Optional[str] = None
     created_by: str

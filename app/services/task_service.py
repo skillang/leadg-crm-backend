@@ -708,7 +708,6 @@ class TaskService:
             tasks_cursor = db.lead_tasks.find(query).sort("due_datetime", 1)
             tasks = await tasks_cursor.to_list(None)
             
-            # Convert ObjectIds to strings and add user names
             enriched_tasks = []
             for task in tasks:
                 task["id"] = str(task["_id"])
@@ -730,6 +729,36 @@ class TaskService:
                 except Exception as e:
                     task["created_by_name"] = "Unknown User"
                 
+                # Add assigned user name
+                if task.get("assigned_to"):
+                    try:
+                        assigned_user = await db.users.find_one({"_id": ObjectId(task["assigned_to"])})
+                        if assigned_user:
+                            first_name = assigned_user.get('first_name', '')
+                            last_name = assigned_user.get('last_name', '')
+                            if first_name and last_name:
+                                task["assigned_to_name"] = f"{first_name} {last_name}".strip()
+                            else:
+                                task["assigned_to_name"] = assigned_user.get('email', 'Unknown User')
+                        else:
+                            task["assigned_to_name"] = "Unassigned"
+                    except Exception as e:
+                        task["assigned_to_name"] = "Unassigned"
+                else:
+                    task["assigned_to_name"] = "Unassigned"
+                
+                # 🔥 NEW: Add lead name by looking up the lead
+                try:
+                    # Get lead by lead_id (string field in task)
+                    lead = await db.leads.find_one({"lead_id": task["lead_id"]})
+                    if lead:
+                        task["lead_name"] = lead.get("name", "Unknown Lead")
+                    else:
+                        task["lead_name"] = "Unknown Lead"
+                except Exception as e:
+                    logger.warning(f"Could not get lead name for task {task['id']}: {e}")
+                    task["lead_name"] = "Unknown Lead"
+                
                 # Add overdue status
                 if task.get("due_datetime") and task["status"] not in ["completed", "cancelled"]:
                     task["is_overdue"] = task["due_datetime"] < datetime.utcnow()
@@ -746,7 +775,7 @@ class TaskService:
         except Exception as e:
             logger.error(f"Error getting user tasks: {str(e)}")
             return {"tasks": [], "total": 0}
-    
+
     async def get_all_tasks(self, status_filter: Optional[str] = None) -> Dict[str, Any]:
         """Get ALL tasks from ALL users - Admin only function"""
         try:
@@ -815,6 +844,19 @@ class TaskService:
                         task["assigned_to_name"] = "Unassigned"
                 else:
                     task["assigned_to_name"] = "Unassigned"
+                
+                # 🔥 NEW: Add lead name by looking up the lead
+                try:
+                    # Get lead by lead_id (string field in task)
+                    lead = await db.leads.find_one({"lead_id": task["lead_id"]})
+                    if lead:
+                        task["lead_name"] = lead.get("name", "Unknown Lead")
+                    else:
+                        task["lead_name"] = "Unknown Lead"
+                        
+                except Exception as e:
+                    logger.warning(f"Could not get lead name for task {task['id']}: {e}")
+                    task["lead_name"] = "Unknown Lead"
                 
                 # Add overdue status
                 if task.get("due_datetime") and task["status"] not in ["completed", "cancelled"]:
