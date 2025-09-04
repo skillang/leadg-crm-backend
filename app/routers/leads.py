@@ -1411,8 +1411,8 @@ async def get_lead_stats(
         stage_breakdown = {item["_id"]: item["count"] for item in stage_result if item["_id"]}
         
         # Calculate core metrics
-        dnp_count = status_breakdown.get("DNP", 0)
-        counseled_count = status_breakdown.get("Counseled", 0)
+        dnp_count = status_breakdown.get("dnp", 0)
+        counseled_count = status_breakdown.get("counselled", 0)
         conversion_rate = round((counseled_count / total_leads * 100), 1) if total_leads > 0 else 0.0
         
         # Calculate my_leads and unassigned_leads
@@ -1447,21 +1447,50 @@ async def get_lead_stats(
         
         # Add assignment stats for admins
         if user_role == "admin" and include_multi_assignment_stats:
-            # Get workload distribution
+            # Get workload distribution with enhanced user details
             workload_pipeline = [
                 {"$match": {"assigned_to": {"$ne": None}}},
-                {"$group": {"_id": "$assigned_to", "count": {"$sum": 1}}},
-                {"$sort": {"count": -1}}
+                {"$group": {"_id": "$assigned_to", "total_leads": {"$sum": 1}}},
+                {"$sort": {"total_leads": -1}}
             ]
             workload_result = await db.leads.aggregate(workload_pipeline).to_list(None)
             
-            workload_distribution = {item["_id"]: item["count"] for item in workload_result}
+            # Enhanced workload distribution array
+            enhanced_workload = []
+            
+            for item in workload_result:
+                user_email = item["_id"]
+                total_leads = item["total_leads"]
+                
+                # Get user details
+                user = await db.users.find_one({"email": user_email})
+                user_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() if user else user_email.split('@')[0]
+                
+                # Get DNP count for this user from stage breakdown
+                dnp_count = await db.leads.count_documents({
+                    "assigned_to": user_email,
+                    "stage": "dnp"
+                })
+                
+                # Get Counselled count for this user from stage breakdown  
+                counselled_count = await db.leads.count_documents({
+                    "assigned_to": user_email,
+                    "stage": "counselled"
+                })
+                
+                enhanced_workload.append({
+                    "name": user_name,
+                    "email": user_email,
+                    "total_leads": total_leads,
+                    "dnp_count": dnp_count,
+                    "counselled_count": counselled_count
+                })
             
             multi_assigned_count = await db.leads.count_documents({"is_multi_assigned": True})
             
-            # Calculate balance score (simple variance-based metric)
+            # Calculate balance score
             if workload_result:
-                counts = [item["count"] for item in workload_result]
+                counts = [item["total_leads"] for item in workload_result]
                 avg_leads = sum(counts) / len(counts)
                 variance = sum((x - avg_leads) ** 2 for x in counts) / len(counts)
                 balance_score = max(0, 100 - (variance / avg_leads * 10)) if avg_leads > 0 else 100
@@ -1471,7 +1500,7 @@ async def get_lead_stats(
             
             response_data["assignment_stats"] = {
                 "multi_assigned_leads": multi_assigned_count,
-                "workload_distribution": workload_distribution,
+                "workload_distribution": enhanced_workload,
                 "average_leads_per_user": round(avg_leads, 1),
                 "assignment_balance_score": round(balance_score, 1)
             }
@@ -1484,6 +1513,7 @@ async def get_lead_stats(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve lead statistics"
         )
+
 
 @router.get("/{lead_id}")
 @convert_lead_dates()

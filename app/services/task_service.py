@@ -476,8 +476,6 @@ class TaskService:
             logger.error(f"Error updating task: {str(e)}")
             return False
 
-
-
     async def get_lead_tasks(self, lead_id: str, user_id: str, user_role: str, status_filter: Optional[str] = None) -> Dict[str, Any]:
         """Get all tasks for a lead - FIXED ACCESS CONTROL"""
         try:
@@ -749,6 +747,92 @@ class TaskService:
             logger.error(f"Error getting user tasks: {str(e)}")
             return {"tasks": [], "total": 0}
     
+    async def get_all_tasks(self, status_filter: Optional[str] = None) -> Dict[str, Any]:
+        """Get ALL tasks from ALL users - Admin only function"""
+        try:
+            db = get_database()
+            
+            # Build query for all tasks (no user filtering)
+            query = {}
+            
+            # Status filtering
+            if status_filter and status_filter != "all":
+                if status_filter == "overdue":
+                    query["status"] = "overdue"
+                elif status_filter == "due_today":
+                    today = date.today().isoformat()
+                    query["due_date"] = today
+                    query["status"] = {"$nin": ["completed", "cancelled"]}
+                elif status_filter == "pending":
+                    query["status"] = {"$in": ["pending", "in_progress"]}
+                else:
+                    query["status"] = status_filter
+            
+            logger.info(f"Admin query for all tasks: {query}")
+            
+            # Get ALL tasks sorted by creation date
+            tasks_cursor = db.lead_tasks.find(query).sort("created_at", -1)
+            tasks = await tasks_cursor.to_list(None)
+            
+            logger.info(f"Found {len(tasks)} total tasks across all users")
+            
+            # Enrich tasks with user names and lead info
+            enriched_tasks = []
+            for task in tasks:
+                task["id"] = str(task["_id"])
+                task["created_by"] = str(task["created_by"])
+                task["lead_object_id"] = str(task["lead_object_id"])
+                
+                # Get creator name
+                try:
+                    creator = await db.users.find_one({"_id": ObjectId(task["created_by"])})
+                    if creator:
+                        first_name = creator.get('first_name', '')
+                        last_name = creator.get('last_name', '')
+                        if first_name and last_name:
+                            task["created_by_name"] = f"{first_name} {last_name}".strip()
+                        else:
+                            task["created_by_name"] = creator.get('email', 'Unknown User')
+                    else:
+                        task["created_by_name"] = "Unknown User"
+                except Exception as e:
+                    task["created_by_name"] = "Unknown User"
+                
+                # Get assigned user name
+                if task.get("assigned_to"):
+                    try:
+                        assigned_user = await db.users.find_one({"_id": ObjectId(task["assigned_to"])})
+                        if assigned_user:
+                            first_name = assigned_user.get('first_name', '')
+                            last_name = assigned_user.get('last_name', '')
+                            if first_name and last_name:
+                                task["assigned_to_name"] = f"{first_name} {last_name}".strip()
+                            else:
+                                task["assigned_to_name"] = assigned_user.get('email', 'Unknown User')
+                        else:
+                            task["assigned_to_name"] = "Unassigned"
+                    except Exception as e:
+                        task["assigned_to_name"] = "Unassigned"
+                else:
+                    task["assigned_to_name"] = "Unassigned"
+                
+                # Add overdue status
+                if task.get("due_datetime") and task["status"] not in ["completed", "cancelled"]:
+                    task["is_overdue"] = task["due_datetime"] < datetime.utcnow()
+                else:
+                    task["is_overdue"] = False
+                
+                enriched_tasks.append(task)
+            
+            return {
+                "tasks": enriched_tasks,
+                "total": len(enriched_tasks)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting all tasks: {str(e)}")
+            return {"tasks": [], "total": 0}
+
     async def _calculate_task_stats(self, lead_id: str, user_id: str, user_role: str) -> Dict[str, int]:
         """Calculate task statistics for a lead - FIXED ACCESS CONTROL"""
         try:
@@ -812,6 +896,91 @@ class TaskService:
             
         except Exception as e:
             logger.error(f"Error calculating task stats: {str(e)}")
+            return {}
+
+    async def _calculate_global_task_stats(self, user_id: str, user_role: str, status_filter: Optional[str] = None) -> Dict[str, int]:
+        """Calculate task statistics globally - with user access control"""
+        try:
+            db = get_database()
+            
+            # Build base query based on user role
+            if user_role == "admin":
+                # Admins see ALL tasks from ALL leads
+                base_query = {}
+                logger.info("Admin accessing global task stats - no filtering")
+            else:
+                # Regular users only see tasks from leads they have access to
+                user_info = await db.users.find_one({"_id": ObjectId(user_id)})
+                if not user_info:
+                    return {}
+                
+                user_email = user_info.get("email", "")
+                
+                # Find all leads the user has access to
+                accessible_leads_cursor = db.leads.find({
+                    "$or": [
+                        {"assigned_to": user_email},
+                        {"co_assignees": user_email}
+                    ]
+                })
+                accessible_leads = await accessible_leads_cursor.to_list(None)
+                
+                if not accessible_leads:
+                    return {
+                        "total_tasks": 0, "pending_tasks": 0, "overdue_tasks": 0,
+                        "due_today": 0, "completed_tasks": 0
+                    }
+                
+                # Get all lead ObjectIds user has access to
+                accessible_lead_object_ids = [lead["_id"] for lead in accessible_leads]
+                
+                # Base query: only tasks from leads user has access to
+                base_query = {"lead_object_id": {"$in": accessible_lead_object_ids}}
+                logger.info(f"User {user_email} has access to {len(accessible_leads)} leads")
+            
+            # Add status filter if provided
+            if status_filter and status_filter != "all":
+                if status_filter == "overdue":
+                    base_query["status"] = "overdue"
+                elif status_filter == "due_today":
+                    today = date.today().isoformat()
+                    base_query["due_date"] = today
+                    base_query["status"] = {"$nin": ["completed", "cancelled"]}
+                elif status_filter == "pending":
+                    base_query["status"] = {"$in": ["pending", "in_progress"]}
+                else:
+                    base_query["status"] = status_filter
+            
+            # Calculate various stats
+            total_tasks = await db.lead_tasks.count_documents(base_query)
+            
+            pending_query = {**base_query, "status": {"$in": ["pending", "in_progress"]}}
+            pending_tasks = await db.lead_tasks.count_documents(pending_query)
+            
+            overdue_query = {**base_query, "status": "overdue"}
+            overdue_tasks = await db.lead_tasks.count_documents(overdue_query)
+            
+            today = date.today().isoformat()
+            due_today_query = {
+                **base_query,
+                "due_date": today,
+                "status": {"$nin": ["completed", "cancelled"]}
+            }
+            due_today = await db.lead_tasks.count_documents(due_today_query)
+            
+            completed_query = {**base_query, "status": "completed"}
+            completed_tasks = await db.lead_tasks.count_documents(completed_query)
+            
+            return {
+                "total_tasks": total_tasks,
+                "pending_tasks": pending_tasks,
+                "overdue_tasks": overdue_tasks,
+                "due_today": due_today,
+                "completed_tasks": completed_tasks
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating global task stats: {str(e)}")
             return {}
 
 # Global service instance

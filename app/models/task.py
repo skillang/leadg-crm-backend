@@ -8,6 +8,7 @@ class TaskType(str, Enum):
     CALL = "call"
     EMAIL = "email"
     MEETING = "meeting"
+    WHASTSAPP_FOLLOWUP = "whatsapp_followup"
     FOLLOW_UP = "follow_up"
     DOCUMENT_REVIEW = "document_review"
     REMINDER = "reminder"

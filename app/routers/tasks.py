@@ -418,7 +418,7 @@ async def delete_task(
             detail=f"Failed to delete task: {str(e)}"
         )
 
-@router.get("/my-tasks", response_model=TaskListResponse)
+@router.get("/tasks/my-tasks", response_model=TaskListResponse)
 @convert_task_dates()
 async def get_my_tasks(
     status_filter: Optional[str] = Query(None, description="Filter by status: pending, overdue, due_today, completed, all"),
@@ -426,9 +426,11 @@ async def get_my_tasks(
 ):
     """
     Get all tasks assigned to the current user across all leads
+    For admins: Returns ALL tasks from ALL users with global stats
+    For regular users: Returns only tasks assigned to them with their stats
     """
     try:
-        logger.info(f"Getting tasks for user {current_user.get('email')}")
+        logger.info(f"Getting tasks for user {current_user.get('email')} with role {current_user.get('role')}")
         
         user_id = current_user.get("user_id") or current_user.get("_id") or current_user.get("id")
         if not user_id:
@@ -437,15 +439,32 @@ async def get_my_tasks(
                 detail="User ID not found in authentication token"
             )
         
-        result = await task_service.get_user_tasks(
-            str(user_id),  # ✅ Convert to string
+        # Check if user is admin
+        if current_user.get("role") == "admin":
+            # For admins, get ALL tasks from ALL users
+            result = await task_service.get_all_tasks(status_filter)
+            logger.info(f"Admin {current_user.get('email')} retrieved {result['total']} total tasks")
+        else:
+            # For regular users, get only their assigned tasks
+            result = await task_service.get_user_tasks(
+                str(user_id),
+                status_filter
+            )
+            logger.info(f"User {current_user.get('email')} retrieved {result['total']} assigned tasks")
+        
+        # Use the same global stats method for both admin and users
+        # The method already has access control built-in
+        global_stats = await task_service._calculate_global_task_stats(
+            str(user_id), 
+            current_user.get("role"),
             status_filter
         )
         
         return TaskListResponse(
             tasks=result["tasks"],
-            total=result["total"],
-            stats={}  # Can add user-wide stats here if needed
+            # total=result["total"],
+            total=global_stats["total_tasks"],
+            stats=global_stats  # ✅ Using the existing global stats method
         )
         
     except HTTPException:
