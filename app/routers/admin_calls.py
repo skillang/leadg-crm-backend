@@ -18,6 +18,7 @@ from ..models.admin_dashboard import (
     ComprehensivePeakHoursResponse, PeakAnsweredHoursResponse, PeakMissedHoursResponse
 )
 from ..utils.dependencies import get_current_active_user
+from ..utils.tata_access_validator import validate_user_tata_access, get_empty_call_response
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -155,7 +156,7 @@ async def get_admin_call_dashboard(
             'limit': str(limit)
         }
         
-        # Convert legacy user_ids to agents parameter with role-based filtering
+                # Convert legacy user_ids to agents parameter with role-based filtering
         if user_ids and not agents:
             # Check if user_ids is "0" or "all" which means all users
             if user_ids in ["0", "all"] and user_role == "admin":
@@ -178,14 +179,39 @@ async def get_admin_call_dashboard(
                             tata_agent_id = mapping.get("tata_agent_id")
                             if tata_agent_id:
                                 tata_agent_ids.append(tata_agent_id)
-                            break
+                                break
+                
+                # 🔥 CRITICAL SECURITY FIX: Handle non-TATA users
+                if user_role != "admin" and not tata_agent_ids:
+                    # Non-TATA users should see NO call data
+                    logger.info(f"Non-TATA user {current_user.get('email')} has no call access")
+                    return {
+                        "success": True,
+                        "message": "Call data requires TATA integration",
+                        "total_calls": 0,
+                        "total_users": 0,
+                        "total_recordings": 0,
+                        "overall_success_rate": 0.0,
+                        "user_stats": [],
+                        "recent_calls": [],
+                        "top_performers": [],
+                        "date_range": f"{date_from} to {date_to}",
+                        "data_fetched_at": datetime.utcnow(),
+                        "access_level": "non_tata_user",
+                        "available_features": ["leads", "tasks", "contacts", "notes"],
+                        "restricted_features": ["calls", "analytics", "recordings"],
+                        "filters_applied": {
+                            "date_from": date_from,
+                            "date_to": date_to,
+                            "user_restriction": "no_call_access"
+                        }
+                    }
                 
                 if tata_agent_ids:
                     agents = ','.join(tata_agent_ids)
                     logger.info(f"Converted user IDs {user_ids} to TATA agent IDs: {agents}")
                 else:
                     logger.warning(f"No TATA agent IDs found for user IDs: {user_ids}")
-
         # Convert legacy call_status to call_type
         if call_status != "all" and not call_type:
             call_type = "c" if call_status == "answered" else "m"
@@ -441,6 +467,24 @@ async def get_recent_calls(
                         if tata_agent_id:
                             tata_agent_ids.append(tata_agent_id)
                         break
+
+            #  Handle non-TATA users
+            if user_role != "admin" and not tata_agent_ids:
+                # Non-TATA users should see NO call data
+                logger.info(f"Non-TATA user {current_user.get('email')} has no call access")
+                return {
+                    "success": True,
+                    "message": "Recent calls require TATA integration",
+                    "call_records": [],
+                    "total_count": 0,
+                    "limit": limit,
+                    "page": page,
+                    "user_role": user_role,
+                    "access_level": "non_tata_user",
+                    "date_range": f"{date_from} to {date_to}",
+                    "retrieved_at": datetime.utcnow()
+                }
+
             if tata_agent_ids:
                 tata_params['agents'] = ','.join(tata_agent_ids)
         
@@ -1383,6 +1427,36 @@ async def get_summary_statistics(
                 logger.info(f"Filtering summary stats for users: {user_list} -> agents: {agent_ids}")
             else:
                 logger.warning(f"No agent numbers found for user_ids: {user_list}")
+                
+                # 🔥 CRITICAL SECURITY FIX: Handle non-TATA users
+                if user_role != "admin":
+                    # Non-TATA users should see NO call data
+                    logger.info(f"Non-TATA user {current_user.get('email')} has no call access - returning empty stats")
+                    return {
+                        "success": True,
+                        "message": "Call statistics require TATA integration",
+                        "total_calls": 0,
+                        "total_answered": 0,
+                        "total_missed": 0,
+                        "success_rate": 0.0,
+                        "user_stats": [],
+                        "peak_hours": {"answered": [], "missed": []},
+                        "trends": {"trend": "no_data", "change_percent": 0.0},
+                        "performance_summary": {
+                            "total_users": 0,
+                            "avg_success_rate": 0.0,
+                            "total_talk_time": 0
+                        },
+                        "access_level": "non_tata_user",
+                        "date_range": f"{date_from} to {date_to}",
+                        "calculated_at": datetime.utcnow(),
+                        "filter_info": {
+                            "applied": True,
+                            "scope": "no_call_access",
+                            "user_restriction": "non_tata_user"
+                        }
+                    }
+                
                 filter_info = {
                     "applied": False,
                     "scope": "all_users" if user_role == "admin" else "current_user_only",

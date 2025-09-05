@@ -14,6 +14,7 @@ from ..models.call_log import (
     CallHistoryFilter, CallbackRequest, CallbackResponse,
     CallExportRequest, CallExportResponse
 )
+from ..utils.tata_access_validator import validate_user_tata_access, get_empty_call_response
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -478,17 +479,45 @@ async def get_call_analytics(
             start_date = end_date - timedelta(days=30)  # Default 30 days
         
         # Enhanced role-based filtering
+# Enhanced role-based filtering
         if user_role != "admin":
             # Non-admin users can only see their own data
             user_id = current_user_id
             team_id = None
             logger.info(f"Non-admin user {current_user.get('email')} restricted to own analytics data")
+            
+            # 🔥 CRITICAL SECURITY FIX: Check if user has TATA mapping
+            has_tata_mapping = False
+            for mapping in await get_user_tata_mappings():  # You'll need to implement this
+                if mapping.get("crm_user_id") == current_user_id:
+                    has_tata_mapping = True
+                    break
+            
+            if not has_tata_mapping:
+                logger.info(f"Non-TATA user {current_user.get('email')} has no call analytics access")
+                return CallAnalytics(
+                    total_calls=0,
+                    successful_calls=0,
+                    failed_calls=0,
+                    success_rate=0.0,
+                    average_call_duration=0.0,
+                    total_call_time=0,
+                    calls_by_outcome={},
+                    calls_by_status={},
+                    daily_call_trends=[],
+                    hourly_call_patterns={},
+                    user_performance=[],
+                    productivity_score=0,
+                    user_role=user_role,
+                    data_scope="no_call_access",
+                    filtered_user_id=current_user_id,
+                    access_level="non_tata_user",
+                    message="Call analytics require TATA integration"
+                )
         else:
             # Apply admin filters or default to requesting user if no filters specified
             user_id = apply_role_based_filter(current_user, user_id)
             logger.info(f"Admin {current_user.get('email')} fetching analytics - User: {user_id or 'all'}, Team: {team_id or 'all'}")
-        
-        logger.info(f"User {current_user['email']} fetching call analytics from {start_date} to {end_date} - Role: {user_role}")
         
         # Get analytics through service
         analytics = await call_log_service.get_call_analytics(
