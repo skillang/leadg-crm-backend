@@ -806,40 +806,67 @@ class TataCallService:
 
 
     async def _fetch_cdr_by_destination(self, destination_phone: str) -> Tuple[bool, Dict]:
-        """Fetch CDR data from Tata API with multiple 1-month queries"""
+        """
+        Fetch CDR data from Tata API using correct 'callerid' parameter
+        FIXED: Using /v1/call/records endpoint with callerid parameter instead of destination
+        """
         try:
-            # Query last 3 months in 1-month chunks
+            # Clean phone number (remove +91 prefix if present)
+            clean_phone = destination_phone
+            if clean_phone.startswith('+91'):
+                clean_phone = clean_phone[3:]
+            elif clean_phone.startswith('91'):
+                clean_phone = clean_phone[2:]
+            
+            # Query last 3 months in 1-month chunks to handle API date limit
             all_call_records = []
             end_date = datetime.now()
+            
+            # Get authentication token
+            token = await tata_auth_service.get_valid_token()
+            if not token:
+                return False, {"error": "No valid TATA authentication token"}
             
             # Query 3 separate months
             for month_offset in range(3):
                 month_end = end_date - timedelta(days=30 * month_offset)
                 month_start = month_end - timedelta(days=30)
                 
-                cdr_params = {
-                    "from_date": month_start.strftime("%Y-%m-%d 00:00:00"),
+                # Use the correct endpoint with callerid parameter
+                url = f"https://api-smartflo.tatateleservices.com/v1/call/records"
+                
+                params = {
+                    "callerid": clean_phone,  # FIXED: Use callerid instead of destination
+                    "from_date": month_start.strftime("%Y-%m-%d"),
                     "to_date": month_end.strftime("%Y-%m-%d 23:59:59"),
-                    "destination": destination_phone,
                     "page": "1",
                     "limit": "1000"
                 }
                 
-                logger.info(f"🔍 Fetching CDR data for {destination_phone} - Month {month_offset + 1}")
+                headers = {
+                    "accept": "application/json",
+                    "Authorization": token  # No "Bearer" prefix needed
+                }
                 
-                # Use existing Tata admin service
-                from ..services.tata_admin_service import TataAdminService
-                admin_service = TataAdminService()
+                logger.info(f"🔍 Fetching CDR data for callerid: {clean_phone} - Month {month_offset + 1}")
+                logger.info(f"URL: {url}")
+                logger.info(f"Params: {params}")
                 
-                tata_response = await admin_service.fetch_call_records_with_filters(params=cdr_params)
-                
-                if tata_response.get("success"):
-                    tata_data = tata_response.get("data", {})
-                    month_records = tata_data.get("results", [])
-                    all_call_records.extend(month_records)
-                    logger.info(f"📊 Found {len(month_records)} records for month {month_offset + 1}")
-                else:
-                    logger.warning(f"❌ Month {month_offset + 1} query failed: {tata_response.get('error')}")
+                try:
+                    import aiohttp
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(url, params=params, headers=headers) as response:
+                            if response.status == 200:
+                                response_data = await response.json()
+                                month_records = response_data.get("results", [])
+                                all_call_records.extend(month_records)
+                                logger.info(f"📊 Found {len(month_records)} records for month {month_offset + 1}")
+                            else:
+                                error_text = await response.text()
+                                logger.warning(f"❌ Month {month_offset + 1} query failed: HTTP {response.status} - {error_text}")
+                except Exception as e:
+                    logger.warning(f"❌ Month {month_offset + 1} query failed: {str(e)}")
+                    continue
             
             # Find most recent call date from all records
             last_call_date = None
@@ -854,7 +881,7 @@ class TataCallService:
                         except:
                             pass
             
-            logger.info(f"📊 Total found {len(all_call_records)} call records across 3 months for {destination_phone}")
+            logger.info(f"📊 Total found {len(all_call_records)} call records across 3 months for callerid: {clean_phone}")
             
             return True, {
                 "calls": all_call_records,
@@ -868,7 +895,10 @@ class TataCallService:
 
 
     async def _count_calls_by_user(self, call_records: List[Dict]) -> Dict[str, Dict[str, int]]:
-        """Count calls by user from CDR records"""
+        """
+        Count calls by user from CDR records
+        FIXED: Handle null agent numbers and missing user emails
+        """
         try:
             db = self._get_db()
             if db is None:
@@ -888,22 +918,46 @@ class TataCallService:
                     
                     user_mappings[clean_phone] = {
                         "user_id": mapping.get("crm_user_id"),
-                        "user_email": mapping.get("crm_user_email")
+                        "user_email": mapping.get("crm_user_email") or "unknown"  # Handle null email
                     }
+            
+            logger.info(f"📋 User mappings loaded: {list(user_mappings.keys())}")
             
             # Count calls by user
             user_call_counts = {}
             
             for call_record in call_records:
-                agent_number = call_record.get("agent_number", "")
+                agent_number = call_record.get("agent_number")
                 call_status = call_record.get("status", "").lower()
+                agent_name = call_record.get("agent_name", "Unknown")
                 
-                # Find user for this agent
-                user_info = user_mappings.get(agent_number)
+                # FIXED: Skip records with null agent_number
+                if not agent_number:
+                    logger.warning(f"⚠️ Skipping call record with null agent_number: {agent_name}, Status: {call_status}")
+                    continue
+                
+                logger.info(f"🔍 Processing call: Agent {agent_number} ({agent_name}), Status: {call_status}")
+                
+                # FIXED: Clean the agent number from call record for matching
+                clean_agent_number = agent_number
+                if clean_agent_number.startswith('+91'):
+                    clean_agent_number = clean_agent_number[3:]
+                elif clean_agent_number.startswith('91'):
+                    clean_agent_number = clean_agent_number[2:]
+                
+                logger.info(f"🧹 Cleaned agent number: {agent_number} → {clean_agent_number}")
+                
+                # Find user for this agent using cleaned number
+                user_info = user_mappings.get(clean_agent_number)
+                
                 if not user_info or not user_info.get("user_id"):
+                    logger.warning(f"❌ No user mapping found for cleaned agent number: {clean_agent_number}")
                     continue
                 
                 user_id = user_info["user_id"]
+                user_email = user_info.get("user_email", "unknown")
+                
+                logger.info(f"✅ Found user mapping: {clean_agent_number} → {user_email} (ID: {user_id})")
                 
                 # Initialize user counts if not exists
                 if user_id not in user_call_counts:
@@ -914,10 +968,12 @@ class TataCallService:
                 
                 if call_status == "answered":
                     user_call_counts[user_id]["answered"] += 1
+                    logger.info(f"📞 Counted ANSWERED call for {user_email}")
                 else:
                     user_call_counts[user_id]["missed"] += 1
+                    logger.info(f"📵 Counted MISSED call for {user_email}")
             
-            logger.info(f"📈 Call counts by user: {user_call_counts}")
+            logger.info(f"📈 Final call counts by user: {user_call_counts}")
             return user_call_counts
             
         except Exception as e:
@@ -1018,5 +1074,81 @@ class TataCallService:
             
         except Exception as e:
             logger.error(f"Error in bulk refresh: {str(e)}")
+            return {"success": False, "error": str(e)}
+    async def fix_user_mappings_with_phone_numbers(self) -> Dict[str, Any]:
+        """
+        One-time fix to update existing user mappings with actual phone numbers
+        This maps Agent IDs to actual phone numbers from Tata API
+        """
+        try:
+            db = self._get_db()
+            if db is None:
+                return {"success": False, "error": "Database not available"}
+            
+            # Get all existing mappings that have agent_id but missing tata_phone
+            mappings_to_fix = []
+            async for mapping in db.tata_user_mappings.find({
+                "tata_agent_id": {"$exists": True},
+                "$or": [
+                    {"tata_phone": {"$exists": False}},
+                    {"tata_phone": None},
+                    {"tata_phone": ""}
+                ]
+            }):
+                mappings_to_fix.append(mapping)
+            
+            logger.info(f"Found {len(mappings_to_fix)} mappings that need phone number updates")
+            
+            if not mappings_to_fix:
+                return {"success": True, "message": "All mappings already have phone numbers"}
+            
+            # Known agent mappings based on your call records
+            # You'll need to expand this based on your actual data
+            agent_id_to_phone = {
+                "0506197500005": "+916380480960",  # HariHaran
+                # Add other mappings as you discover them
+            }
+            
+            updated_count = 0
+            failed_count = 0
+            
+            for mapping in mappings_to_fix:
+                try:
+                    agent_id = mapping.get("tata_agent_id")
+                    crm_user_email = mapping.get("crm_user_email", "unknown")
+                    
+                    # Try to get phone number from known mappings
+                    phone_number = agent_id_to_phone.get(agent_id)
+                    
+                    if phone_number:
+                        # Update the mapping with phone number
+                        await db.tata_user_mappings.update_one(
+                            {"_id": mapping["_id"]},
+                            {"$set": {
+                                "tata_phone": phone_number,
+                                "updated_at": datetime.utcnow(),
+                                "last_phone_update": datetime.utcnow()
+                            }}
+                        )
+                        updated_count += 1
+                        logger.info(f"✅ Updated {crm_user_email}: Agent ID {agent_id} → Phone {phone_number}")
+                    else:
+                        failed_count += 1
+                        logger.warning(f"❌ No phone mapping found for {crm_user_email}: Agent ID {agent_id}")
+                        
+                except Exception as e:
+                    failed_count += 1
+                    logger.error(f"Error updating mapping {mapping.get('_id')}: {str(e)}")
+            
+            return {
+                "success": True,
+                "message": f"Updated {updated_count} mappings, {failed_count} failed",
+                "updated_count": updated_count,
+                "failed_count": failed_count,
+                "total_processed": len(mappings_to_fix)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error fixing user mappings: {str(e)}")
             return {"success": False, "error": str(e)}
 tata_call_service = TataCallService()
