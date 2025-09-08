@@ -5,6 +5,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta, date
 import logging
 from bson import ObjectId
+from ..services.tata_call_service import tata_call_service
 from app.decorators.timezone_decorator import convert_lead_dates, convert_dates_to_ist
 from ..services.user_lead_array_service import user_lead_array_service
 from ..services.lead_assignment_service import lead_assignment_service
@@ -39,6 +40,10 @@ from ..models.lead import (
     LeadResponseExtended,
     UserSelectionResponse,
     UserSelectionOption,
+    CallCountRefreshRequest,
+    CallCountRefreshResponse,
+    BulkCallCountRefreshRequest,
+    BulkCallCountRefreshResponse
 )
 
 # Check if these exist - if not, comment them out
@@ -2591,4 +2596,251 @@ async def get_experience_levels():
         raise HTTPException(
             status_code=500,
             detail="Failed to fetch experience levels"
+        )
+    
+
+@router.post("/{lead_id}/refresh-call-count", response_model=CallCountRefreshResponse)
+async def refresh_lead_call_count(
+    lead_id: str,
+    force_refresh: bool = Query(False, description="Force refresh even if recently updated"),
+    current_user: Dict[str, Any] = Depends(get_current_active_user)
+):
+    """
+    Refresh call count for a specific lead
+    - Users can refresh leads assigned to them
+    - Admins can refresh any lead
+    """
+    try:
+        db = get_database()
+        user_role = current_user.get("role", "user")
+        user_email = current_user.get("email")
+        
+        # Check permissions
+        if user_role != "admin":
+            # Users can only refresh leads assigned to them (primary or co-assignee)
+            lead = await db.leads.find_one({
+                "lead_id": lead_id,
+                "$or": [
+                    {"assigned_to": user_email},
+                    {"co_assignees": user_email}
+                ]
+            })
+            if not lead:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Lead not found or you don't have permission to refresh it"
+                )
+        else:
+            # Admin check - just verify lead exists
+            lead = await db.leads.find_one({"lead_id": lead_id})
+            if not lead:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Lead not found"
+                )
+        
+        logger.info(f"Manual call count refresh requested for lead {lead_id} by {user_email}")
+        
+        # Use the call service to refresh
+        result = await tata_call_service.refresh_lead_call_count(
+            lead_id=lead_id,
+            force_refresh=force_refresh
+        )
+        
+        if result.get("success"):
+            return CallCountRefreshResponse(
+                success=True,
+                message=result.get("message", "Call count refreshed successfully"),
+                lead_id=lead_id,
+                call_stats=result.get("call_stats"),
+                refresh_time=datetime.utcnow()
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=result.get("error", "Failed to refresh call count")
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error refreshing call count for lead {lead_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to refresh call count: {str(e)}"
+        )
+
+@router.post("/bulk-refresh-call-counts", response_model=BulkCallCountRefreshResponse)
+async def bulk_refresh_call_counts(
+    request: BulkCallCountRefreshRequest,
+    current_user: Dict[str, Any] = Depends(get_admin_user)  # Admin only for bulk operations
+):
+    """
+    Bulk refresh call counts for multiple leads (Admin only)
+    - Can refresh specific leads by ID
+    - Can refresh all leads assigned to a user
+    - Can refresh all leads if no filters specified
+    """
+    try:
+        admin_email = current_user.get("email")
+        logger.info(f"Bulk call count refresh requested by admin: {admin_email}")
+        
+        # Use the call service for bulk refresh
+        result = await tata_call_service.bulk_refresh_call_counts(
+            lead_ids=request.lead_ids,
+            assigned_to_user=request.assigned_to_user,
+            force_refresh=request.force_refresh,
+            batch_size=request.batch_size
+        )
+        
+        if result.get("success"):
+            return BulkCallCountRefreshResponse(
+                success=True,
+                message=result.get("message", "Bulk refresh completed"),
+                total_leads=result.get("total_leads", 0),
+                successful_refreshes=result.get("successful_refreshes", 0),
+                failed_refreshes=result.get("failed_refreshes", 0),
+                processing_time=result.get("processing_time", 0),
+                failed_lead_ids=result.get("failed_lead_ids", []),
+                refresh_time=datetime.utcnow()
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=result.get("error", "Bulk refresh failed")
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in bulk call count refresh: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to bulk refresh call counts: {str(e)}"
+        )
+
+@router.get("/{lead_id}/call-stats")
+async def get_lead_call_stats(
+    lead_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_active_user)
+):
+    """
+    Get call statistics for a specific lead
+    - Shows total calls, answered calls, missed calls
+    - Shows per-user breakdown
+    - Users can view stats for leads assigned to them
+    """
+    try:
+        db = get_database()
+        user_role = current_user.get("role", "user")
+        user_email = current_user.get("email")
+        
+        # Check permissions
+        query = {"lead_id": lead_id}
+        if user_role != "admin":
+            query["$or"] = [
+                {"assigned_to": user_email},
+                {"co_assignees": user_email}
+            ]
+        
+        lead = await db.leads.find_one(query)
+        if not lead:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Lead not found or you don't have permission to view it"
+            )
+        
+        call_stats = lead.get("call_stats")
+        
+        if not call_stats:
+            return {
+                "success": True,
+                "lead_id": lead_id,
+                "call_stats": None,
+                "message": "No call statistics available. Click 'Refresh' to fetch call data.",
+                "has_phone_number": bool(lead.get("contact_number") or lead.get("phone_number"))
+            }
+        
+        # If user is not admin, filter user_calls to show only their own stats
+        if user_role != "admin" and call_stats.get("user_calls"):
+            current_user_id = str(current_user.get("_id") or current_user.get("user_id", ""))
+            if current_user_id in call_stats["user_calls"]:
+                user_specific_stats = {
+                    **call_stats,
+                    "user_calls": {current_user_id: call_stats["user_calls"][current_user_id]},
+                    "your_calls": call_stats["user_calls"][current_user_id]
+                }
+            else:
+                user_specific_stats = {
+                    **call_stats,
+                    "user_calls": {},
+                    "your_calls": {"total": 0, "answered": 0, "missed": 0}
+                }
+            call_stats = user_specific_stats
+        
+        return {
+            "success": True,
+            "lead_id": lead_id,
+            "call_stats": call_stats,
+            "last_updated": call_stats.get("last_updated"),
+            "phone_tracked": call_stats.get("phone_tracked")
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting call stats for lead {lead_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get call statistics: {str(e)}"
+        )
+
+@router.post("/admin/migrate-historical-calls")
+async def migrate_historical_call_data(
+    batch_size: int = Query(50, ge=1, le=200, description="Number of leads to process at once"),
+    current_user: Dict[str, Any] = Depends(get_admin_user)
+):
+    """
+    One-time migration to populate call stats for existing leads (Admin only)
+    This endpoint is for migrating historical data for leads that already have call history
+    """
+    try:
+        admin_email = current_user.get("email")
+        logger.info(f"Historical call data migration requested by admin: {admin_email}")
+        
+        # Run bulk refresh for ALL leads with force_refresh=True
+        result = await tata_call_service.bulk_refresh_call_counts(
+            lead_ids=None,  # All leads
+            assigned_to_user=None,  # All users
+            force_refresh=True,  # Force refresh even if recently updated
+            batch_size=batch_size
+        )
+        
+        if result.get("success"):
+            return {
+                "success": True,
+                "message": "Historical call data migration completed",
+                "migration_summary": {
+                    "total_leads_processed": result.get("total_leads", 0),
+                    "successful_migrations": result.get("successful_refreshes", 0),
+                    "failed_migrations": result.get("failed_refreshes", 0),
+                    "processing_time_seconds": result.get("processing_time", 0),
+                    "failed_lead_ids": result.get("failed_lead_ids", [])
+                },
+                "next_steps": "Call statistics are now available for all leads. Users can view counts in lead details.",
+                "note": "This was a one-time migration. Future calls will automatically update counts."
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=result.get("error", "Migration failed")
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in historical call data migration: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to migrate historical call data: {str(e)}"
         )

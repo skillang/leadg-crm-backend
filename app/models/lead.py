@@ -1,4 +1,4 @@
-# app/models/lead.py - Updated with dynamic stages, statuses, course levels, sources, new assignment features, and WhatsApp integration
+# app/models/lead.py - Updated with dynamic stages, statuses, course levels, sources, new assignment features, WhatsApp integration, and Call Stats
 
 from pydantic import BaseModel, Field, validator, EmailStr
 from typing import Optional, List, Dict, Any
@@ -85,7 +85,7 @@ async def get_default_status() -> str:
     except:
         return "New"
 
-# 🆕 NEW: Dynamic Course Level Functions
+# NEW: Dynamic Course Level Functions
 async def get_default_course_level() -> str:
     """Get the default course level for new leads"""
     try:
@@ -125,7 +125,7 @@ async def validate_course_level_exists(course_level: str) -> bool:
     except:
         return True  # Fallback - if validation fails, allow the course level
 
-# 🆕 NEW: Dynamic Source Functions
+# NEW: Dynamic Source Functions
 async def get_default_source() -> str:
     """Get the default source for new leads"""
     try:
@@ -180,6 +180,39 @@ class ExperienceLevel(str, Enum):
     MORE_THAN_TEN_YEARS = "more_than_10_years"
 
 # ============================================================================
+# NEW: CALL STATS MODEL
+# ============================================================================
+
+class CallStatsModel(BaseModel):
+    """Call statistics tracking model"""
+    total_calls: int = Field(default=0, description="Total calls made to this lead")
+    answered_calls: int = Field(default=0, description="Number of answered calls")
+    missed_calls: int = Field(default=0, description="Number of missed/unanswered calls")
+    last_call_date: Optional[datetime] = Field(None, description="Date of last call")
+    user_calls: Dict[str, Dict[str, int]] = Field(
+        default_factory=dict, 
+        description="Call counts per user: {user_id: {total: 3, answered: 2, missed: 1}}"
+    )
+    last_updated: Optional[datetime] = Field(None, description="When call stats were last refreshed")
+    phone_tracked: Optional[str] = Field(None, description="Phone number being tracked for calls")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "total_calls": 5,
+                "answered_calls": 3,
+                "missed_calls": 2,
+                "last_call_date": "2025-09-08T14:30:00Z",
+                "user_calls": {
+                    "user_id_1": {"total": 3, "answered": 2, "missed": 1},
+                    "user_id_2": {"total": 2, "answered": 1, "missed": 1}
+                },
+                "last_updated": "2025-09-08T14:35:00Z",
+                "phone_tracked": "+919876543210"
+            }
+        }
+
+# ============================================================================
 # BASIC LEAD MODELS (UPDATED FOR DYNAMIC FIELDS)
 # ============================================================================
 
@@ -188,7 +221,7 @@ class LeadBasicInfo(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     email: EmailStr = Field(...)
     contact_number: str = Field(..., min_length=10, max_length=20)
-    source: str = Field(default="website", description="Lead source (dynamic)")  # 🔄 CHANGED: str instead of enum
+    source: str = Field(default="website", description="Lead source (dynamic)")
     category: str = Field(..., min_length=1, description="Lead category (required)")
     
     # Optional additional fields
@@ -196,8 +229,11 @@ class LeadBasicInfo(BaseModel):
     experience: Optional[ExperienceLevel] = Field(None, description="Work experience level")
     nationality: Optional[str] = Field(None, max_length=100, description="Nationality of the lead")
     current_location: Optional[str] = Field(None, max_length=150, description="Current location of the lead")
-    course_level: Optional[str] = Field(None, description="Course level (dynamic)")  # 🔄 CHANGED: str instead of enum
+    course_level: Optional[str] = Field(None, description="Course level (dynamic)")
     date_of_birth: Optional[datetime] = Field(None, description="Date of birth (YYYY-MM-DD format)")
+    
+    # NEW: Call stats field
+    call_stats: Optional[CallStatsModel] = Field(default=None, description="Call statistics for this lead")
     
     @validator('category')
     def validate_category(cls, v):
@@ -232,8 +268,7 @@ class LeadBasicInfo(BaseModel):
             return None  # Optional field
         return v.strip().lower().replace(' ', '_')
     
-
-    # 🆕 NEW: Add validator for date_of_birth
+    # NEW: Add validator for date_of_birth
     @validator('date_of_birth', pre=True)
     def parse_date_of_birth(cls, v):
         """Parse date_of_birth from string to datetime"""
@@ -379,7 +414,7 @@ class LeadCreateComprehensive(BaseModel):
         }
 
 # ============================================================================
-# 🆕 NEW: SELECTIVE ROUND ROBIN & MULTI-ASSIGNMENT MODELS
+# NEW: SELECTIVE ROUND ROBIN & MULTI-ASSIGNMENT MODELS
 # ============================================================================
 
 class SelectiveRoundRobinRequest(BaseModel):
@@ -504,7 +539,7 @@ class BulkAssignmentRequest(BaseModel):
         }
 
 # ============================================================================
-# 🆕 NEW: RESPONSE MODELS
+# NEW: RESPONSE MODELS
 # ============================================================================
 
 class MultiUserAssignmentResponse(BaseModel):
@@ -575,7 +610,7 @@ class SelectiveRoundRobinResponse(BaseModel):
         }
 
 # ============================================================================
-# 🆕 NEW: EXTENDED LEAD RESPONSE WITH MULTI-ASSIGNMENT INFO + WHATSAPP
+# NEW: EXTENDED LEAD RESPONSE WITH MULTI-ASSIGNMENT INFO + WHATSAPP
 # ============================================================================
 
 class LeadResponseExtended(BaseModel):
@@ -585,7 +620,7 @@ class LeadResponseExtended(BaseModel):
     name: str
     email: str
     contact_number: Optional[str]
-    source: Optional[str]  # 🔄 CHANGED: str instead of enum
+    source: Optional[str]
     category: Optional[str]
     
     # Single assignment fields (backward compatibility)
@@ -606,11 +641,14 @@ class LeadResponseExtended(BaseModel):
     all_assignees: List[str] = Field(default_factory=list, description="All users assigned to this lead")
     all_assignees_names: List[str] = Field(default_factory=list, description="Names of all assignees")
     
-    # 🆕 NEW: WhatsApp Activity Fields
+    # NEW: WhatsApp Activity Fields
     last_whatsapp_activity: Optional[datetime] = Field(None, description="Last WhatsApp interaction timestamp")
     last_whatsapp_message: Optional[str] = Field(None, description="Preview of last WhatsApp message")
     whatsapp_message_count: int = Field(default=0, description="Total WhatsApp messages for this lead")
     unread_whatsapp_count: int = Field(default=0, description="Unread WhatsApp messages count")
+    
+    # NEW: Call Stats Field
+    call_stats: Optional[CallStatsModel] = Field(default=None, description="Call statistics for this lead")
     
     def __init__(self, **data):
         super().__init__(**data)
@@ -656,7 +694,7 @@ class LeadResponseExtended(BaseModel):
         }
 
 # ============================================================================
-# 🆕 NEW: USER SELECTION MODELS
+# NEW: USER SELECTION MODELS
 # ============================================================================
 
 class UserSelectionOption(BaseModel):
@@ -707,12 +745,12 @@ class UserSelectionResponse(BaseModel):
         }
 
 # ============================================================================
-# LEGACY MODELS FOR BACKWARD COMPATIBILITY (UPDATED FOR DYNAMIC FIELDS + WHATSAPP)
+# LEGACY MODELS FOR BACKWARD COMPATIBILITY (UPDATED FOR DYNAMIC FIELDS + WHATSAPP + CALL STATS)
 # ============================================================================
 
 # Lead Response Model - UPDATED
 class LeadResponseComprehensive(BaseModel):
-    """Comprehensive lead response model with WhatsApp tracking"""
+    """Comprehensive lead response model with WhatsApp tracking and Call Stats"""
     # System Info
     id: str
     lead_id: str
@@ -727,13 +765,13 @@ class LeadResponseComprehensive(BaseModel):
     name: str
     email: str
     contact_number: str
-    source: str  # 🔄 CHANGED: str instead of LeadSource enum
+    source: str
     category: str
     age: Optional[int] = None
     experience: Optional[ExperienceLevel] = None
     nationality: Optional[str] = None
-    current_location: Optional[str] = None  # 🆕 NEW: Added current_location field
-    date_of_birth: Optional[datetime] = None  # 🆕 NEW
+    current_location: Optional[str] = None
+    date_of_birth: Optional[datetime] = None
     
     # Status & Tags
     stage: str
@@ -756,47 +794,53 @@ class LeadResponseComprehensive(BaseModel):
     # Legacy fields for backward compatibility
     phone_number: Optional[str] = None
     country_of_interest: Optional[str] = None
-    course_level: Optional[str] = None  # 🔄 CHANGED: str instead of CourseLevel enum
+    course_level: Optional[str] = None
     
-    # 🆕 NEW: WhatsApp Activity Fields
+    # NEW: WhatsApp Activity Fields
     last_whatsapp_activity: Optional[datetime] = Field(None, description="Last WhatsApp interaction timestamp")
     last_whatsapp_message: Optional[str] = Field(None, description="Preview of last WhatsApp message")
     whatsapp_message_count: int = Field(default=0, description="Total WhatsApp messages for this lead")
     unread_whatsapp_count: int = Field(default=0, description="Unread WhatsApp messages count")
+    
+    # NEW: Call Stats Field
+    call_stats: Optional[CallStatsModel] = Field(default=None, description="Call statistics for this lead")
 
 # Legacy models for backward compatibility - UPDATED
 class LeadCreate(LeadBasicInfo):
     """Legacy lead creation model for backward compatibility"""
     assigned_to: Optional[str] = None
     country_of_interest: Optional[str] = None
-    course_level: Optional[str] = None  # 🔄 CHANGED: str instead of enum
-    source: Optional[str] = "website"   # 🔄 CHANGED: str instead of enum
+    course_level: Optional[str] = None
+    source: Optional[str] = "website"
     tags: Optional[List[str]] = Field(default_factory=list)
     notes: Optional[str] = None
     # Include all new fields in legacy model too
     age: Optional[int] = Field(None, ge=16, le=100)
     experience: Optional[ExperienceLevel] = None
     nationality: Optional[str] = Field(None, max_length=100)
-    current_location: Optional[str] = Field(None, max_length=150)  # 🆕 NEW: Added current_location field
+    current_location: Optional[str] = Field(None, max_length=150)
     date_of_birth: Optional[datetime] = Field(None, description="Date of birth (YYYY-MM-DD format)")
     
-    # 🆕 NEW: WhatsApp fields (for completeness, but will be auto-initialized)
+    # NEW: WhatsApp fields (for completeness, but will be auto-initialized)
     last_whatsapp_activity: Optional[datetime] = None
     last_whatsapp_message: Optional[str] = None
     whatsapp_message_count: int = 0
     unread_whatsapp_count: int = 0
+    
+    # NEW: Call Stats Field
+    call_stats: Optional[CallStatsModel] = Field(default=None, description="Call statistics for this lead")
 
 class LeadUpdate(BaseModel):
-    """Legacy lead update model - UPDATED with WhatsApp fields"""
+    """Legacy lead update model - UPDATED with WhatsApp fields and Call Stats"""
     name: Optional[str] = Field(None, min_length=1, max_length=100)
     email: Optional[EmailStr] = None
     phone_number: Optional[str] = Field(None, min_length=10, max_length=20)
     contact_number: Optional[str] = Field(None, min_length=10, max_length=20)
     country_of_interest: Optional[str] = Field(None, max_length=200)
-    course_level: Optional[str] = None  # 🔄 CHANGED: str instead of enum
-    source: Optional[str] = None        # 🔄 CHANGED: str instead of enum
+    course_level: Optional[str] = None
+    source: Optional[str] = None
     status: Optional[str] = None
-    stage: Optional[str] = None         # 🆕 NEW: Dynamic stage
+    stage: Optional[str] = None
     lead_score: Optional[int] = Field(None, ge=0, le=100)
     priority: Optional[str] = None
     tags: Optional[List[str]] = None
@@ -806,14 +850,17 @@ class LeadUpdate(BaseModel):
     age: Optional[int] = Field(None, ge=16, le=100)
     experience: Optional[ExperienceLevel] = None
     nationality: Optional[str] = Field(None, max_length=100)
-    current_location: Optional[str] = Field(None, max_length=150)  # 🆕 NEW: Added current_location field
+    current_location: Optional[str] = Field(None, max_length=150)
     date_of_birth: Optional[datetime] = Field(None, description="Date of birth")
     
-    # 🆕 NEW: WhatsApp fields (usually managed by system, but can be updated manually)
+    # NEW: WhatsApp fields (usually managed by system, but can be updated manually)
     last_whatsapp_activity: Optional[datetime] = None
     last_whatsapp_message: Optional[str] = Field(None, max_length=500)
     whatsapp_message_count: Optional[int] = Field(None, ge=0)
     unread_whatsapp_count: Optional[int] = Field(None, ge=0)
+    
+    # NEW: Call Stats Field
+    call_stats: Optional[CallStatsModel] = Field(default=None, description="Call statistics for this lead")
 
 class LeadAssign(BaseModel):
     """Lead assignment/reassignment model"""
@@ -821,7 +868,7 @@ class LeadAssign(BaseModel):
     notes: Optional[str] = Field(None, max_length=500, description="Reason for assignment/reassignment")
 
 class LeadResponse(BaseModel):
-    """Legacy lead response model - UPDATED with WhatsApp fields"""
+    """Legacy lead response model - UPDATED with WhatsApp fields and Call Stats"""
     id: str
     lead_id: str
     name: str
@@ -835,21 +882,24 @@ class LeadResponse(BaseModel):
     created_by_name: str
     created_at: datetime
     updated_at: datetime
-    source: str  # 🔄 CHANGED: str instead of LeadSource enum
+    source: str
     category: str
     # Add all new fields to response
     age: Optional[int] = None
     experience: Optional[ExperienceLevel] = None
     nationality: Optional[str] = None
     date_of_birth: Optional[str] = None
-    current_location: Optional[str] = None  # 🆕 NEW: Added current_location field
-    course_level: Optional[str] = None  # 🔄 CHANGED: str instead of enum
+    current_location: Optional[str] = None
+    course_level: Optional[str] = None
     
-    # 🆕 NEW: WhatsApp Activity Fields
+    # NEW: WhatsApp Activity Fields
     last_whatsapp_activity: Optional[datetime] = None
     last_whatsapp_message: Optional[str] = None
     whatsapp_message_count: int = 0
     unread_whatsapp_count: int = 0
+    
+    # NEW: Call Stats Field
+    call_stats: Optional[CallStatsModel] = Field(default=None, description="Call statistics for this lead")
 
 class LeadListResponse(BaseModel):
     """Lead list response model"""
@@ -896,7 +946,7 @@ class DuplicateCheckResult(BaseModel):
     message: Optional[str] = None
 
 # ============================================================================
-# 🆕 NEW: WHATSAPP-SPECIFIC LEAD UPDATE MODELS
+# NEW: WHATSAPP-SPECIFIC LEAD UPDATE MODELS
 # ============================================================================
 
 class LeadWhatsAppActivityUpdate(BaseModel):
@@ -945,5 +995,90 @@ class LeadWhatsAppSummary(BaseModel):
                 "whatsapp_message_count": 5,
                 "unread_whatsapp_count": 2,
                 "has_whatsapp_activity": True
+            }
+        }
+
+# ============================================================================
+# NEW: CALL COUNT REFRESH MODELS
+# ============================================================================
+
+class CallCountRefreshRequest(BaseModel):
+    """Request model for manual call count refresh"""
+    lead_id: str = Field(..., description="Lead ID to refresh call count for")
+    force_refresh: bool = Field(default=False, description="Force refresh even if recently updated")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "lead_id": "LD-1000",
+                "force_refresh": False
+            }
+        }
+
+class CallCountRefreshResponse(BaseModel):
+    """Response model for call count refresh"""
+    success: bool = Field(..., description="Refresh success status")
+    message: str = Field(..., description="Response message")
+    lead_id: str = Field(..., description="Lead ID that was refreshed")
+    call_stats: Optional[CallStatsModel] = Field(None, description="Updated call statistics")
+    refresh_time: datetime = Field(default_factory=datetime.utcnow, description="When refresh was performed")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "message": "Call count refreshed successfully",
+                "lead_id": "LD-1000",
+                "call_stats": {
+                    "total_calls": 5,
+                    "answered_calls": 3,
+                    "missed_calls": 2,
+                    "user_calls": {
+                        "user_id_1": {"total": 3, "answered": 2, "missed": 1}
+                    }
+                },
+                "refresh_time": "2025-09-08T14:35:00Z"
+            }
+        }
+
+class BulkCallCountRefreshRequest(BaseModel):
+    """Request model for bulk call count refresh"""
+    lead_ids: Optional[List[str]] = Field(None, description="Specific lead IDs to refresh (empty = all leads)")
+    assigned_to_user: Optional[str] = Field(None, description="Refresh only leads assigned to this user")
+    force_refresh: bool = Field(default=False, description="Force refresh even if recently updated")
+    batch_size: int = Field(default=50, ge=1, le=200, description="Number of leads to process at once")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "lead_ids": ["LD-1000", "LD-1001", "LD-1002"],
+                "assigned_to_user": None,
+                "force_refresh": False,
+                "batch_size": 50
+            }
+        }
+
+class BulkCallCountRefreshResponse(BaseModel):
+    """Response model for bulk call count refresh"""
+    success: bool = Field(..., description="Overall success status")
+    message: str = Field(..., description="Response message")
+    total_leads: int = Field(..., description="Total leads processed")
+    successful_refreshes: int = Field(..., description="Number of successful refreshes")
+    failed_refreshes: int = Field(..., description="Number of failed refreshes")
+    processing_time: float = Field(..., description="Time taken in seconds")
+    failed_lead_ids: List[str] = Field(default_factory=list, description="Lead IDs that failed to refresh")
+    refresh_time: datetime = Field(default_factory=datetime.utcnow, description="When bulk refresh was performed")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "message": "Bulk call count refresh completed",
+                "total_leads": 100,
+                "successful_refreshes": 98,
+                "failed_refreshes": 2,
+                "processing_time": 45.6,
+                "failed_lead_ids": ["LD-1050", "LD-1051"],
+                "refresh_time": "2025-09-08T14:35:00Z"
             }
         }

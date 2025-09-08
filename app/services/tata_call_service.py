@@ -5,6 +5,7 @@
 
 import httpx
 import logging
+import asyncio
 import re
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, Tuple, List
@@ -454,8 +455,10 @@ class TataCallService:
             
             # 6. Return result (NO DATABASE OPERATIONS)
             if call_success:
-                logger.info(f"✅ Click-to-call successful for lead {lead_id} (NO LOGGING)")
+    # Schedule background refresh (30 seconds after call)
+                await self.schedule_background_refresh(lead_id, delay_seconds=30)
                 
+                logger.info(f"✅ Click-to-call successful for lead {lead_id} (refresh scheduled)")
                 return True, {
                     "success": True,
                     "message": "Call initiated successfully",
@@ -649,7 +652,7 @@ class TataCallService:
         """Check user call permissions - NO LOGGING"""
         try:
             db = self._get_db()
-            if not db:
+            if db is None:
                 return {
                     "can_make_calls": False,
                     "has_tata_mapping": False,
@@ -722,6 +725,298 @@ class TataCallService:
                 "message": f"Webhook processing failed: {str(e)}"
             }
 
+    async def refresh_lead_call_count(self, lead_id: str, phone_number: str = None, force_refresh: bool = False) -> Dict[str, Any]:
+        """Refresh call count for a specific lead using Tata CDR API"""
+        try:
+            db = self._get_db()
+            if db is None:
+                return {"success": False, "error": "Database not available"}
+            
+            logger.info(f"🔄 Refreshing call count for lead: {lead_id}")
+            
+            # Get lead phone number if not provided
+            if not phone_number:
+                phone_number = await self._get_lead_phone_number(lead_id)
+                if not phone_number:
+                    return {"success": False, "error": "Lead phone number not found"}
+            
+            # Format phone for Tata API
+            formatted_phone = self._format_phone_for_tata(phone_number)
+            
+            # Check if refresh is needed (skip if recently updated, unless forced)
+            if not force_refresh:
+                lead = await db.leads.find_one({"lead_id": lead_id})
+                if lead and lead.get("call_stats", {}).get("last_updated"):
+                    last_updated = lead["call_stats"]["last_updated"]
+                    if isinstance(last_updated, str):
+                        last_updated = datetime.fromisoformat(last_updated.replace('Z', '+00:00'))
+                    
+                    # Skip if updated within last 30 minutes
+                    if datetime.utcnow() - last_updated < timedelta(minutes=30):
+                        logger.info(f"⏭️ Skipping refresh for {lead_id} - recently updated")
+                        return {
+                            "success": True, 
+                            "message": "Call count recently updated, skipping refresh",
+                            "call_stats": lead.get("call_stats")
+                        }
+            
+            # Fetch CDR data from Tata API
+            cdr_success, cdr_data = await self._fetch_cdr_by_destination(formatted_phone)
+            
+            if not cdr_success:
+                return {"success": False, "error": f"Failed to fetch call data: {cdr_data.get('message', 'Unknown error')}"}
+            
+            # Count calls by user
+            call_counts = await self._count_calls_by_user(cdr_data.get("calls", []))
+            
+            # Create call stats object
+            total_answered = sum(counts.get("answered", 0) for counts in call_counts.values())
+            total_missed = sum(counts.get("missed", 0) for counts in call_counts.values())
+            total_calls = total_answered + total_missed
+            
+            call_stats = {
+                "total_calls": total_calls,
+                "answered_calls": total_answered,
+                "missed_calls": total_missed,
+                "last_call_date": cdr_data.get("last_call_date"),
+                "user_calls": call_counts,
+                "last_updated": datetime.utcnow(),
+                "phone_tracked": formatted_phone
+            }
+            
+            # Update lead with call stats
+            update_result = await db.leads.update_one(
+                {"lead_id": lead_id},
+                {"$set": {"call_stats": call_stats}}
+            )
+            
+            if update_result.modified_count > 0:
+                logger.info(f"✅ Updated call stats for lead {lead_id}: {total_calls} total calls")
+                return {
+                    "success": True,
+                    "message": "Call count refreshed successfully",
+                    "call_stats": call_stats
+                }
+            else:
+                return {"success": False, "error": "Failed to update lead with call stats"}
+                
+        except Exception as e:
+            logger.error(f"Error refreshing call count for {lead_id}: {str(e)}")
+            return {"success": False, "error": str(e)}
 
+
+    async def _fetch_cdr_by_destination(self, destination_phone: str) -> Tuple[bool, Dict]:
+        """Fetch CDR data from Tata API with multiple 1-month queries"""
+        try:
+            # Query last 3 months in 1-month chunks
+            all_call_records = []
+            end_date = datetime.now()
+            
+            # Query 3 separate months
+            for month_offset in range(3):
+                month_end = end_date - timedelta(days=30 * month_offset)
+                month_start = month_end - timedelta(days=30)
+                
+                cdr_params = {
+                    "from_date": month_start.strftime("%Y-%m-%d 00:00:00"),
+                    "to_date": month_end.strftime("%Y-%m-%d 23:59:59"),
+                    "destination": destination_phone,
+                    "page": "1",
+                    "limit": "1000"
+                }
+                
+                logger.info(f"🔍 Fetching CDR data for {destination_phone} - Month {month_offset + 1}")
+                
+                # Use existing Tata admin service
+                from ..services.tata_admin_service import TataAdminService
+                admin_service = TataAdminService()
+                
+                tata_response = await admin_service.fetch_call_records_with_filters(params=cdr_params)
+                
+                if tata_response.get("success"):
+                    tata_data = tata_response.get("data", {})
+                    month_records = tata_data.get("results", [])
+                    all_call_records.extend(month_records)
+                    logger.info(f"📊 Found {len(month_records)} records for month {month_offset + 1}")
+                else:
+                    logger.warning(f"❌ Month {month_offset + 1} query failed: {tata_response.get('error')}")
+            
+            # Find most recent call date from all records
+            last_call_date = None
+            if all_call_records:
+                sorted_calls = sorted(all_call_records, key=lambda x: x.get("date", ""), reverse=True)
+                if sorted_calls:
+                    recent_call = sorted_calls[0]
+                    call_date_str = recent_call.get("date", "")
+                    if call_date_str:
+                        try:
+                            last_call_date = datetime.strptime(call_date_str, "%Y-%m-%d")
+                        except:
+                            pass
+            
+            logger.info(f"📊 Total found {len(all_call_records)} call records across 3 months for {destination_phone}")
+            
+            return True, {
+                "calls": all_call_records,
+                "total_count": len(all_call_records),
+                "last_call_date": last_call_date
+            }
+            
+        except Exception as e:
+            logger.error(f"Error fetching CDR data: {str(e)}")
+            return False, {"error": str(e)}
+
+
+    async def _count_calls_by_user(self, call_records: List[Dict]) -> Dict[str, Dict[str, int]]:
+        """Count calls by user from CDR records"""
+        try:
+            db = self._get_db()
+            if db is None:
+                return {}
+            
+            # Get agent-to-user mapping
+            user_mappings = {}
+            async for mapping in db.tata_user_mappings.find({}):
+                tata_phone = mapping.get("tata_phone", "")
+                if tata_phone:
+                    # Clean phone number for matching
+                    clean_phone = tata_phone
+                    if clean_phone.startswith('+91'):
+                        clean_phone = clean_phone[3:]
+                    elif clean_phone.startswith('91'):
+                        clean_phone = clean_phone[2:]
+                    
+                    user_mappings[clean_phone] = {
+                        "user_id": mapping.get("crm_user_id"),
+                        "user_email": mapping.get("crm_user_email")
+                    }
+            
+            # Count calls by user
+            user_call_counts = {}
+            
+            for call_record in call_records:
+                agent_number = call_record.get("agent_number", "")
+                call_status = call_record.get("status", "").lower()
+                
+                # Find user for this agent
+                user_info = user_mappings.get(agent_number)
+                if not user_info or not user_info.get("user_id"):
+                    continue
+                
+                user_id = user_info["user_id"]
+                
+                # Initialize user counts if not exists
+                if user_id not in user_call_counts:
+                    user_call_counts[user_id] = {"total": 0, "answered": 0, "missed": 0}
+                
+                # Count the call
+                user_call_counts[user_id]["total"] += 1
+                
+                if call_status == "answered":
+                    user_call_counts[user_id]["answered"] += 1
+                else:
+                    user_call_counts[user_id]["missed"] += 1
+            
+            logger.info(f"📈 Call counts by user: {user_call_counts}")
+            return user_call_counts
+            
+        except Exception as e:
+            logger.error(f"Error counting calls by user: {str(e)}")
+            return {}
 # Create singleton instance
+    async def schedule_background_refresh(self, lead_id: str, delay_seconds: int = 30):
+        """Schedule background call count refresh with delay"""
+        try:
+            logger.info(f"⏰ Scheduling background refresh for lead {lead_id} in {delay_seconds} seconds")
+            
+            async def background_refresh():
+                await asyncio.sleep(delay_seconds)
+                logger.info(f"🔄 Starting background refresh for lead {lead_id}")
+                result = await self.refresh_lead_call_count(lead_id)
+                if result.get("success"):
+                    logger.info(f"✅ Background refresh completed for lead {lead_id}")
+                else:
+                    logger.error(f"❌ Background refresh failed for lead {lead_id}: {result.get('error')}")
+            
+            # Create background task
+            asyncio.create_task(background_refresh())
+            
+        except Exception as e:
+            logger.error(f"Error scheduling background refresh: {str(e)}")
+
+    async def bulk_refresh_call_counts(self, lead_ids: List[str] = None, assigned_to_user: str = None, 
+                                     force_refresh: bool = False, batch_size: int = 50) -> Dict[str, Any]:
+        """Bulk refresh call counts for multiple leads"""
+        try:
+            db = self._get_db()
+            if db is None:
+                return {"success": False, "error": "Database not available"}
+            
+            start_time = datetime.utcnow()
+            logger.info(f"🔄 Starting bulk call count refresh")
+            
+            # Build query for leads to refresh
+            query = {}
+            if lead_ids:
+                query["lead_id"] = {"$in": lead_ids}
+            elif assigned_to_user:
+                query["assigned_to"] = assigned_to_user
+            
+            # Get leads to process
+            leads_cursor = db.leads.find(query, {"lead_id": 1, "contact_number": 1, "phone_number": 1})
+            leads_to_process = await leads_cursor.to_list(None)
+            
+            total_leads = len(leads_to_process)
+            successful_refreshes = 0
+            failed_refreshes = 0
+            failed_lead_ids = []
+            
+            logger.info(f"📊 Processing {total_leads} leads in batches of {batch_size}")
+            
+            # Process in batches
+            for i in range(0, total_leads, batch_size):
+                batch = leads_to_process[i:i + batch_size]
+                batch_tasks = []
+                
+                for lead in batch:
+                    lead_id = lead.get("lead_id")
+                    phone = lead.get("contact_number") or lead.get("phone_number")
+                    
+                    # Create refresh task for this lead
+                    task = self.refresh_lead_call_count(lead_id, phone, force_refresh)
+                    batch_tasks.append((lead_id, task))
+                
+                # Execute batch concurrently
+                batch_results = await asyncio.gather(*[task for _, task in batch_tasks], return_exceptions=True)
+                
+                # Process results
+                for j, (lead_id, result) in enumerate(zip([lead_id for lead_id, _ in batch_tasks], batch_results)):
+                    if isinstance(result, Exception):
+                        failed_refreshes += 1
+                        failed_lead_ids.append(lead_id)
+                        logger.error(f"❌ Failed to refresh {lead_id}: {str(result)}")
+                    elif result.get("success"):
+                        successful_refreshes += 1
+                    else:
+                        failed_refreshes += 1
+                        failed_lead_ids.append(lead_id)
+                        logger.error(f"❌ Failed to refresh {lead_id}: {result.get('error')}")
+                
+                logger.info(f"✅ Completed batch {i//batch_size + 1}/{(total_leads-1)//batch_size + 1}")
+            
+            processing_time = (datetime.utcnow() - start_time).total_seconds()
+            
+            return {
+                "success": True,
+                "message": f"Bulk refresh completed: {successful_refreshes}/{total_leads} successful",
+                "total_leads": total_leads,
+                "successful_refreshes": successful_refreshes,
+                "failed_refreshes": failed_refreshes,
+                "processing_time": processing_time,
+                "failed_lead_ids": failed_lead_ids
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in bulk refresh: {str(e)}")
+            return {"success": False, "error": str(e)}
 tata_call_service = TataCallService()
