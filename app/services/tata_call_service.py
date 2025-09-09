@@ -767,19 +767,21 @@ class TataCallService:
                 return {"success": False, "error": f"Failed to fetch call data: {cdr_data.get('message', 'Unknown error')}"}
             
             # Count calls by user
-            call_counts = await self._count_calls_by_user(cdr_data.get("calls", []))
+            # call_counts = await self._count_calls_by_user(cdr_data.get("calls", []))
+            
+            
+            user_call_list = await self._count_calls_by_user(cdr_data.get("calls", []))
             
             # Create call stats object
-            total_answered = sum(counts.get("answered", 0) for counts in call_counts.values())
-            total_missed = sum(counts.get("missed", 0) for counts in call_counts.values())
-            total_calls = total_answered + total_missed
-            
+            total_calls = sum(user["total"] for user in user_call_list)
+            total_answered = sum(user["answered"] for user in user_call_list)
+            total_missed = sum(user["missed"] for user in user_call_list)
             call_stats = {
                 "total_calls": total_calls,
                 "answered_calls": total_answered,
                 "missed_calls": total_missed,
                 "last_call_date": cdr_data.get("last_call_date"),
-                "user_calls": call_counts,
+                "user_calls":  user_call_list,
                 "last_updated": datetime.utcnow()
                 
             }
@@ -894,17 +896,17 @@ class TataCallService:
             return False, {"error": str(e)}
 
 
-    async def _count_calls_by_user(self, call_records: List[Dict]) -> Dict[str, Dict[str, int]]:
+    async def _count_calls_by_user(self, call_records: List[Dict]) -> List[Dict[str, Any]]:
         """
         Count calls by user from CDR records
-        FIXED: Handle null agent numbers and missing user emails
+        UPDATED: Returns list format with user names instead of dict with user IDs
         """
         try:
             db = self._get_db()
             if db is None:
-                return {}
+                return []
             
-            # Get agent-to-user mapping
+            # Get agent-to-user mapping with user details
             user_mappings = {}
             async for mapping in db.tata_user_mappings.find({}):
                 tata_phone = mapping.get("tata_phone", "")
@@ -916,14 +918,32 @@ class TataCallService:
                     elif clean_phone.startswith('91'):
                         clean_phone = clean_phone[2:]
                     
+                    # Get user details from CRM
+                    user_id = mapping.get("crm_user_id")
+                    user_details = await db.users.find_one({"_id": ObjectId(user_id)}) if user_id else None
+                    
+                    user_name = "Unknown User"
+                    user_email = mapping.get("crm_user_email", "")
+                    
+                    if user_details:
+                        user_name = (
+                            user_details.get("full_name") or 
+                            f"{user_details.get('first_name', '')} {user_details.get('last_name', '')}".strip() or
+                            user_details.get("username") or
+                            user_details.get("email", "").split('@')[0] or
+                            "Unknown User"
+                        )
+                        user_email = user_details.get("email", user_email)
+                    
                     user_mappings[clean_phone] = {
-                        "user_id": mapping.get("crm_user_id"),
-                        "user_email": mapping.get("crm_user_email") or "unknown"  # Handle null email
+                        "user_id": user_id,
+                        "user_name": user_name,
+                        "user_email": user_email
                     }
             
             logger.info(f"📋 User mappings loaded: {list(user_mappings.keys())}")
             
-            # Count calls by user
+            # Count calls by user (using user_id as internal key)
             user_call_counts = {}
             
             for call_record in call_records:
@@ -931,21 +951,17 @@ class TataCallService:
                 call_status = call_record.get("status", "").lower()
                 agent_name = call_record.get("agent_name", "Unknown")
                 
-                # FIXED: Skip records with null agent_number
+                # Skip records with null agent_number
                 if not agent_number:
                     logger.warning(f"⚠️ Skipping call record with null agent_number: {agent_name}, Status: {call_status}")
                     continue
                 
-                logger.info(f"🔍 Processing call: Agent {agent_number} ({agent_name}), Status: {call_status}")
-                
-                # FIXED: Clean the agent number from call record for matching
+                # Clean the agent number from call record for matching
                 clean_agent_number = agent_number
                 if clean_agent_number.startswith('+91'):
                     clean_agent_number = clean_agent_number[3:]
                 elif clean_agent_number.startswith('91'):
                     clean_agent_number = clean_agent_number[2:]
-                
-                logger.info(f"🧹 Cleaned agent number: {agent_number} → {clean_agent_number}")
                 
                 # Find user for this agent using cleaned number
                 user_info = user_mappings.get(clean_agent_number)
@@ -955,30 +971,37 @@ class TataCallService:
                     continue
                 
                 user_id = user_info["user_id"]
-                user_email = user_info.get("user_email", "unknown")
-                
-                logger.info(f"✅ Found user mapping: {clean_agent_number} → {user_email} (ID: {user_id})")
                 
                 # Initialize user counts if not exists
                 if user_id not in user_call_counts:
-                    user_call_counts[user_id] = {"total": 0, "answered": 0, "missed": 0}
+                    user_call_counts[user_id] = {
+                        "user_id": user_id,
+                        "user_name": user_info["user_name"],
+                        "user_email": user_info["user_email"],
+                        "total": 0,
+                        "answered": 0,
+                        "missed": 0
+                    }
                 
                 # Count the call
                 user_call_counts[user_id]["total"] += 1
                 
                 if call_status == "answered":
                     user_call_counts[user_id]["answered"] += 1
-                    logger.info(f"📞 Counted ANSWERED call for {user_email}")
                 else:
                     user_call_counts[user_id]["missed"] += 1
-                    logger.info(f"📵 Counted MISSED call for {user_email}")
             
-            logger.info(f"📈 Final call counts by user: {user_call_counts}")
-            return user_call_counts
+            # Convert to list format for frontend
+            user_call_list = list(user_call_counts.values())
+            
+            logger.info(f"📈 Final call counts by user: {user_call_list}")
+            return user_call_list
             
         except Exception as e:
             logger.error(f"Error counting calls by user: {str(e)}")
-            return {}
+            return []
+
+
 # Create singleton instance
     async def schedule_background_refresh(self, lead_id: str, delay_seconds: int = 30):
         """Schedule background call count refresh with delay"""
