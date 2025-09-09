@@ -780,8 +780,8 @@ class TataCallService:
                 "missed_calls": total_missed,
                 "last_call_date": cdr_data.get("last_call_date"),
                 "user_calls": call_counts,
-                "last_updated": datetime.utcnow(),
-                "phone_tracked": formatted_phone
+                "last_updated": datetime.utcnow()
+                
             }
             
             # Update lead with call stats

@@ -194,7 +194,7 @@ class CallStatsModel(BaseModel):
         description="Call counts per user: {user_id: {total: 3, answered: 2, missed: 1}}"
     )
     last_updated: Optional[datetime] = Field(None, description="When call stats were last refreshed")
-    phone_tracked: Optional[str] = Field(None, description="Phone number being tracked for calls")
+    
     
     class Config:
         json_schema_extra = {
@@ -207,8 +207,8 @@ class CallStatsModel(BaseModel):
                     "user_id_1": {"total": 3, "answered": 2, "missed": 1},
                     "user_id_2": {"total": 2, "answered": 1, "missed": 1}
                 },
-                "last_updated": "2025-09-08T14:35:00Z",
-                "phone_tracked": "+919876543210"
+                "last_updated": "2025-09-08T14:35:00Z"
+               
             }
         }
 

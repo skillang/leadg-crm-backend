@@ -78,40 +78,6 @@ def convert_objectid_to_str(obj):
 # STATUS MIGRATION UTILITIES
 # ============================================================================
 
-# OLD_TO_NEW_STATUS_MAPPING = {
-#     "open": "Initial",
-#     "new": "Initial",
-#     "pending": "Initial",
-#     "cold": "Initial",
-#     "initial": "Initial",
-#     "in_progress": "Warm", 
-#     "contacted": "Prospect",
-#     "qualified": "Prospect",
-#     "closed_won": "Enrolled",
-#     "closed_lost": "Junk",
-#     "lost": "Junk",
-#     "closed": "Enrolled",
-#     "follow_up": "Followup",
-#     "followup": "Followup",
-#     "hot": "Warm",
-#     "converted": "Enrolled",
-#     "rejected": "Junk",
-#     "invalid": "INVALID",
-#     "callback": "Call Back",
-#     "call_back": "Call Back",
-#     "no_response": "NI",
-#     "no_interest": "NI",
-#     "busy": "Busy",
-#     "ringing": "Ringing",
-#     "wrong_number": "Wrong Number",
-#     "dnp": "DNP",
-#     "enrolled": "Enrolled",
-# }
-
-# VALID_NEW_STATUSES = [
-#     "Initial", "Followup", "Warm", "Prospect", "Junk", "Enrolled", "Yet to call",
-#     "Counseled", "DNP", "INVALID", "Call Back", "Busy", "NI", "Ringing", "Wrong Number"
-# ]
 
 DEFAULT_NEW_LEAD_STATUS = "Initial"
 
