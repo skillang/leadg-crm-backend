@@ -3,6 +3,7 @@
 import uuid
 import os
 import asyncio
+import re
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Tuple
 from bson import ObjectId
@@ -17,6 +18,7 @@ from ..models.cv_processing import (
     CVToLeadRequest,
     CVProcessingStatsResponse
 )
+from ..models.lead import ExperienceLevel  # 🔧 ADD THIS IMPORT
 from .cv_extraction_service import CVExtractionService
 from .lead_service import lead_service
 
@@ -32,6 +34,54 @@ class CVProcessingService:
     def get_db(self):
         """Get database instance"""
         return get_database()
+    
+    # ============================================================================
+    # 🆕 NEW: EXPERIENCE MAPPING METHOD
+    # ============================================================================
+    
+    def _map_experience_to_enum(self, raw_experience: str) -> Optional[ExperienceLevel]:
+        """
+        Simple mapping of raw experience text to predefined enum values.
+        Returns None if no clear match is found.
+        """
+        if not raw_experience or not isinstance(raw_experience, str):
+            return None
+        
+        # Convert to lowercase for matching
+        exp_text = raw_experience.lower().strip()
+        
+        # Simple keyword-based mapping
+        if any(keyword in exp_text for keyword in ['fresher', 'fresh graduate', 'new graduate', 'no experience', 'entry level']):
+            return ExperienceLevel.FRESHER
+        
+        # Look for numeric patterns (most reliable)
+        year_matches = re.findall(r'\b(\d+(?:\.\d+)?)\s*(?:years?|yrs?)\b', exp_text)
+        if year_matches:
+            try:
+                years = float(year_matches[0])  # Take first match
+                if years < 1:
+                    return ExperienceLevel.LESS_THAN_1_YEAR
+                elif years <= 3:
+                    return ExperienceLevel.ONE_TO_THREE_YEARS
+                elif years <= 5:
+                    return ExperienceLevel.THREE_TO_FIVE_YEARS
+                elif years <= 10:
+                    return ExperienceLevel.FIVE_TO_TEN_YEARS
+                else:
+                    return ExperienceLevel.MORE_THAN_TEN_YEARS
+            except ValueError:
+                pass
+        
+        # Additional simple patterns
+        if any(keyword in exp_text for keyword in ['less than 1', 'under 1', '6 months', '8 months']):
+            return ExperienceLevel.LESS_THAN_1_YEAR
+        
+        if any(keyword in exp_text for keyword in ['senior', 'lead', '10+', 'more than 10']):
+            return ExperienceLevel.MORE_THAN_TEN_YEARS
+        
+        # If we can't determine clearly, return None
+        logger.info(f"Could not map experience text to enum: '{raw_experience}' - leaving as None")
+        return None
     
     # ============================================================================
     # CV UPLOAD AND PROCESSING
@@ -337,7 +387,7 @@ class CVProcessingService:
             }
     
     # ============================================================================
-    # CV TO LEAD CONVERSION
+    # 🔧 UPDATED: CV TO LEAD CONVERSION WITH EXPERIENCE MAPPING
     # ============================================================================
     
     async def convert_cv_to_lead(
@@ -346,7 +396,7 @@ class CVProcessingService:
         user_id: str,
         user_email: str
     ) -> Dict[str, Any]:
-        """Convert CV extraction to lead"""
+        """Convert CV extraction to lead with proper experience mapping"""
         db = self.get_db()
         processing_id = conversion_request.processing_id
         
@@ -376,13 +426,15 @@ class CVProcessingService:
                     "message": f"CV cannot be converted - current status: {extraction.get('status')}"
                 }
             
-            # Step 2: Build lead data using existing lead creation logic
+            # Step 2: 🔧 FIX: Map experience text to enum value
             extracted_data = extraction.get("extracted_data", {})
+            raw_experience = conversion_request.experience or extracted_data.get("experience")
+            mapped_experience = self._map_experience_to_enum(raw_experience) if raw_experience else None
             
             # Import existing lead models
             from ..models.lead import LeadCreateComprehensive, LeadBasicInfo, LeadStatusAndTags, LeadAdditionalInfo
             
-            # Use conversion request data or fall back to extracted data
+            # Step 3: Build lead data with mapped experience
             lead_data = LeadCreateComprehensive(
                 basic_info=LeadBasicInfo(
                     name=conversion_request.name or extracted_data.get("name", ""),
@@ -391,7 +443,7 @@ class CVProcessingService:
                     source=conversion_request.source or "cv_upload",
                     category=conversion_request.category,  # Required field
                     age=conversion_request.age or extracted_data.get("age"),
-                    experience=conversion_request.experience or extracted_data.get("experience"),
+                    experience=mapped_experience,  # 🔧 FIX: Use mapped experience (None if no match)
                     nationality=conversion_request.nationality
                 ),
                 status_and_tags=LeadStatusAndTags(
@@ -400,7 +452,7 @@ class CVProcessingService:
                     tags=conversion_request.tags or ["CV Upload"]
                 ),
                 additional_info=LeadAdditionalInfo(
-                    notes=self._build_lead_notes_from_cv(extraction, conversion_request.notes)
+                    notes=self._build_lead_notes_from_cv(extraction, conversion_request.notes, raw_experience, mapped_experience)
                 ),
                 assignment={
                     "assign_to": conversion_request.assign_to,
@@ -408,7 +460,7 @@ class CVProcessingService:
                 }
             )
             
-            # Step 3: Create lead using existing lead service
+            # Step 4: Create lead using existing lead service
             lead_result = await lead_service.create_lead_comprehensive(
                 lead_data=lead_data,
                 created_by=user_id,
@@ -423,7 +475,7 @@ class CVProcessingService:
                     "validation_errors": [lead_result.get("message", "Unknown error")]
                 }
             
-            # Step 4: Update extraction record as converted
+            # Step 5: Update extraction record as converted
             conversion_update = {
                 "status": CVProcessingStatus.CONVERTED,
                 "converted_to_lead": True,
@@ -438,10 +490,10 @@ class CVProcessingService:
                 {"$set": conversion_update}
             )
             
-            # Step 5: Schedule cleanup (delete CV data after successful conversion)
+            # Step 6: Schedule cleanup (delete CV data after successful conversion)
             asyncio.create_task(self._schedule_cv_cleanup(processing_id, delay_minutes=5))
             
-            logger.info(f"✅ CV converted to lead: {processing_id} -> {lead_result['lead']['lead_id']}")
+            logger.info(f"✅ CV converted to lead: {processing_id} -> {lead_result['lead']['lead_id']} (experience: {mapped_experience})")
             
             return {
                 "success": True,
@@ -451,7 +503,12 @@ class CVProcessingService:
                 "lead_details": lead_result["lead"],
                 "assignment_info": lead_result.get("assignment_info"),
                 "validation_errors": [],
-                "cleanup_scheduled": True
+                "cleanup_scheduled": True,
+                "experience_mapping": {
+                    "raw_experience": raw_experience,
+                    "mapped_experience": mapped_experience.value if mapped_experience else None,
+                    "status": "mapped" if mapped_experience else "left_empty"
+                } if raw_experience else None
             }
             
         except Exception as e:
@@ -735,8 +792,16 @@ class CVProcessingService:
         
         return response_doc
     
-    def _build_lead_notes_from_cv(self, extraction: Dict[str, Any], additional_notes: Optional[str] = None) -> str:
-        """Build comprehensive lead notes from CV extraction data"""
+    def _build_lead_notes_from_cv(
+        self, 
+        extraction: Dict[str, Any], 
+        additional_notes: Optional[str] = None,
+        raw_experience: Optional[str] = None,
+        mapped_experience: Optional[ExperienceLevel] = None
+    ) -> str:
+        """
+        🔧 UPDATED: Build comprehensive lead notes from CV extraction data with experience mapping info
+        """
         notes_parts = []
         
         # Add conversion header
@@ -765,28 +830,34 @@ class CVProcessingService:
         # Add extracted structured data
         extracted_data = extraction.get("extracted_data", {})
         if extracted_data.get("skills"):
-            notes_parts.append(f"Skills (from CV): {extracted_data['skills']}")
+            notes_parts.append(f"**Skills (from CV):** {extracted_data['skills']}")
         
         if extracted_data.get("education"):
-            notes_parts.append(f"Education (from CV): {extracted_data['education']}")
+            notes_parts.append(f"**Education (from CV):** {extracted_data['education']}")
         
-        if extracted_data.get("experience"):
-            notes_parts.append(f"Experience (from CV): {extracted_data['experience']}")
+        # 🆕 NEW: Show experience mapping result
+        if raw_experience:
+            notes_parts.append(f"**Experience (from CV):** {raw_experience}")
+            if mapped_experience:
+                notes_parts.append(f"**Experience Level:** {mapped_experience.value} (auto-mapped)")
+            else:
+                notes_parts.append(f"**Experience Level:** Could not auto-map - left empty for manual selection")
+            notes_parts.append("")
         
         if extracted_data.get("age"):
-            notes_parts.append(f"Age (from CV): {extracted_data['age']}")
+            notes_parts.append(f"**Age (from CV):** {extracted_data['age']}")
         
         # Add processing notes if any
         processing_notes = extraction.get("processing_notes", "")
         if processing_notes:
             notes_parts.append("")
-            notes_parts.append("Processing Notes:")
+            notes_parts.append("**Processing Notes:**")
             notes_parts.append(processing_notes)
         
         # Add additional notes from conversion request
         if additional_notes:
             notes_parts.append("")
-            notes_parts.append("Additional Notes:")
+            notes_parts.append("**Additional Notes:**")
             notes_parts.append(additional_notes)
         
         # Add conversion metadata
@@ -811,3 +882,4 @@ class CVProcessingService:
 
 # Create service instance
 cv_processing_service = CVProcessingService()
+            
