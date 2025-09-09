@@ -184,7 +184,7 @@ class ExperienceLevel(str, Enum):
 # ============================================================================
 
 class CallStatsModel(BaseModel):
-    """Call statistics tracking model"""
+    """Call statistics tracking model with proper initialization"""
     total_calls: int = Field(default=0, description="Total calls made to this lead")
     answered_calls: int = Field(default=0, description="Number of answered calls")
     missed_calls: int = Field(default=0, description="Number of missed/unanswered calls")
@@ -194,21 +194,31 @@ class CallStatsModel(BaseModel):
         description="Call counts per user: {user_id: {total: 3, answered: 2, missed: 1}}"
     )
     last_updated: Optional[datetime] = Field(None, description="When call stats were last refreshed")
+    initialized: bool = Field(default=True, description="Whether call stats have been initialized")
     
+    @classmethod
+    def create_default(cls) -> "CallStatsModel":
+        """Create a default initialized call stats object for new leads"""
+        return cls(
+            total_calls=0,
+            answered_calls=0,
+            missed_calls=0,
+            last_call_date=None,
+            user_calls={},
+            last_updated=datetime.utcnow(),
+            initialized=True
+        )
     
     class Config:
         json_schema_extra = {
             "example": {
-                "total_calls": 5,
-                "answered_calls": 3,
-                "missed_calls": 2,
-                "last_call_date": "2025-09-08T14:30:00Z",
-                "user_calls": {
-                    "user_id_1": {"total": 3, "answered": 2, "missed": 1},
-                    "user_id_2": {"total": 2, "answered": 1, "missed": 1}
-                },
-                "last_updated": "2025-09-08T14:35:00Z"
-               
+                "total_calls": 0,
+                "answered_calls": 0,
+                "missed_calls": 0,
+                "last_call_date": None,
+                "user_calls": {},
+                "last_updated": "2025-09-09T10:00:00Z",
+                "initialized": True
             }
         }
 

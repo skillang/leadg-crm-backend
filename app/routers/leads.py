@@ -43,7 +43,8 @@ from ..models.lead import (
     CallCountRefreshRequest,
     CallCountRefreshResponse,
     BulkCallCountRefreshRequest,
-    BulkCallCountRefreshResponse
+    BulkCallCountRefreshResponse,
+     CallStatsModel,
 )
 
 # Check if these exist - if not, comment them out
@@ -881,7 +882,8 @@ async def create_lead(
                         experience=basic_info_data.get("experience"),
                         nationality=basic_info_data.get("nationality"),
                         current_location=basic_info_data.get("current_location"),
-                        date_of_birth=basic_info_data.get("date_of_birth")
+                        date_of_birth=basic_info_data.get("date_of_birth"),
+                         call_stats=basic_info_data.get("call_stats") or CallStatsModel.create_default()
                     ),
                     status_and_tags=LeadStatusAndTags(
                         stage=status_and_tags_data.get("stage", "initial"),
@@ -933,7 +935,8 @@ async def create_lead(
                         experience=lead_data.get("experience"),
                         nationality=lead_data.get("nationality"),
                         current_location=lead_data.get("current_location"),
-                        date_of_birth=lead_data.get("date_of_birth")
+                        date_of_birth=lead_data.get("date_of_birth"),
+                        call_stats=lead_data.get("call_stats") or CallStatsModel.create_default()
                     ),
                     status_and_tags=LeadStatusAndTags(
                         stage=lead_data.get("stage", "initial"),

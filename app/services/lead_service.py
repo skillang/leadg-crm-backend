@@ -7,7 +7,7 @@ import logging
 
 from ..config.database import get_database
 from ..models.lead import (
-    LeadCreateComprehensive, ExperienceLevel
+    LeadCreateComprehensive, ExperienceLevel,CallStatsModel
 )
 # 🆕 NEW: Import dynamic helpers
 from ..models.course_level import CourseLevelHelper
@@ -362,7 +362,8 @@ class LeadService:
                 "source": validated_source,  # 🔄 UPDATED: Use validated source
                 "category": basic_info.category,
                 "course_level": validated_course_level,  # 🔄 UPDATED: Use validated course level
-                "date_of_birth": basic_info.date_of_birth,  # 🆕 NEW
+                "date_of_birth": basic_info.date_of_birth,
+                "call_stats": CallStatsModel.create_default().model_dump(),  # 🆕 NEW
                 
                 # Add the new optional fields
                 "age": basic_info.age,
@@ -589,7 +590,7 @@ class LeadService:
                 "nationality": basic_info.nationality,
                 "current_location": basic_info.current_location,
                 "date_of_birth": basic_info.date_of_birth,  # 🆕 NEW
-                
+                "call_stats": CallStatsModel.create_default().model_dump(),               
                 # Status and tags
                 "stage": status_and_tags.stage if hasattr(status_and_tags, 'stage') else "Pending",
                 "lead_score": status_and_tags.lead_score if hasattr(status_and_tags, 'lead_score') else 0,
@@ -789,6 +790,7 @@ class LeadService:
                         "experience": lead_data.get("experience"),
                         "nationality": lead_data.get("nationality"),
                         "date_of_birth": lead_data.get("date_of_birth"),  # 🆕 NEW
+                        "call_stats": CallStatsModel.create_default().model_dump(),
                         
                         # Status and tags
                         "stage": lead_data.get("stage", "Pending"),
