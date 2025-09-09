@@ -189,9 +189,9 @@ class CallStatsModel(BaseModel):
     answered_calls: int = Field(default=0, description="Number of answered calls")
     missed_calls: int = Field(default=0, description="Number of missed/unanswered calls")
     last_call_date: Optional[datetime] = Field(None, description="Date of last call")
-    user_calls: Dict[str, Dict[str, int]] = Field(
-        default_factory=dict, 
-        description="Call counts per user: {user_id: {total: 3, answered: 2, missed: 1}}"
+    user_calls: List[Dict[str, Any]] = Field(
+        default_factory=list, 
+        description="Call counts per user with details"
     )
     last_updated: Optional[datetime] = Field(None, description="When call stats were last refreshed")
     initialized: bool = Field(default=True, description="Whether call stats have been initialized")
@@ -204,7 +204,7 @@ class CallStatsModel(BaseModel):
             answered_calls=0,
             missed_calls=0,
             last_call_date=None,
-            user_calls={},
+            user_calls=[],
             last_updated=datetime.utcnow(),
             initialized=True
         )
