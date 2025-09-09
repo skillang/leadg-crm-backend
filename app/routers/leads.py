@@ -693,6 +693,7 @@ def transform_lead_to_structured_format(lead: Dict[str, Any]) -> Dict[str, Any]:
             "nationality": clean_lead.get("nationality"),
             "date_of_birth": clean_lead.get("date_of_birth"),
             "current_location": clean_lead.get("current_location",""),
+            "call_stats": clean_lead.get("call_stats"),
         },
         "status_and_tags": {
             "stage": clean_lead.get("stage", "initial"),
