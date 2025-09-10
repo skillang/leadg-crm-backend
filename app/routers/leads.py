@@ -1181,7 +1181,7 @@ async def get_leads(
     except Exception as e:
         logger.error(f"Get leads error: {e}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail="Failed to retrieve leads"
         )
 
