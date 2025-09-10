@@ -211,9 +211,9 @@ class CallStatsModel(BaseModel):
     answered_calls: int = Field(default=0, description="Number of answered calls")
     missed_calls: int = Field(default=0, description="Number of missed/unanswered calls")
     last_call_date: Optional[datetime] = Field(None, description="Date of last call")
-    user_calls: List[UserCallItem] = Field(
-        default_factory=list, 
-        description="Call counts per user as list of user call items"
+    user_calls: Dict[str, Dict[str, int]] = Field(
+        default_factory=dict, 
+        description="Call counts per user: {user_id: {total: 3, answered: 2, missed: 1}}"
     )
     last_updated: Optional[datetime] = Field(None, description="When call stats were last refreshed")
     phone_tracked: Optional[str] = Field(None, description="Phone number being tracked")
@@ -226,8 +226,9 @@ class CallStatsModel(BaseModel):
             answered_calls=0,
             missed_calls=0,
             last_call_date=None,
-            user_calls=[],
-            last_updated=datetime.utcnow()
+            user_calls={},
+            last_updated=datetime.utcnow(),
+            initialized=True
         )
     
     class Config:
