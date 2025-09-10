@@ -183,18 +183,40 @@ class ExperienceLevel(str, Enum):
 # NEW: CALL STATS MODEL
 # ============================================================================
 
+
+class UserCallItem(BaseModel):
+    """Individual user call statistics item for list structure"""
+    user_id: str = Field(..., description="User ID")
+    user_name: str = Field(..., description="User display name")
+    user_email: str = Field(..., description="User email address")
+    total: int = Field(default=0, description="Total calls by this user")
+    answered: int = Field(default=0, description="Answered calls by this user")
+    missed: int = Field(default=0, description="Missed calls by this user")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "user_id": "686f894b1ca17da22b3533e7",
+                "user_name": "Hariharan Hariharan",
+                "user_email": "hariharan@skillang.com",
+                "total": 7,
+                "answered": 0,
+                "missed": 7
+            }
+        }
+
 class CallStatsModel(BaseModel):
-    """Call statistics tracking model with proper initialization"""
+    """Call statistics tracking model with list-based user calls"""
     total_calls: int = Field(default=0, description="Total calls made to this lead")
     answered_calls: int = Field(default=0, description="Number of answered calls")
     missed_calls: int = Field(default=0, description="Number of missed/unanswered calls")
     last_call_date: Optional[datetime] = Field(None, description="Date of last call")
-    user_calls: Dict[str, Dict[str, int]] = Field(
-        default_factory=dict, 
-        description="Call counts per user: {user_id: {total: 3, answered: 2, missed: 1}}"
+    user_calls: List[UserCallItem] = Field(
+        default_factory=list, 
+        description="Call counts per user as list of user call items"
     )
     last_updated: Optional[datetime] = Field(None, description="When call stats were last refreshed")
-    initialized: bool = Field(default=True, description="Whether call stats have been initialized")
+    phone_tracked: Optional[str] = Field(None, description="Phone number being tracked")
     
     @classmethod
     def create_default(cls) -> "CallStatsModel":
@@ -204,24 +226,31 @@ class CallStatsModel(BaseModel):
             answered_calls=0,
             missed_calls=0,
             last_call_date=None,
-            user_calls={},
-            last_updated=datetime.utcnow(),
-            initialized=True
+            user_calls=[],
+            last_updated=datetime.utcnow()
         )
     
     class Config:
         json_schema_extra = {
             "example": {
-                "total_calls": 0,
+                "total_calls": 7,
                 "answered_calls": 0,
-                "missed_calls": 0,
-                "last_call_date": None,
-                "user_calls": {},
-                "last_updated": "2025-09-09T10:00:00Z",
-                "initialized": True
+                "missed_calls": 7,
+                "last_call_date": "2025-09-08T14:30:00Z",
+                "user_calls": [
+                    {
+                        "user_id": "686f894b1ca17da22b3533e7",
+                        "user_name": "Hariharan Hariharan", 
+                        "user_email": "hariharan@skillang.com",
+                        "total": 7,
+                        "answered": 0,
+                        "missed": 7
+                    }
+                ],
+                "last_updated": "2025-09-08T14:35:00Z",
+                "phone_tracked": "+919087924334"
             }
         }
-
 # ============================================================================
 # BASIC LEAD MODELS (UPDATED FOR DYNAMIC FIELDS)
 # ============================================================================
