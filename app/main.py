@@ -14,7 +14,7 @@ from .routers import (
     auth, leads, tasks, notes, documents, timeline, contacts, lead_categories, 
     stages, statuses, course_levels, sources, whatsapp, emails, permissions, 
     tata_auth, tata_calls, tata_users, bulk_whatsapp, realtime, notifications, 
-    integrations, admin_calls, password_reset ,cv_processing   # NEW: Admin dashboard router
+    integrations, admin_calls, password_reset ,cv_processing ,facebook_leads  # NEW: Admin dashboard router
 )
 
 logging.basicConfig(
@@ -538,6 +538,11 @@ app.include_router(
     cv_processing.router,
     prefix="/cv",
     tags=["CV Processing"]
+)
+app.include_router(
+    facebook_leads.router,
+    prefix="/facebook",  # Add prefix here
+    tags=["Facebook Integration"]
 )
 
 

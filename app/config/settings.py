@@ -90,6 +90,17 @@ class Settings(BaseSettings):
     smtp_password: str = ""
     smtp_from_email: str = "noreply@leadg.com"
     smtp_from_name: str = "LeadG CRM"
+
+    # Facebook Leads Integration Configuration
+    facebook_app_id: str = ""
+    facebook_app_secret: str = ""
+    facebook_page_access_token: str = ""
+    facebook_page_id: str = ""
+    facebook_api_version: str = "v18.0"
+    facebook_webhook_verify_token: str = "leadg_webhook_2024_secure"
+
+    # Facebook API URLs
+    facebook_graph_api_url: str = "https://graph.facebook.com"
     
     # File Upload Configuration
     max_file_size: int = 10485760  # 10MB
