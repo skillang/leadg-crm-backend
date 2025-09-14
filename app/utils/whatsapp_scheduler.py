@@ -1,5 +1,5 @@
 # app/utils/whatsapp_scheduler.py
-# 🆕 NEW FILE - Scheduler for bulk WhatsApp jobs - TIMEZONE FIXED
+# Scheduler for bulk WhatsApp jobs with Facebook Token Auto-Refresh - TIMEZONE FIXED
 
 import asyncio
 from typing import Dict, List, Any, Optional
@@ -9,20 +9,21 @@ from apscheduler.triggers.date import DateTrigger
 from apscheduler.executors.asyncio import AsyncIOExecutor
 import logging
 from bson import ObjectId
-import pytz  # 🔧 ADD: Import pytz for proper timezone handling
+import pytz
 
 from app.config.database import get_database
 from app.services.bulk_whatsapp_processor import get_bulk_whatsapp_processor
 from app.utils.timezone_helper import TimezoneHandler
 from app.models.bulk_whatsapp import BulkJobStatus
+from app.services.facebook_leads_service import facebook_leads_service  # ADD: Facebook service import
 
 logger = logging.getLogger(__name__)
 
 class WhatsAppJobScheduler:
     """
-    Scheduler for bulk WhatsApp jobs - SAME PATTERN as your emailSchedulerService.js
+    Scheduler for bulk WhatsApp jobs with Facebook Token Auto-Refresh
     Handles scheduling and execution of WhatsApp bulk messaging jobs
-    🔧 FIXED: Proper timezone handling
+    FIXED: Proper timezone handling
     """
     
     def __init__(self):
@@ -34,10 +35,10 @@ class WhatsAppJobScheduler:
             'default': AsyncIOExecutor()
         }
         
-        # 🔧 FIX: Use pytz.UTC explicitly instead of string
+        # FIX: Use pytz.UTC explicitly instead of string
         self.scheduler = AsyncIOScheduler(
             executors=executors,
-            timezone=pytz.UTC  # 🔧 FIXED: Explicit UTC timezone
+            timezone=pytz.UTC  # FIXED: Explicit UTC timezone
         )
         
         # Track scheduled jobs (same as your activeJobs in email)
@@ -84,10 +85,53 @@ class WhatsAppJobScheduler:
         except Exception as e:
             logger.error(f"❌ Error stopping WhatsApp scheduler: {str(e)}")
     
+    # NEW: Facebook Token Auto-Refresh Methods
+    async def check_facebook_token(self):
+        """Check and refresh Facebook token - runs every 7 days"""
+        try:
+            logger.info("🔄 Checking Facebook access token...")
+            result = await facebook_leads_service.auto_refresh_token_if_needed()
+            
+            if result.get("success"):
+                if result.get("refreshed"):
+                    logger.info("✅ Facebook token refreshed successfully!")
+                elif result.get("valid"):
+                    logger.info(f"✅ Facebook token valid for {result.get('days_left', 'unknown')} more days")
+                else:
+                    logger.info("✅ Facebook token check completed")
+            else:
+                logger.error(f"❌ Facebook token issue: {result.get('error')}")
+                
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Facebook token check failed: {str(e)}")
+            return {"success": False, "error": str(e)}
+
+    async def start_facebook_token_scheduler(self):
+        """Start Facebook token check - every 7 days"""
+        try:
+            self.scheduler.add_job(
+                func=self.check_facebook_token,
+                trigger='interval',
+                days=7,
+                id='facebook_token_check',
+                name='Facebook Token Check',
+                replace_existing=True
+            )
+            
+            logger.info("✅ Facebook token scheduler started (runs every 7 days)")
+            
+            # Run immediate check
+            await self.check_facebook_token()
+            
+        except Exception as e:
+            logger.error(f"❌ Facebook scheduler setup failed: {str(e)}")
+    
     async def schedule_whatsapp_job(self, job_id: str, scheduled_time_utc: datetime) -> bool:
         """
         Schedule a WhatsApp bulk job - SAME LOGIC as your email scheduleEmailJob()
-        🔧 FIXED: Proper timezone handling
+        FIXED: Proper timezone handling
         
         Args:
             job_id: Job identifier
@@ -97,7 +141,7 @@ class WhatsAppJobScheduler:
             True if scheduled successfully
         """
         try:
-            # 🔧 FIX: Ensure the datetime is timezone-aware UTC
+            # FIX: Ensure the datetime is timezone-aware UTC
             if scheduled_time_utc.tzinfo is None:
                 # If naive datetime, assume it's UTC
                 scheduled_time_utc = pytz.UTC.localize(scheduled_time_utc)
@@ -105,14 +149,14 @@ class WhatsAppJobScheduler:
                 # If different timezone, convert to UTC
                 scheduled_time_utc = scheduled_time_utc.astimezone(pytz.UTC)
             
-            # 🔧 DEBUG: Log current time and scheduled time for debugging
+            # DEBUG: Log current time and scheduled time for debugging
             current_utc = datetime.now(pytz.UTC)
             logger.info(f"🕒 Scheduling WhatsApp job {job_id}")
             logger.info(f"🕐 Current UTC time: {current_utc}")
             logger.info(f"🕑 Scheduled UTC time: {scheduled_time_utc}")
             logger.info(f"⏱️ Time difference: {(scheduled_time_utc - current_utc).total_seconds()} seconds")
             
-            # 🔧 VALIDATION: Check if time is in the future
+            # VALIDATION: Check if time is in the future
             if scheduled_time_utc <= current_utc:
                 logger.error(f"❌ Cannot schedule job for past time: {scheduled_time_utc} <= {current_utc}")
                 return False
@@ -125,7 +169,7 @@ class WhatsAppJobScheduler:
             # Create new scheduled job (same pattern as email)
             scheduler_job = self.scheduler.add_job(
                 func=self._execute_scheduled_job,
-                trigger=DateTrigger(run_date=scheduled_time_utc),  # 🔧 Now timezone-aware
+                trigger=DateTrigger(run_date=scheduled_time_utc),  # Now timezone-aware
                 args=[job_id],
                 id=f"whatsapp_bulk_{job_id}",
                 name=f"WhatsApp Bulk Job {job_id}",
@@ -246,7 +290,7 @@ class WhatsAppJobScheduler:
             
             pending_jobs = await self.db.bulk_whatsapp_jobs.find(query).to_list(length=None)
             
-            # 🔧 FIX: Use timezone-aware current time
+            # FIX: Use timezone-aware current time
             current_utc = datetime.now(pytz.UTC)
             rescheduled_count = 0
             overdue_count = 0
@@ -255,7 +299,7 @@ class WhatsAppJobScheduler:
                 job_id = job["job_id"]
                 scheduled_time_naive = job["scheduled_time"]  # This is naive UTC from DB
                 
-                # 🔧 FIX: Convert naive datetime to timezone-aware UTC
+                # FIX: Convert naive datetime to timezone-aware UTC
                 if scheduled_time_naive.tzinfo is None:
                     scheduled_time_utc = pytz.UTC.localize(scheduled_time_naive)
                 else:
@@ -286,13 +330,13 @@ class WhatsAppJobScheduler:
     async def get_scheduled_jobs_status(self) -> Dict[str, Any]:
         """
         Get status of scheduled jobs - SAME as your email scheduler status
-        🔧 FIXED: Proper timezone handling
+        FIXED: Proper timezone handling
         
         Returns:
             Status information about scheduled jobs
         """
         try:
-            # 🔧 FIX: Use timezone-aware current time
+            # FIX: Use timezone-aware current time
             current_utc = datetime.now(pytz.UTC).replace(tzinfo=None)  # Convert to naive for DB comparison
             
             # Count scheduled jobs in database
@@ -356,7 +400,7 @@ class WhatsAppJobScheduler:
     async def reschedule_job(self, job_id: str, new_scheduled_time_utc: datetime) -> bool:
         """
         Reschedule an existing job - SAME as email rescheduling
-        🔧 FIXED: Proper timezone handling
+        FIXED: Proper timezone handling
         
         Args:
             job_id: Job to reschedule
@@ -366,7 +410,7 @@ class WhatsAppJobScheduler:
             True if rescheduled successfully
         """
         try:
-            # 🔧 FIX: Ensure datetime is naive for database storage
+            # FIX: Ensure datetime is naive for database storage
             if new_scheduled_time_utc.tzinfo is not None:
                 new_scheduled_time_utc = new_scheduled_time_utc.replace(tzinfo=None)
             
@@ -442,13 +486,13 @@ def get_whatsapp_scheduler() -> WhatsAppJobScheduler:
 whatsapp_scheduler = get_whatsapp_scheduler
 
 # ================================
-# STARTUP AND SHUTDOWN HANDLERS - ENHANCED
+# STARTUP AND SHUTDOWN HANDLERS - ENHANCED WITH FACEBOOK TOKEN
 # ================================
 
 async def start_whatsapp_scheduler():
     """
-    Start the WhatsApp scheduler - Call this on app startup
-    🔧 ENHANCED with better error handling and timezone debugging
+    Start the WhatsApp and Facebook token schedulers - Call this on app startup
+    ENHANCED with better error handling and Facebook token auto-refresh
     """
     try:
         logger.info("🚀 Initializing WhatsApp Job Scheduler...")
@@ -459,7 +503,11 @@ async def start_whatsapp_scheduler():
         if not scheduler.is_running:
             logger.info("📱 Starting APScheduler for WhatsApp jobs...")
             await scheduler.start()
-            logger.info("✅ WhatsApp Job Scheduler service started successfully")
+            
+            # Start Facebook token scheduler
+            await scheduler.start_facebook_token_scheduler()
+            
+            logger.info("✅ WhatsApp and Facebook schedulers started successfully")
         else:
             logger.warning("⚠️ WhatsApp scheduler already running")
             
@@ -495,7 +543,7 @@ async def stop_whatsapp_scheduler():
     except Exception as e:
         logger.error(f"❌ Failed to stop WhatsApp scheduler: {str(e)}")
 
-# 🔧 ENHANCED: Test function to verify scheduler works
+# ENHANCED: Test function to verify scheduler works
 async def test_whatsapp_scheduler():
     """
     Test function to verify scheduler is working with proper timezone handling
@@ -540,7 +588,7 @@ async def test_whatsapp_scheduler():
 """
 Usage Examples:
 
-1. Schedule a job (from bulk service):
+1. Schedule a WhatsApp job (from bulk service):
    scheduler = get_whatsapp_scheduler()
    await scheduler.schedule_whatsapp_job(job_id, scheduled_time_utc)
 
@@ -556,7 +604,12 @@ Usage Examples:
 5. App shutdown (in main.py):
    await stop_whatsapp_scheduler()
 
-🔧 TIMEZONE FIXES:
+6. Facebook Token Auto-Refresh:
+   - Automatically checks Facebook token every 7 days
+   - Refreshes token when it has 10 days or less remaining
+   - Extends token for another 60 days each refresh
+
+TIMEZONE FIXES:
 - Uses pytz.UTC explicitly instead of string
 - Ensures all datetime objects are timezone-aware during scheduling
 - Proper timezone validation and debugging logs

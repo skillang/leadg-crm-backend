@@ -673,5 +673,82 @@ class FacebookLeadsService:
             logger.error(f"Failed to import single lead: {str(e)}")
             return {"success": False, "error": str(e)}
 
+
+
+    async def auto_refresh_token_if_needed(self):
+        """Auto-refresh Facebook page access token if needed"""
+        try:
+            if not self.access_token:
+                await self.initialize_facebook_config()
+                
+            # Check token info
+            async with aiohttp.ClientSession() as session:
+                debug_url = f"https://graph.facebook.com/debug_token"
+                params = {
+                    "input_token": self.access_token,
+                    "access_token": f"{self.app_id}|{self.app_secret}"
+                }
+                
+                async with session.get(debug_url, params=params) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        token_data = data.get("data", {})
+                        expires_at = token_data.get("expires_at")
+                        
+                        if expires_at:
+                            expires_date = datetime.fromtimestamp(expires_at)
+                            days_left = (expires_date - datetime.utcnow()).days
+                            
+                            logger.info(f"Facebook token expires in {days_left} days ({expires_date})")
+                            
+                            # Refresh if expires within 10 days
+                            if days_left <= 10:
+                                logger.info("Token expires soon, attempting refresh...")
+                                
+                                refresh_url = f"https://graph.facebook.com/oauth/access_token"
+                                refresh_params = {
+                                    "grant_type": "fb_exchange_token",
+                                    "client_id": self.app_id,
+                                    "client_secret": self.app_secret,
+                                    "fb_exchange_token": self.access_token
+                                }
+                                
+                                async with session.get(refresh_url, params=refresh_params) as refresh_response:
+                                    if refresh_response.status == 200:
+                                        refresh_data = await refresh_response.json()
+                                        new_token = refresh_data.get("access_token")
+                                        
+                                        # Update database config
+                                        db = get_database()
+                                        await db.facebook_config.update_one(
+                                            {"active": True},
+                                            {"$set": {
+                                                "access_token": new_token,
+                                                "last_refreshed": datetime.utcnow(),
+                                                "updated_at": datetime.utcnow()
+                                            }}
+                                        )
+                                        
+                                        # Update instance variable
+                                        self.access_token = new_token
+                                        
+                                        logger.info("Facebook token refreshed successfully!")
+                                        return {"success": True, "refreshed": True, "new_token": new_token}
+                                    else:
+                                        error_data = await refresh_response.json()
+                                        error_msg = error_data.get("error", {}).get("message", "Refresh failed")
+                                        logger.error(f"Token refresh failed: {error_msg}")
+                                        return {"success": False, "error": error_msg}
+                            else:
+                                return {"success": True, "valid": True, "days_left": days_left}
+                        else:
+                            return {"success": True, "no_expiry": True}
+                    else:
+                        error_data = await response.json()
+                        return {"success": False, "error": error_data.get("error", {}).get("message", "Token validation failed")}
+                        
+        except Exception as e:
+            logger.error(f"Token refresh error: {str(e)}")
+            return {"success": False, "error": str(e)}
 # Create service instance
 facebook_leads_service = FacebookLeadsService()
