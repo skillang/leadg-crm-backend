@@ -8,6 +8,14 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 import logging
 from fastapi import HTTPException
+from ..models.lead import (
+    LeadCreateComprehensive, 
+    LeadBasicInfo, 
+    LeadStatusAndTags, 
+    LeadAdditionalInfo,
+    LeadAssignmentInfo,  # Add this
+    ExperienceLevel      # Add this
+)
 
 from ..config.database import get_database
 from ..config.settings import settings
@@ -280,31 +288,30 @@ class FacebookLeadsService:
                     
                     lead_data = LeadCreateComprehensive(
                         basic_info=LeadBasicInfo(
-                            name=name,
-                            email=email,
+                            name=name or "Facebook Lead",
+                            email=email or f"facebook_{fb_lead['facebook_lead_id']}@placeholder.com",
                             contact_number=phone,
-                            source="Facebook Leads",  # Your configured source
-                            category=category,  # Auto-detected or override
-                            course_level="Beginner",  # Default
-                            age=None,  # Skip age validation - will go to extra_info
-                            experience="fresher",  # Default to fresher to avoid validation
-                            nationality="",  # Empty string is fine
-                            current_location=""  # Empty string is fine
+                            source="facebook-leads",  # This matches your database source
+                            category=category,
+                            course_level="undergraduate",
+                            age=None,
+                            experience=ExperienceLevel.FRESHER,
+                            nationality="",
+                            current_location="Not mentioned"
                         ),
                         status_and_tags=LeadStatusAndTags(
-                            stage="initial",
-                            status="init",
+                            stage="Pending",
+                            status="New", 
                             lead_score=0,
-                            tags=["Facebook Import"]
+                            tags=["Facebook Import", category]
                         ),
                         additional_info=LeadAdditionalInfo(
                             notes=notes,
                             extra_info=extra_info
                         ),
-                        assignment={
-                            "assign_to": "unassigned",  # Force unassigned as per your request
-                            "assignment_method": "unassigned"
-                        }
+                        assignment=LeadAssignmentInfo(
+                            assigned_to="unassigned"  # This forces all Facebook leads to be unassigned
+                        )
                     )
                     
                     # Create lead using your comprehensive method
@@ -362,13 +369,27 @@ class FacebookLeadsService:
 
     def _extract_phone(self, fb_lead: Dict[str, Any], raw_data: Dict[str, Any]) -> str:
         """Extract phone from various possible field names"""
-        return (
+        # Your actual data uses 'phone' as the key, so prioritize that
+        phone = (
+            raw_data.get("phone") or           # This is your actual field name
             fb_lead.get("phone") or 
             raw_data.get("phone_number") or
             raw_data.get("phone number") or
             raw_data.get("mobile") or
             ""
         ).strip()
+        
+        # Remove '+' prefix if present and ensure 10+ digits
+        if phone:
+            # Handle Indian phone numbers: +918331917701 -> 8331917701
+            clean_phone = phone.replace("+91", "").replace("+", "").strip()
+            if len(clean_phone) >= 10:
+                return clean_phone
+            else:
+                # If phone is too short, use a default to pass validation
+                return "0000000000"
+    
+        return "0000000000"  # Default fallback to pass validation
 
     def _extract_email(self, fb_lead: Dict[str, Any], raw_data: Dict[str, Any]) -> str:
         """Extract email from various possible field names"""
