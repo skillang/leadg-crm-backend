@@ -484,7 +484,6 @@ async def preview_round_robin_assignment(
 # ============================================================================
 # 🆕 NEW: ENHANCED LEAD LISTING WITH MULTI-ASSIGNMENT INFO
 # ============================================================================
-
 @router.get("/leads-extended/", response_model=List[LeadResponseExtended])
 async def get_leads_with_multi_assignment_info(
     page: int = Query(1, ge=1, description="Page number"),
@@ -514,10 +513,24 @@ async def get_leads_with_multi_assignment_info(
         
         if assigned_to_user:
             if user_role == "admin":  # Only admins can filter by other users
-                query_filters["$or"] = [
-                    {"assigned_to": assigned_to_user},
-                    {"co_assignees": assigned_to_user}
-                ]
+                # Fix: Handle existing query structure properly
+                if "$or" in query_filters:
+                    # Combine with existing conditions using $and
+                    existing_or = query_filters.pop("$or")
+                    query_filters = {
+                        "$and": [
+                            {"$or": existing_or},
+                            {"$or": [
+                                {"assigned_to": assigned_to_user},
+                                {"co_assignees": assigned_to_user}
+                            ]}
+                        ]
+                    }
+                else:
+                    query_filters["$or"] = [
+                        {"assigned_to": assigned_to_user},
+                        {"co_assignees": assigned_to_user}
+                    ]
         
         # Get total count
         total_count = await db.leads.count_documents(query_filters)
@@ -526,36 +539,82 @@ async def get_leads_with_multi_assignment_info(
         skip = (page - 1) * limit
         leads = await db.leads.find(query_filters).skip(skip).limit(limit).to_list(None)
         
-        # Convert to extended response format
+        # Convert to extended response format with proper processing
         extended_leads = []
         for lead in leads:
-            extended_lead = LeadResponseExtended(
-                lead_id=lead["lead_id"],
-                status=lead.get("status", "Unknown"),
-                name=lead.get("name", ""),
-                email=lead.get("email", ""),
-                contact_number=lead.get("contact_number"),
-                source=lead.get("source"),
-                category=lead.get("category"),
-                assigned_to=lead.get("assigned_to"),
-                assigned_to_name=lead.get("assigned_to_name"),
-                co_assignees=lead.get("co_assignees", []),
-                co_assignees_names=lead.get("co_assignees_names", []),
-                is_multi_assigned=lead.get("is_multi_assigned", False),
-                assignment_method=lead.get("assignment_method"),
-                created_at=lead.get("created_at", datetime.utcnow()),
-                updated_at=lead.get("updated_at")
-            )
-            extended_leads.append(extended_lead)
+            try:
+                # Process the lead through the standard processing function first
+                processed_lead = await process_lead_for_response(lead, db, current_user)
+                
+                # Create the extended lead response
+                extended_lead = LeadResponseExtended(
+                    lead_id=processed_lead["lead_id"],
+                    status=processed_lead.get("status", "Unknown"),
+                    name=processed_lead.get("name", ""),
+                    email=processed_lead.get("email", ""),
+                    contact_number=processed_lead.get("contact_number"),
+                    source=processed_lead.get("source"),  # This will now be correct after processing
+                    category=processed_lead.get("category"),
+                    assigned_to=processed_lead.get("assigned_to"),
+                    assigned_to_name=processed_lead.get("assigned_to_name"),
+                    co_assignees=processed_lead.get("co_assignees", []),
+                    co_assignees_names=processed_lead.get("co_assignees_names", []),
+                    is_multi_assigned=processed_lead.get("is_multi_assigned", False),
+                    assignment_method=processed_lead.get("assignment_method"),
+                    created_at=processed_lead.get("created_at", datetime.utcnow()),
+                    updated_at=processed_lead.get("updated_at")
+                )
+                extended_leads.append(extended_lead)
+            except Exception as lead_error:
+                logger.error(f"Error processing lead {lead.get('lead_id', 'unknown')} in extended view: {lead_error}")
+                # Create a minimal response for failed leads
+                try:
+                    extended_lead = LeadResponseExtended(
+                        lead_id=lead.get("lead_id", "unknown"),
+                        status=lead.get("status", "Unknown"),
+                        name=lead.get("name", ""),
+                        email=lead.get("email", ""),
+                        contact_number=lead.get("contact_number", ""),
+                        source=lead.get("source", "website"),  # Use default if processing failed
+                        category=lead.get("category", ""),
+                        assigned_to=lead.get("assigned_to"),
+                        assigned_to_name=lead.get("assigned_to_name", "Unknown"),
+                        co_assignees=lead.get("co_assignees", []),
+                        co_assignees_names=lead.get("co_assignees_names", []),
+                        is_multi_assigned=lead.get("is_multi_assigned", False),
+                        assignment_method=lead.get("assignment_method"),
+                        created_at=lead.get("created_at", datetime.utcnow()),
+                        updated_at=lead.get("updated_at")
+                    )
+                    extended_leads.append(extended_lead)
+                except Exception as fallback_error:
+                    logger.error(f"Failed to create even minimal response for lead {lead.get('lead_id', 'unknown')}: {fallback_error}")
+                    continue
         
-        return extended_leads
-    
+        # Convert ObjectIds to strings for JSON serialization
+        final_leads = convert_objectid_to_str(extended_leads)
+        
+        # Return with pagination metadata
+        return {
+            "leads": final_leads,
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total": total_count,
+                "total_pages": (total_count + limit - 1) // limit,
+                "has_next": skip + limit < total_count,
+                "has_prev": page > 1
+            }
+        }
+        
     except Exception as e:
         logger.error(f"Error getting extended leads: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get leads: {str(e)}"
         )
+
+
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -606,7 +665,16 @@ async def process_lead_for_response(lead: Dict[str, Any], db, current_user: Dict
         lead["is_multi_assigned"] = lead.get("is_multi_assigned", False)
         
         # Fetch user info for created_by
-        user = await db.users.find_one({"_id": ObjectId(lead.get("created_by"))}) if lead.get("created_by") else None
+        # FIXED CODE with ObjectId validation
+        created_by = lead.get("created_by")
+        user = None
+        if created_by:
+            if ObjectId.is_valid(created_by):
+                # created_by is a valid ObjectId
+                user = await db.users.find_one({"_id": ObjectId(created_by)})
+            else:
+                # created_by is likely an email address (legacy data)
+                user = await db.users.find_one({"email": created_by})
         if user:
             full_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip()
             lead["created_by_name"] = full_name if full_name else user.get('email', 'Unknown User')
