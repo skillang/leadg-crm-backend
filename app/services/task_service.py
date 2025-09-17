@@ -536,14 +536,19 @@ class TaskService:
             logger.info(f"Found {len(tasks)} tasks for lead {lead_id}")
             
             # Populate user names for each task
+            # Populate user names for each task with efficient ObjectId conversion
             enriched_tasks = []
             for task in tasks:
-                # Convert ObjectIds to strings and add user names
+                # Convert ONLY ObjectId fields to strings (in-place, efficient)
                 task["id"] = str(task["_id"])
-                task["created_by"] = str(task["created_by"])
-                task["lead_object_id"] = str(task["lead_object_id"])
+                task["created_by"] = str(task["created_by"]) if task.get("created_by") else ""
+                task["assigned_to"] = str(task["assigned_to"]) if task.get("assigned_to") else None
+                task["lead_object_id"] = str(task["lead_object_id"]) if task.get("lead_object_id") else ""
                 
-                # 🔑 Get creator name (ALWAYS show who created the task)
+                # Remove the original _id to avoid duplication
+                task.pop("_id", None)
+                
+                # Get creator name (same as before)
                 try:
                     creator = await db.users.find_one({"_id": ObjectId(task["created_by"])})
                     if creator:
@@ -556,10 +561,10 @@ class TaskService:
                     else:
                         task["created_by_name"] = "Unknown User"
                 except Exception as e:
-                    logger.warning(f"Could not get creator name for task {task['id']}: {e}")
+                    logger.warning(f"Could not get creator name: {e}")
                     task["created_by_name"] = "Unknown User"
                 
-                # 🔑 Get assigned user name (if exists)
+                # Get assigned user name (same as before)
                 if task.get("assigned_to"):
                     try:
                         assigned_user = await db.users.find_one({"_id": ObjectId(task["assigned_to"])})
@@ -620,7 +625,8 @@ class TaskService:
                 "due_time": task.get("due_time"),
                 "notes": task.get("notes"),
                 "created_by": str(task.get("created_by", "")),
-                "assigned_to": task.get("assigned_to", ""),
+                "assigned_to": str(task.get("assigned_to", "")) if task.get("assigned_to") else "",  # FIXED: Convert ObjectId
+                "lead_object_id": str(task.get("lead_object_id", "")) if task.get("lead_object_id") else "",  # ADD: This field
                 "created_at": task.get("created_at"),
                 "updated_at": task.get("updated_at"),
                 "completed_at": task.get("completed_at"),

@@ -207,6 +207,7 @@ class NoteService:
                 "total": total,
                 "page": page,
                 "limit": limit,
+                 "pages": (total + limit - 1) // limit, 
                 "has_next": has_next,
                 "has_prev": has_prev,
                 "available_tags": available_tags

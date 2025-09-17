@@ -941,13 +941,27 @@ class LeadResponse(BaseModel):
     call_stats: Optional[CallStatsModel] = Field(default=None, description="Call statistics for this lead")
 
 class LeadListResponse(BaseModel):
-    """Lead list response model"""
+    """Lead list response model with timeline-compatible pagination"""
     leads: List[LeadResponseComprehensive]
-    total: int
-    page: int
-    limit: int
-    has_next: bool
-    has_prev: bool
+    pagination: Dict[str, Any] = Field(
+        ..., 
+        description="Pagination information with page, limit, total, pages, has_next, has_prev"
+    )
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "leads": [],
+                "pagination": {
+                    "page": 1,
+                    "limit": 20,
+                    "total": 100,
+                    "pages": 5,
+                    "has_next": True,
+                    "has_prev": False
+                }
+            }
+        }
 
 class LeadStatusUpdate(BaseModel):
     """Lead status update model"""

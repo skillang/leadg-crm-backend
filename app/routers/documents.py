@@ -123,7 +123,7 @@ async def get_admin_document_dashboard(
         logger.error(f"Error getting admin dashboard: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/admin/pending", response_model=DocumentListResponse)
+@router.get("/admin/pending", )
 async def get_pending_documents_for_approval(
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(20, ge=1, le=100, description="Items per page"),
@@ -131,7 +131,7 @@ async def get_pending_documents_for_approval(
 ):
     """
     Get all pending documents across all leads for admin approval
-    - Admin only endpoint
+    - Admin only endpoint@router.get("/my-documents", response_model=DocumentListResponse)
     - Shows documents with 'Pending' status from all leads
     - Includes lead information for context
     """
@@ -203,13 +203,17 @@ async def get_pending_documents_for_approval(
         # Get total count
         total_count = await document_service.db.lead_documents.count_documents(query)
         
-        return DocumentListResponse(
-            documents=documents,
-            total_count=total_count,
-            page=page,
-            limit=limit,
-            total_pages=(total_count + limit - 1) // limit
-        )
+        return {
+            "documents": documents,
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total": total_count,
+                "pages": (total_count + limit - 1) // limit,
+                "has_next": page * limit < total_count,
+                "has_prev": page > 1
+            }
+        }
         
     except HTTPException:
         raise
@@ -217,7 +221,7 @@ async def get_pending_documents_for_approval(
         logger.error(f"Error getting pending documents: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/my-documents", response_model=DocumentListResponse)
+@router.get("/my-documents")
 async def get_my_documents(
     status: Optional[str] = Query(None, description="Filter by status"),
     page: int = Query(1, ge=1, description="Page number"),
@@ -313,13 +317,17 @@ async def get_my_documents(
         # Get total count
         total_count = await document_service.db.lead_documents.count_documents(query)
         
-        return DocumentListResponse(
-            documents=documents,
-            total_count=total_count,
-            page=page,
-            limit=limit,
-            total_pages=(total_count + limit - 1) // limit
-        )
+        return {
+            "documents": documents,
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total": total_count,
+                "pages": (total_count + limit - 1) // limit,
+                "has_next": page * limit < total_count,
+                "has_prev": page > 1
+            }
+        }
         
     except HTTPException:
         raise
@@ -463,7 +471,7 @@ async def upload_document(
         logger.error(f"Error in upload endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/leads/{lead_id}/documents", response_model=DocumentListResponse)
+@router.get("/leads/{lead_id}/documents")
 async def get_lead_documents(
     lead_id: str,
     document_type: Optional[str] = Query(None, description="Filter by document type"),
@@ -488,7 +496,21 @@ async def get_lead_documents(
             limit=limit
         )
         
-        return DocumentListResponse(**result)
+        # Extract data from the service result
+        documents = result["documents"]
+        total_count = result["total_count"]
+        
+        return {
+            "documents": documents,
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total": total_count,
+                "pages": (total_count + limit - 1) // limit,
+                "has_next": page * limit < total_count,
+                "has_prev": page > 1
+            }
+        }
         
     except HTTPException:
         raise

@@ -150,10 +150,15 @@ class DocumentService:
             
             return {
                 "documents": documents,
-                "total_count": total_count,
+                "total_count": total_count,  # Keep this for router compatibility
                 "page": page,
                 "limit": limit,
-                "total_pages": (total_count + limit - 1) // limit
+                "total_pages": (total_count + limit - 1) // limit,  # Keep this for router compatibility
+                # Add missing timeline-style fields
+                "total": total_count,
+                "pages": (total_count + limit - 1) // limit,
+                "has_next": page * limit < total_count,
+                "has_prev": page > 1
             }
             
         except HTTPException:

@@ -1,5 +1,5 @@
 # app/routers/contacts.py - Fixed Router with All Existing Services
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query  
 from typing import Dict, Any, List
 import logging
 from datetime import datetime
@@ -56,17 +56,38 @@ async def create_contact(
 @convert_dates_to_ist()
 async def get_lead_contacts(
     lead_id: str,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     """
-    Get all contacts for a specific lead.
+    Get all contacts for a specific lead with pagination.
     Returns contacts with summary statistics and lead info.
     """
     try:
-        result = await contact_service.get_lead_contacts(lead_id, current_user)
+        result = await contact_service.get_lead_contacts(lead_id, current_user, page, limit)
+        
+        # Extract data from service result
+        contacts = result["contacts"]
+        total_count = result["total_count"]
+        
         return {
             "success": True,
-            "data": result,
+            "data": {
+                "lead_id": result["lead_id"],
+                "lead_info": result["lead_info"],
+                "contacts": contacts,
+                "primary_contact": result.get("primary_contact"),
+                "contact_summary": result.get("contact_summary")
+            },
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total": total_count,
+                "pages": (total_count + limit - 1) // limit,
+                "has_next": page * limit < total_count,
+                "has_prev": page > 1
+            },
             "timestamp": datetime.utcnow().isoformat()
         }
     except HTTPException:

@@ -1088,7 +1088,7 @@ async def create_lead(
             detail=f"Failed to create lead: {str(e)}"
         )
 
-@router.get("/", response_model=LeadListResponse)
+@router.get("/")
 @convert_lead_dates()  # <-- ADD THIS LINE
 async def get_leads(
     page: int = Query(1, ge=1),
@@ -1237,14 +1237,17 @@ async def get_leads(
         
         logger.info(f"Successfully processed {len(final_leads)} leads out of {len(leads)} total")
         
-        return LeadListResponse(
-            leads=final_leads,
-            total=total,
-            page=page,
-            limit=limit,
-            has_next=skip + limit < total,
-            has_prev=page > 1
-        )
+        return {
+            "leads": final_leads,
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total": total,
+                "pages": (total + limit - 1) // limit,
+                "has_next": page * limit < total,
+                "has_prev": page > 1
+            }
+        }
         
     except Exception as e:
         logger.error(f"Get leads error: {e}")
@@ -1253,7 +1256,7 @@ async def get_leads(
             detail="Failed to retrieve leads"
         )
 
-@router.get("/my-leads", response_model=LeadListResponse)
+@router.get("/my-leads")
 @convert_lead_dates()
 async def get_my_leads(
     page: int = Query(1, ge=1),
@@ -1388,14 +1391,17 @@ async def get_my_leads(
         # Convert ObjectIds before response
         final_leads = convert_objectid_to_str(processed_leads)
         
-        return LeadListResponse(
-            leads=final_leads,
-            total=total,
-            page=page,
-            limit=limit,
-            has_next=skip + limit < total,
-            has_prev=page > 1
-        )
+        return {
+            "leads": final_leads,
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total": total,
+                "pages": (total + limit - 1) // limit,
+                "has_next": page * limit < total,
+                "has_prev": page > 1
+            }
+        }
         
     except Exception as e:
         logger.error(f"Get my leads error: {e}")

@@ -2,6 +2,7 @@ from pydantic import BaseModel, Field, validator
 from typing import Optional, List
 from datetime import datetime
 from enum import Enum
+from typing import Optional, List, Dict, Any  # Add Dict, Any to imports
 
 class NoteType(str, Enum):
     """Note type enumeration"""
@@ -94,16 +95,33 @@ class NoteResponse(NoteBase):
 
     class Config:
         from_attributes = True
-
 class NoteListResponse(BaseModel):
-    """Note list response model"""
+    """Note list response model with timeline-compatible pagination"""
     notes: List[NoteResponse]
-    total: int
-    page: int
-    limit: int
-    has_next: bool
-    has_prev: bool
-    available_tags: List[str] = []  # All tags used in lead's notes
+    available_tags: List[str] = Field(
+        default_factory=list,
+        description="All tags used in lead's notes"
+    )
+    pagination: Dict[str, Any] = Field(
+        ..., 
+        description="Pagination information with page, limit, total, pages, has_next, has_prev"
+    )
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "notes": [],
+                "available_tags": ["Engineering", "IELTS Ready", "Canada", "Fall 2025"],
+                "pagination": {
+                    "page": 1,
+                    "limit": 20,
+                    "total": 15,
+                    "pages": 1,
+                    "has_next": False,
+                    "has_prev": False
+                }
+            }
+        }
 
 class NoteStatsResponse(BaseModel):
     """Note statistics response"""

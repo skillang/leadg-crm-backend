@@ -106,10 +106,12 @@ async def create_task(
             detail=f"Failed to create task: {str(e)}"
         )
 
-@router.get("/leads/{lead_id}/tasks", response_model=TaskListResponse)
+@router.get("/leads/{lead_id}/tasks",)
 @convert_task_dates()
 async def get_lead_tasks(
     lead_id: str,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
     status_filter: Optional[str] = Query(None, description="Filter by status: pending, overdue, due_today, completed, all"),
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):
@@ -142,7 +144,18 @@ async def get_lead_tasks(
             status_filter
         )
         
-        return TaskListResponse(**result)
+        return {
+            "tasks": result["tasks"],
+            "stats": result.get("stats", {}),
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total": result["total"],
+                "pages": (result["total"] + limit - 1) // limit,
+                "has_next": page * limit < result["total"],
+                "has_prev": page > 1
+            }
+        }
         
     except HTTPException:
         raise
@@ -421,6 +434,8 @@ async def delete_task(
 @router.get("/tasks/my-tasks", response_model=TaskListResponse)
 @convert_task_dates()
 async def get_my_tasks(
+     page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
     status_filter: Optional[str] = Query(None, description="Filter by status: pending, overdue, due_today, completed, all"),
     current_user: Dict[str, Any] = Depends(get_current_active_user)
 ):
@@ -460,13 +475,18 @@ async def get_my_tasks(
             status_filter
         )
         
-        return TaskListResponse(
-            tasks=result["tasks"],
-            # total=result["total"],
-            total=global_stats["total_tasks"],
-            stats=global_stats  # ✅ Using the existing global stats method
-        )
-        
+        return {
+            "tasks": result["tasks"],
+            "stats": global_stats,
+            "pagination": {
+                "page": page,
+                "limit": limit, 
+                "total": global_stats["total_tasks"],
+                "pages": (global_stats["total_tasks"] + limit - 1) // limit,
+                "has_next": page * limit < global_stats["total_tasks"],
+                "has_prev": page > 1
+            }
+        }
     except HTTPException:
         raise
     except Exception as e:

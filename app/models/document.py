@@ -56,12 +56,27 @@ class DocumentResponse(BaseModel):
     lead_context: Optional[Dict[str, Any]] = None  # Added for admin/user context
 
 class DocumentListResponse(BaseModel):
-    """Model for paginated document list response"""
+    """Model for paginated document list response with timeline-compatible pagination"""
     documents: list[DocumentResponse]
-    total_count: int
-    page: int
-    limit: int
-    total_pages: int
+    pagination: Dict[str, Any] = Field(
+        ..., 
+        description="Pagination information with page, limit, total, pages, has_next, has_prev"
+    )
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "documents": [],
+                "pagination": {
+                    "page": 1,
+                    "limit": 10,
+                    "total": 25,
+                    "pages": 3,
+                    "has_next": True,
+                    "has_prev": False
+                }
+            }
+        }
 
 class BulkDocumentAction(BaseModel):
     """Model for bulk document operations"""

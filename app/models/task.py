@@ -2,6 +2,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime, date
 from enum import Enum
+from typing import Optional, List, Dict, Any  # Add Dict, Any to imports
 
 class TaskType(str, Enum):
     """Task type enumeration"""
@@ -86,11 +87,38 @@ class TaskResponse(TaskBase):
         from_attributes = True
 
 class TaskListResponse(BaseModel):
-    """Task list response model"""
+    """Task list response model with timeline-compatible pagination"""
     tasks: List[TaskResponse]
-    total: int
-    stats: dict  # {total_tasks: 5, overdue_tasks: 2, due_today: 1, completed: 1}
-
+    stats: dict = Field(
+        default_factory=dict,
+        description="Task statistics: total_tasks, overdue_tasks, due_today, completed, etc."
+    )
+    pagination: Dict[str, Any] = Field(
+        ..., 
+        description="Pagination information with page, limit, total, pages, has_next, has_prev"
+    )
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "tasks": [],
+                "stats": {
+                    "total_tasks": 25,
+                    "overdue_tasks": 3,
+                    "due_today": 5,
+                    "completed": 10,
+                    "pending_tasks": 7
+                },
+                "pagination": {
+                    "page": 1,
+                    "limit": 20,
+                    "total": 25,
+                    "pages": 2,
+                    "has_next": True,
+                    "has_prev": False
+                }
+            }
+        }
 class TaskStatsResponse(BaseModel):
     """Task statistics response"""
     total_tasks: int = 0

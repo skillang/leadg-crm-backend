@@ -98,7 +98,7 @@ class ContactService:
             logger.error(f"Traceback: {traceback.format_exc()}")
             raise HTTPException(status_code=500, detail=f"Failed to create contact: {str(e)}")
 
-    async def get_lead_contacts(self, lead_id: str, current_user: Dict[str, Any]) -> Dict[str, Any]:
+    async def get_lead_contacts(self, lead_id: str, current_user: Dict[str, Any], page: int = 1, limit: int = 20) -> Dict[str, Any]:
         """Get all contacts for a lead with enhanced data"""
         print("=" * 50)
         print(f"GET_LEAD_CONTACTS CALLED!")
@@ -112,9 +112,17 @@ class ContactService:
             await self._check_lead_access(lead_id, current_user)
             
             # Get contacts with aggregation to enrich data
+            # Get total count first
+            total_count = await db.lead_contacts.count_documents({"lead_id": lead_id})
+
+            # Calculate pagination
+            skip = (page - 1) * limit
+
             pipeline = [
                 {"$match": {"lead_id": lead_id}},
                 {"$sort": {"is_primary": -1, "created_at": -1}},  # Primary first, then by date
+                {"$skip": skip},
+                {"$limit": limit},
                 {
                     "$lookup": {
                         "from": "users",
@@ -163,10 +171,10 @@ class ContactService:
                     "status": lead_info.get("status")
                 } if lead_info else None,
                 "contacts": contacts,
-                "total_count": len(contacts),
+                "total_count":  total_count,
                 "primary_contact": next((c for c in contacts if c["is_primary"]), None),
                 "contact_summary": {
-                    "total": len(contacts),
+                    "total":  total_count,
                     "by_role": self._count_by_field(contacts, "role"),
                     "by_relationship": self._count_by_field(contacts, "relationship")
                 }

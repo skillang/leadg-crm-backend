@@ -98,7 +98,7 @@ async def create_note(
             detail=f"Failed to create note: {str(e)}"
         )
 
-@router.get("/leads/{lead_id}/notes", response_model=NoteListResponse)
+@router.get("/leads/{lead_id}/notes")
 @convert_dates_to_ist()
 async def get_lead_notes(
     lead_id: str,
@@ -149,7 +149,18 @@ async def get_lead_notes(
             show_private
         )
         
-        return NoteListResponse(**result)
+        return {
+            "notes": result["notes"],
+            "available_tags": result.get("available_tags", []),
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total": result["total"],
+                "pages": (result["total"] + limit - 1) // limit,
+                "has_next": page * limit < result["total"],
+                "has_prev": page > 1
+            }
+        }
         
     except HTTPException:
         raise
