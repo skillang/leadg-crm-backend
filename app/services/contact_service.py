@@ -136,6 +136,7 @@ class ContactService:
             contacts = []
             async for contact in db.lead_contacts.aggregate(pipeline):
                 # Format contact data
+                # Format contact data with ObjectId conversion
                 contact_data = {
                     "id": str(contact["_id"]),
                     "lead_id": contact["lead_id"],
@@ -150,9 +151,11 @@ class ContactService:
                     "address": contact.get("address", ""),
                     "notes": contact.get("notes", ""),
                     "linked_leads": contact.get("linked_leads", []),
+                    "created_by": str(contact.get("created_by", "")) if contact.get("created_by") else "",  # ADDED: Convert ObjectId
                     "created_by_name": contact.get("created_by_name", "Unknown"),
                     "created_at": contact["created_at"],
-                    "updated_at": contact.get("updated_at")
+                    "updated_at": contact.get("updated_at"),
+                    "updated_by": str(contact.get("updated_by", "")) if contact.get("updated_by") else None  # ADDED: Convert ObjectId
                 }
                 contacts.append(contact_data)
             

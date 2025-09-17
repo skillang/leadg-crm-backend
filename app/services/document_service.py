@@ -446,7 +446,7 @@ class DocumentService:
             # Don't fail main operation if activity logging fails
     
     def _format_document_response(self, document: Dict[str, Any]) -> DocumentResponse:
-        """Format document for API response"""
+        """Format document for API response with ObjectId conversion"""
         doc_data = {
             "id": str(document["_id"]),
             "lead_id": document["lead_id"],
@@ -455,10 +455,12 @@ class DocumentService:
             "file_size": document["file_size"],
             "mime_type": document["mime_type"],
             "status": document["status"],
+            "uploaded_by": str(document["uploaded_by"]) if document.get("uploaded_by") else "",  # ADDED: Convert ObjectId
             "uploaded_by_name": document["uploaded_by_name"],
             "uploaded_at": document["uploaded_at"],
             "notes": document.get("notes", ""),
             "expiry_date": document.get("expiry_date"),
+            "approved_by": str(document.get("approved_by", "")) if document.get("approved_by") else None,  # ADDED: Convert ObjectId
             "approved_by_name": document.get("approved_by_name"),
             "approved_at": document.get("approved_at"),
             "approval_notes": document.get("approval_notes", "")
