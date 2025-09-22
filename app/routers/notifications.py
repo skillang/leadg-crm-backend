@@ -761,47 +761,24 @@ async def send_test_notification(
 
 @router.get("/history")
 async def get_notification_history(
-    limit: int = Query(10, ge=1, le=100, description="Number of notifications per page"),
-    page: int = Query(1, ge=1, description="Page number (1-based)"),  # Changed from offset to page
-    date_from: Optional[str] = Query(None, description="Start date filter (YYYY-MM-DD)"),
-    date_to: Optional[str] = Query(None, description="End date filter (YYYY-MM-DD)"),
+    limit: int = Query(default=10, ge=1, le=100, description="Number of notifications per page"),
+    page: int = Query(default=1, ge=1, description="Page number (1-based)"),  # ✅ Changed from offset to page
+    date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     notification_type: Optional[str] = Query(None, description="Filter by notification type"),
     search: Optional[str] = Query(None, description="Search by lead name"),
-    current_user: Dict[str, Any] = Depends(get_current_active_user)
+    current_user: Dict[str, Any] = Depends(get_current_user)
 ):
-    """
-    📧 Get notification history with UNIVERSAL PAGINATION PATTERN
-    
-    **Fixed Issues:**
-    - ✅ Uses page-based pagination instead of offset-based
-    - ✅ Follows PaginationMeta interface consistently
-    - ✅ Aligns with ServerPagination component expectations
-    - ✅ Matches universal pagination pattern used in leads, timeline, etc.
-    
-    **Universal Pagination Structure:**
-    ```json
-    {
-        "pagination": {
-            "total": 150,
-            "page": 1,
-            "limit": 10,  
-            "pages": 15,
-            "has_next": true,
-            "has_prev": false
-        }
-    }
-    ```
-    """
+   
     try:
-        user_email = current_user.get("email")
-        logger.info(f"📧 Getting notification history for {user_email}")
-        
         db = get_database()
+        user_email = current_user.get("email", "")
+        logger.info(f"📧 Getting notification history for {user_email} - Page: {page}, Limit: {limit}")
         
-        # Build query
+        # Build query filters
         query = {"user_email": user_email}
         
-        # Date filtering
+        # Date range filter
         if date_from or date_to:
             date_filter = {}
             
@@ -809,6 +786,7 @@ async def get_notification_history(
                 try:
                     start_date = datetime.fromisoformat(date_from)
                     date_filter["$gte"] = start_date
+                    logger.info(f"📅 Date filter from: {start_date}")
                 except ValueError:
                     raise HTTPException(status_code=400, detail="Invalid date_from format. Use YYYY-MM-DD")
             
@@ -817,6 +795,7 @@ async def get_notification_history(
                     # Add 23:59:59 to include the entire day
                     end_date = datetime.fromisoformat(date_to).replace(hour=23, minute=59, second=59)
                     date_filter["$lte"] = end_date
+                    logger.info(f"📅 Date filter to: {end_date}")
                 except ValueError:
                     raise HTTPException(status_code=400, detail="Invalid date_to format. Use YYYY-MM-DD")
             
@@ -825,17 +804,24 @@ async def get_notification_history(
         # Notification type filter
         if notification_type:
             query["notification_type"] = notification_type
+            logger.info(f"🔔 Filtering by type: {notification_type}")
         
-        # Search by lead name filter
+        # Search by lead name filter (case-insensitive)
         if search:
             query["lead_name"] = {"$regex": search, "$options": "i"}
+            logger.info(f"🔍 Searching for: {search}")
+        
+        logger.info(f"🔍 Final query: {query}")
         
         # Get total count for pagination
         total_count = await db.notification_history.count_documents(query)
+        logger.info(f"📊 Total notifications found: {total_count}")
         
-        # Calculate pagination using page-based system (like your universal pattern)
+        # ✅ Calculate pagination using page-based system (Universal Pattern)
         skip = (page - 1) * limit
         total_pages = (total_count + limit - 1) // limit  # Ceiling division
+        
+        logger.info(f"📄 Pagination - Skip: {skip}, Total Pages: {total_pages}")
         
         # Get notifications with pagination
         notifications = await db.notification_history.find(
@@ -854,6 +840,8 @@ async def get_notification_history(
             }
         ).sort("created_at", -1).skip(skip).limit(limit).to_list(None)
         
+        logger.info(f"📋 Retrieved {len(notifications)} notifications")
+        
         # Format notifications for response
         formatted_notifications = []
         for notif in notifications:
@@ -870,34 +858,43 @@ async def get_notification_history(
                 "read_at": notif["read_at"].isoformat() if notif.get("read_at") else None
             })
         
-        # ✅ FIXED: Universal Pagination Pattern (matches PaginationMeta interface)
+        # ✅ UNIVERSAL PAGINATION PATTERN (Matches PaginationMeta interface)
+        pagination_response = {
+            "total": total_count,           # Total records
+            "page": page,                   # Current page (1-based)
+            "limit": limit,                 # Items per page
+            "pages": total_pages,           # Total pages (consistent naming)
+            "has_next": page < total_pages, # Boolean: more pages available
+            "has_prev": page > 1            # Boolean: previous pages available
+        }
+        
+        logger.info(f"✅ Returning {len(formatted_notifications)} notifications with pagination: {pagination_response}")
+        
         return {
             "success": True,
             "notifications": formatted_notifications,
-            "pagination": {
-                "total": total_count,       # Total records
-                "page": page,              # Current page (1-based)
-                "limit": limit,            # Items per page
-                "pages": total_pages,      # Total pages (renamed from total_pages)
-                "has_next": page < total_pages,  # Boolean: more pages available
-                "has_prev": page > 1       # Boolean: previous pages available
-                # ❌ REMOVED: offset, current_page (not in universal pattern)
-            },
+            "pagination": pagination_response,  # ✅ Universal pagination structure
             "filters": {
+                "page": page,               # Include current page in filters
+                "limit": limit,             # Include current limit in filters
                 "date_from": date_from,
                 "date_to": date_to,
                 "notification_type": notification_type,
                 "search": search
             },
-            "user_email": user_email
+            "summary": {
+                "total_notifications": total_count,
+                "current_page_count": len(formatted_notifications),
+                "filtered": bool(date_from or date_to or notification_type or search),
+                "user_email": user_email
+            }
         }
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting notification history: {str(e)}")
+        logger.error(f"❌ Error getting notification history: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get notification history: {str(e)}")
-
 
 # ============================================================================
 # WEBHOOK INTEGRATION STATUS
