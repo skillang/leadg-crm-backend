@@ -763,47 +763,117 @@ async def send_test_notification(
 async def get_notification_history(
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    notification_type: Optional[str] = Query(None, description="Filter by notification type"),
+    search: Optional[str] = Query(None, description="Search by lead name"),
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     """
-    🆕 Get notification history for user
-    Future enhancement to show notification timeline
+    Get notification history for user with filters
+    Shows all past notifications with date range and type filtering
     """
     try:
-        # For now, return placeholder data
-        # In future, this would query a notifications_history collection
+        db = get_database()
+        user_email = current_user.get("email", "")
         
-        placeholder_history = [
+        # Build query filters
+        query = {"user_email": user_email}
+        
+        # Date range filter
+        if date_from or date_to:
+            date_filter = {}
+            if date_from:
+                try:
+                    date_filter["$gte"] = datetime.fromisoformat(date_from)
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid date_from format. Use YYYY-MM-DD")
+            
+            if date_to:
+                try:
+                    # Add 23:59:59 to include the entire day
+                    end_date = datetime.fromisoformat(date_to).replace(hour=23, minute=59, second=59)
+                    date_filter["$lte"] = end_date
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid date_to format. Use YYYY-MM-DD")
+            
+            query["created_at"] = date_filter
+        
+        # Notification type filter
+        if notification_type:
+            query["notification_type"] = notification_type
+        
+        # Search by lead name filter
+        if search:
+            query["lead_name"] = {"$regex": search, "$options": "i"}
+        
+        # Get total count for pagination
+        total_count = await db.notification_history.count_documents(query)
+        
+        # Get notifications with pagination
+        notifications = await db.notification_history.find(
+            query,
             {
-                "id": f"notif_{i}",
-                "type": "new_whatsapp_message",
-                "lead_id": f"LD-100{i}",
-                "lead_name": f"Test Lead {i}",
-                "message": f"Sample notification {i}",
-                "timestamp": (datetime.utcnow() - timedelta(hours=i)).isoformat(),
-                "read": i % 3 != 0  # Some read, some unread
+                "notification_id": 1,
+                "notification_type": 1,
+                "lead_id": 1,
+                "lead_name": 1,
+                "message_preview": 1,
+                "message_id": 1,
+                "direction": 1,
+                "created_at": 1,
+                "read_at": 1,
+                "_id": 0  # Exclude MongoDB _id
             }
-            for i in range(1, min(limit + 1, 11))  # Max 10 placeholder items
-        ]
+        ).sort("created_at", -1).skip(offset).limit(limit).to_list(None)
+        
+        # Format notifications for response
+        formatted_notifications = []
+        for notif in notifications:
+            formatted_notifications.append({
+                "id": notif["notification_id"],
+                "type": notif["notification_type"],
+                "lead_id": notif.get("lead_id"),
+                "lead_name": notif.get("lead_name", "Unknown Lead"),
+                "message": notif.get("message_preview", ""),
+                "message_id": notif.get("message_id"),
+                "direction": notif.get("direction"),
+                "timestamp": notif["created_at"].isoformat(),
+                "read": notif.get("read_at") is not None,
+                "read_at": notif["read_at"].isoformat() if notif.get("read_at") else None
+            })
+        
+        # Calculate pagination info
+        has_next = offset + limit < total_count
+        has_prev = offset > 0
+        total_pages = (total_count + limit - 1) // limit  # Ceiling division
         
         return {
             "success": True,
-            "notifications": placeholder_history,
+            "notifications": formatted_notifications,
             "pagination": {
                 "limit": limit,
                 "offset": offset,
-                "total": 10,  # Placeholder total
-                "has_next": False,
-                "has_prev": offset > 0
+                "total": total_count,
+                "total_pages": total_pages,
+                "has_next": has_next,
+                "has_prev": has_prev,
+                "current_page": (offset // limit) + 1
             },
-            "user_email": current_user.get("email"),
-            "message": "Notification history feature in development"
+            "filters": {
+                "date_from": date_from,
+                "date_to": date_to,
+                "notification_type": notification_type,
+                "search": search
+            },
+            "user_email": user_email
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting notification history: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get notification history: {str(e)}")
-
 # ============================================================================
 # WEBHOOK INTEGRATION STATUS
 # ============================================================================

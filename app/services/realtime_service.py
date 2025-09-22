@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import uuid
 from typing import Dict, Set, List, Any, Optional
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -259,6 +260,9 @@ class RealtimeNotificationManager:
                     "unread_leads": list(self.user_unread_leads[user_email])
                 }
                 
+                # 🆕 NEW: Save notification to history
+                await self._save_notification_to_history(user_email, notification)
+                
                 # Send to all user's connections
                 await self._send_to_user(user_email, notification)
             
@@ -340,6 +344,49 @@ class RealtimeNotificationManager:
                     break
         except Exception as e:
             logger.debug(f"Error updating connection activity: {str(e)}")
+
+    def _update_connection_activity(self, user_email: str, queue: asyncio.Queue):
+        """Update last activity timestamp for connection"""
+        try:
+            queue_id = id(queue)
+            for metadata in self.connection_metadata.get(user_email, {}).values():
+                if metadata.get("queue_id") == queue_id:
+                    metadata["last_activity"] = datetime.utcnow()
+                    break
+        except Exception as e:
+            logger.debug(f"Error updating connection activity: {str(e)}")
+
+    # 🆕 ADD THIS NEW METHOD HERE:
+    async def _save_notification_to_history(self, user_email: str, notification_data: Dict[str, Any]):
+        """
+        Save notification to persistent history for later retrieval
+        """
+        try:
+            from ..config.database import get_database
+            db = get_database()
+            
+            # Create notification history document
+            history_doc = {
+                "notification_id": str(uuid.uuid4()),
+                "user_email": user_email,
+                "notification_type": notification_data.get("type", "unknown"),
+                "lead_id": notification_data.get("lead_id"),
+                "lead_name": notification_data.get("lead_name"),
+                "message_preview": notification_data.get("message_preview", ""),
+                "message_id": notification_data.get("message_id"),
+                "direction": notification_data.get("direction"),
+                "created_at": datetime.utcnow(),
+                "read_at": None,
+                "original_data": notification_data
+            }
+            
+            # Save to database
+            await db.notification_history.insert_one(history_doc)
+            logger.debug(f"💾 Notification saved to history for user: {user_email}")
+            
+        except Exception as e:
+            logger.error(f"Error saving notification to history: {str(e)}")
+            # Don't fail the notification if history save fails
     
     # ============================================================================
     # MONITORING AND STATISTICS

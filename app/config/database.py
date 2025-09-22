@@ -229,6 +229,41 @@ async def create_indexes():
         
         logger.info("✅ Bulk WhatsApp Jobs indexes created")
         
+
+        # ============================================================================
+        # 🆕 NEW: NOTIFICATION HISTORY COLLECTION INDEXES
+        # ============================================================================
+        logger.info("📨 Creating Notification History collection indexes...")
+        
+        notification_history_collection = db.notification_history
+        
+        # Essential indexes for notification history
+        await notification_history_collection.create_index("notification_id", unique=True)  # Unique notification identifier
+        await notification_history_collection.create_index("user_email")  # Query by user
+        await notification_history_collection.create_index("notification_type")  # Filter by type
+        await notification_history_collection.create_index("lead_id")  # Query by lead
+        await notification_history_collection.create_index("created_at")  # Sort by time
+        await notification_history_collection.create_index([("created_at", -1)])  # Recent notifications first
+        
+        # Compound indexes for efficient queries
+        await notification_history_collection.create_index([("user_email", 1), ("created_at", -1)])  # User history timeline
+        await notification_history_collection.create_index([("user_email", 1), ("notification_type", 1)])  # User notifications by type
+        await notification_history_collection.create_index([("lead_id", 1), ("created_at", -1)])  # Lead notification timeline
+        await notification_history_collection.create_index([("user_email", 1), ("lead_id", 1)])  # User notifications for specific lead
+        
+        # Performance indexes for history queries
+        await notification_history_collection.create_index([("notification_type", 1), ("created_at", -1)])  # Type-based history
+        await notification_history_collection.create_index([("user_email", 1), ("created_at", -1), ("notification_type", 1)])  # Complete user history
+        
+        # Read status tracking (for future enhancement)
+        await notification_history_collection.create_index("read_at")  # Filter read/unread
+        await notification_history_collection.create_index([("user_email", 1), ("read_at", 1)])  # User's read status
+        
+        logger.info("✅ Notification History indexes created")
+
+
+
+
         # ============================================================================
         # LEAD_STAGES COLLECTION INDEXES
         # ============================================================================
@@ -413,7 +448,9 @@ async def get_collection_stats():
             "lead_activities",
             "lead_counters",
             "whatsapp_messages",  # WhatsApp messages collection
-            "bulk_whatsapp_jobs",  # 🆕 NEW: Bulk WhatsApp jobs collection
+            "bulk_whatsapp_jobs",
+            
+            "notification_history", 
             "token_blacklist",
             "user_sessions",
             # Future collections
@@ -493,7 +530,17 @@ async def get_collection_stats():
                     
                     text_jobs = await db[collection_name].count_documents({"message_type": "text"})
                     stats[f"{collection_name}_text"] = text_jobs
+                elif collection_name == "notification_history":
+                    # Notification type breakdown
+                    whatsapp_notifications = await db[collection_name].count_documents({"notification_type": "new_whatsapp_message"})
+                    stats[f"{collection_name}_whatsapp"] = whatsapp_notifications
                     
+                    system_notifications = await db[collection_name].count_documents({"notification_type": "system_notification"})
+                    stats[f"{collection_name}_system"] = system_notifications
+                    
+                    # Read status tracking
+                    unread_notifications = await db[collection_name].count_documents({"read_at": None})
+                    stats[f"{collection_name}_unread"] = unread_notifications    
                 # Stats for course levels and sources
                 elif collection_name == "course_levels":
                     active_count = await db[collection_name].count_documents({"is_active": True})
@@ -521,7 +568,7 @@ async def get_index_stats():
     try:
         db = get_database()
         
-        collections = ["users", "leads", "lead_tasks", "lead_activities", "course_levels", "sources", "whatsapp_messages", "bulk_whatsapp_jobs"]  # Added bulk WhatsApp collection
+        collections = ["users", "leads", "lead_tasks", "lead_activities", "course_levels", "sources", "whatsapp_messages", "bulk_whatsapp_jobs", "notification_history"]  # Added bulk WhatsApp collection
         index_stats = {}
         
         for collection_name in collections:
