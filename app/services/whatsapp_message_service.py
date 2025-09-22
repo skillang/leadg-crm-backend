@@ -258,6 +258,8 @@ class WhatsAppMessageService:
                 "direction": message_data["direction"],
                 "message_id": message_data["message_id"]
             }
+            for user in authorized_users:
+                await self.realtime_manager._save_notification_to_history(user["email"], notification)
             
             # Instantly notify all authorized users
             await self.realtime_manager.notify_new_message(lead_id, notification, authorized_users)
