@@ -285,16 +285,19 @@ class LeadService:
             
             logger.info(f"Creating lead with new fields: age={basic_info.age}, experience={basic_info.experience}, nationality={basic_info.nationality}")
             
+           
             # Step 2: Check for duplicates
             if not force_create:
-                duplicate_check = await self.check_duplicate_lead(basic_info.email)
+                duplicate_check = await self.check_duplicate_lead(
+                    email=basic_info.email,
+                    contact_number=basic_info.contact_number
+                )
                 if duplicate_check["is_duplicate"]:
                     return {
                         "success": False,
-                        "message": "Lead with this email already exists",
+                        "message": duplicate_check["message"],
                         "duplicate_check": duplicate_check
                     }
-            
             # 🆕 NEW: Step 3: Validate and set dynamic fields
             validated_course_level = await self.validate_and_set_course_level(
                 getattr(basic_info, 'course_level', None)
@@ -502,11 +505,15 @@ class LeadService:
                 }
             
             # Step 1: Check for duplicates
-            duplicate_check = await self.check_duplicate_lead(basic_info.email)
+           
+            duplicate_check = await self.check_duplicate_lead(
+                email=basic_info.email,
+                contact_number=getattr(basic_info, 'contact_number', None)
+            )
             if duplicate_check["is_duplicate"]:
                 return {
                     "success": False,
-                    "message": "Lead with this email already exists",
+                    "message": duplicate_check["message"],
                     "duplicate_check": duplicate_check
                 }
             
@@ -1298,24 +1305,55 @@ class LeadService:
             logger.error(f"Error getting multi-assignment stats: {str(e)}")
             return {"error": str(e)}
     
-    async def check_duplicate_lead(self, email: str) -> Dict[str, Any]:
-        """Check if lead with email already exists"""
+    async def check_duplicate_lead(self, email: str, contact_number: str = None) -> Dict[str, Any]:
+        """Check if lead with email OR phone already exists"""
         try:
             db = self.get_db()
-            existing_lead = await db.leads.find_one({"email": email.lower()})
             
-            if existing_lead:
-                return {
-                    "is_duplicate": True,
-                    "checked": True,
-                    "existing_lead_id": existing_lead.get("lead_id"),
-                    "duplicate_field": "email",
-                    "message": f"Lead with email {email} already exists"
-                }
+            # Normalize inputs
+            email_lower = email.lower().strip() if email else None
+            phone_normalized = self._normalize_phone_number(contact_number) if contact_number else None
             
+            # Check for email duplicate
+            if email_lower:
+                email_duplicate = await db.leads.find_one({"email": email_lower})
+                if email_duplicate:
+                    return {
+                        "is_duplicate": True,
+                        "checked": True,
+                        "existing_lead_id": email_duplicate.get("lead_id"),
+                        "duplicate_field": "email",
+                        "duplicate_value": email,
+                        "existing_lead_name": email_duplicate.get("name", "Unknown"),
+                        "existing_lead_phone": email_duplicate.get("contact_number", ""),
+                        "message": f"Lead with email '{email}' already exists (Lead ID: {email_duplicate.get('lead_id')})"
+                    }
+            
+            # Check for phone duplicate
+            if phone_normalized:
+                phone_duplicate = await db.leads.find_one({
+                    "$or": [
+                        {"contact_number": phone_normalized},
+                        {"phone_number": phone_normalized}
+                    ]
+                })
+                if phone_duplicate:
+                    return {
+                        "is_duplicate": True,
+                        "checked": True,
+                        "existing_lead_id": phone_duplicate.get("lead_id"),
+                        "duplicate_field": "phone",
+                        "duplicate_value": contact_number,
+                        "existing_lead_name": phone_duplicate.get("name", "Unknown"),
+                        "existing_lead_email": phone_duplicate.get("email", ""),
+                        "message": f"Lead with phone '{contact_number}' already exists (Lead ID: {phone_duplicate.get('lead_id')})"
+                    }
+            
+            # No duplicates found
             return {
                 "is_duplicate": False,
-                "checked": True
+                "checked": True,
+                "message": "No duplicates found - both email and phone are unique"
             }
             
         except Exception as e:
@@ -1323,8 +1361,23 @@ class LeadService:
             return {
                 "is_duplicate": False,
                 "checked": False,
+                "error": True,
                 "message": f"Error checking duplicate: {str(e)}"
             }
+        
+    def _normalize_phone_number(self, phone: str) -> str:
+            """Normalize phone number for consistent duplicate checking"""
+            if not phone:
+                return None
+                
+            # Remove all non-digit characters except +
+            normalized = ''.join(c for c in phone if c.isdigit() or c == '+')
+
+            # Remove leading + for comparison
+            if normalized.startswith('+'):
+                normalized = normalized[1:]
+            
+            return normalized if len(normalized) >= 10 else None
 
     async def log_lead_activity(
         self,

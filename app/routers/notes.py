@@ -51,7 +51,10 @@ async def create_note(
             db = get_database()  # No await!
             lead = await db.leads.find_one({
                 "lead_id": lead_id,
-                "assigned_to": current_user["email"]
+                "$or": [
+                    {"assigned_to": current_user["email"]},
+                    {"co_assignees": {"$in": [current_user["email"]]}}
+                ]
             })
             if not lead:
                 logger.warning(f"User {current_user['email']} tried to create note for unauthorized lead {lead_id}")
@@ -123,7 +126,10 @@ async def get_lead_notes(
             db = get_database()  # ✅ No await
             lead = await db.leads.find_one({
                 "lead_id": lead_id,
-                "assigned_to": current_user["email"]
+                "$or": [
+                    {"assigned_to": current_user["email"]},
+                    {"co_assignees": {"$in": [current_user["email"]]}}
+                ]
             })
             if not lead:
                 logger.warning(f"User {current_user['email']} tried to access unauthorized lead {lead_id}")
@@ -191,7 +197,10 @@ async def get_lead_note_stats(
             db = get_database()  # ✅ No await
             lead = await db.leads.find_one({
                 "lead_id": lead_id,
-                "assigned_to": current_user["email"]
+                "$or": [
+                    {"assigned_to": current_user["email"]},
+                    {"co_assignees": {"$in": [current_user["email"]]}}
+                ]
             })
             if not lead:
                 logger.warning(f"User {current_user['email']} tried to access unauthorized lead {lead_id}")

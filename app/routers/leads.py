@@ -1048,10 +1048,20 @@ async def create_lead(
         
         if not result["success"]:
             if result.get("duplicate_check", {}).get("is_duplicate"):
-                logger.warning(f"Duplicate lead detected: {structured_lead_data.basic_info.email}")
+                duplicate_info = result["duplicate_check"]
+                logger.warning(f"🚫 Duplicate detected: {duplicate_info.get('message', 'Duplicate found')}")
+                
+                # Provide detailed duplicate information
                 raise HTTPException(
                     status_code=400,
-                    detail=result["message"]
+                    detail={
+                        "error": "Duplicate lead detected",
+                        "message": duplicate_info.get("message"),
+                        "duplicate_field": duplicate_info.get("duplicate_field"),
+                        "existing_lead_id": duplicate_info.get("existing_lead_id"),
+                        "existing_lead_name": duplicate_info.get("existing_lead_name"),
+                        "duplicate_value": duplicate_info.get("duplicate_value")
+                    }
                 )
             else:
                 raise HTTPException(
@@ -1120,8 +1130,11 @@ async def get_leads(
         # Build query
         query = {}
         if current_user["role"] != "admin":
-            query["assigned_to"] = current_user["email"]
-        
+            query["$or"] = [
+                {"assigned_to": current_user["email"]},
+                {"co_assignees": {"$in": [current_user["email"]]}}
+            ]
+                
         # 🆕 NEW: Handle stage filter
         if stage:
             query["stage"] = stage
@@ -1282,7 +1295,17 @@ async def get_my_leads(
     """
     try:
         db = get_database()
-        query = {"assigned_to": current_user["email"]}
+        
+        # Base query to include both primary assignments and co-assignments
+        base_user_query = {
+            "$or": [
+                {"assigned_to": current_user["email"]},
+                 {"co_assignees": {"$in": [current_user["email"]]}}
+            ]
+        }
+        
+        # Start with the base user query
+        query = base_user_query
         
         # 🆕 NEW: Add the same filtering logic as get_leads
         if stage:
