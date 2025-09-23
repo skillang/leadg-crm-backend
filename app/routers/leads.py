@@ -1179,12 +1179,19 @@ async def get_leads(
                 query["created_at"] = date_query
 
         # Handle assigned_to filter (admin only)
+        # Handle assigned_to filter (admin only) - FIXED for unassigned leads
         if assigned_to and current_user["role"] == "admin":
+            # Convert string representations to actual None for unassigned leads
+            if assigned_to.lower() in ["null", "none", "unassigned"]:
+                assigned_to_value = None  # Python None = MongoDB null
+            else:
+                assigned_to_value = assigned_to
+            
             if "$or" in query:
                 # Combine with existing OR condition
-                query = {"$and": [{"assigned_to": assigned_to}, {"$or": query["$or"]}]}
+                query = {"$and": [{"assigned_to": assigned_to_value}, {"$or": query["$or"]}]}
             else:
-                query["assigned_to"] = assigned_to
+                query["assigned_to"] = assigned_to_value
 
         # Handle updated_at date range
         if updated_from or updated_to:
