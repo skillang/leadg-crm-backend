@@ -357,37 +357,69 @@ class RealtimeNotificationManager:
             logger.debug(f"Error updating connection activity: {str(e)}")
 
     # 🆕 ADD THIS NEW METHOD HERE:
-    async def _save_notification_to_history(self, user_email: str, notification_data: Dict[str, Any]):
+    
+    async def _save_notification_to_history(self, lead_id: str, notification_data: Dict[str, Any]):
         """
-        Save notification to persistent history for later retrieval
+        Save notification to history only for users assigned to the lead
         """
         try:
             from ..config.database import get_database
             db = get_database()
             
-            # Create notification history document
-            history_doc = {
-                "notification_id": str(uuid.uuid4()),
-                "user_email": user_email,
-                "notification_type": notification_data.get("type", "unknown"),
-                "lead_id": notification_data.get("lead_id"),
-                "lead_name": notification_data.get("lead_name"),
-                "message_preview": notification_data.get("message_preview", ""),
-                "message_id": notification_data.get("message_id"),
-                "direction": notification_data.get("direction"),
-                "created_at": datetime.utcnow(),
-                "read_at": None,
-                "original_data": notification_data
-            }
+            # Get the lead to find assigned users
+            lead = await db.leads.find_one(
+                {"lead_id": lead_id},
+                {"assigned_to": 1, "co_assignees": 1}
+            )
             
-            # Save to database
-            await db.notification_history.insert_one(history_doc)
-            logger.debug(f"💾 Notification saved to history for user: {user_email}")
+            if not lead:
+                logger.warning(f"Lead {lead_id} not found for notification history")
+                return
+                
+            # Get assigned users only
+            assigned_users = []
+            if lead.get("assigned_to"):
+                assigned_users.append(lead["assigned_to"])
+            if lead.get("co_assignees"):
+                assigned_users.extend(lead["co_assignees"])
+            
+            if not assigned_users:
+                logger.warning(f"No assigned users found for lead {lead_id}")
+                return
+            
+            # Save notification for each assigned user
+            for user_email in assigned_users:
+                message_id = notification_data.get("message_id")
+                if not message_id:
+                    message_id = str(uuid.uuid4())
+
+                history_doc = {
+                    "notification_id": f"{user_email}_{message_id}",  # Unique per user+message
+                    "user_email": user_email,
+                    "notification_type": notification_data.get("type", "unknown"),
+                    "lead_id": lead_id,
+                    "lead_name": notification_data.get("lead_name"),
+                    "message_preview": notification_data.get("message_preview", ""),
+                    "message_id": message_id,
+                    "direction": notification_data.get("direction"),
+                    "created_at": datetime.utcnow(),
+                    "read_at": None,
+                    "original_data": notification_data
+                }
+                
+                # Use upsert to prevent duplicates
+                await db.notification_history.update_one(
+                    {"notification_id": history_doc["notification_id"]},
+                    {"$setOnInsert": history_doc},
+                    upsert=True
+                )
+                
+            logger.debug(f"💾 Notification saved to history for {len(assigned_users)} assigned users")
             
         except Exception as e:
             logger.error(f"Error saving notification to history: {str(e)}")
             # Don't fail the notification if history save fails
-    
+        
     # ============================================================================
     # MONITORING AND STATISTICS
     # ============================================================================

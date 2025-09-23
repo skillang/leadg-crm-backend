@@ -188,6 +188,34 @@ def convert_activity_dates():
     return convert_dates_to_ist(activity_date_fields)
 
 # ================================
+# NEW DECORATORS FOR TIMEZONE FIX
+# ================================
+
+def convert_whatsapp_dates():
+    """
+    🆕 Specialized decorator for WhatsApp endpoints
+    Includes WhatsApp-specific date fields for proper timing display
+    """
+    whatsapp_date_fields = [
+        'timestamp', 'sent_at', 'delivered_at', 'read_at', 
+        'webhook_received_at', 'last_message_time', 'last_activity',
+        'last_whatsapp_activity', 'message_timestamp'
+    ]
+    return convert_dates_to_ist(whatsapp_date_fields)
+
+def convert_notification_dates():
+    """
+    🆕 Specialized decorator for notification endpoints
+    Includes notification-specific date fields for proper timing display
+    """
+    notification_date_fields = [
+        'created_at', 'sent_at', 'read_at', 'scheduled_at', 
+        'delivered_at', 'expires_at', 'notification_time',
+        'timestamp', 'updated_at'
+    ]
+    return convert_dates_to_ist(notification_date_fields)
+
+# ================================
 # USAGE EXAMPLES
 # ================================
 
@@ -217,7 +245,18 @@ Usage Examples in your routers:
    async def get_tasks():
        return tasks_data
 
-4. Multiple endpoints with same decorator:
+4. NEW - Using WhatsApp and notification decorators:
+   @router.get("/notifications/history")
+   @convert_notification_dates()
+   async def get_notification_history():
+       return notification_data
+   
+   @router.get("/whatsapp/chat/{lead_id}/history")
+   @convert_whatsapp_dates()
+   async def get_chat_history():
+       return chat_data
+
+5. Multiple endpoints with same decorator:
    @router.get("/leads/")
    @convert_lead_dates()
    async def get_all_leads():

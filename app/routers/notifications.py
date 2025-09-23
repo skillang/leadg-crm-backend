@@ -6,6 +6,7 @@ import logging
 from datetime import datetime, timedelta
 
 from ..utils.dependencies import get_current_user, get_admin_user
+from ..decorators.timezone_decorator import convert_notification_dates
 from ..config.database import get_database
 from ..services.realtime_service import realtime_manager
 from ..schemas.whatsapp_chat import (
@@ -237,6 +238,7 @@ async def bulk_mark_whatsapp_leads_as_read(
 # ============================================================================
 
 @router.get("/whatsapp/analytics")
+@convert_notification_dates()
 async def get_whatsapp_notification_analytics(
     days: int = Query(default=7, ge=1, le=30, description="Number of days to analyze"),
     current_user: Dict[str, Any] = Depends(get_current_user)
@@ -760,6 +762,7 @@ async def send_test_notification(
 # ============================================================================
 
 @router.get("/history")
+@convert_notification_dates()
 async def get_notification_history(
     limit: int = Query(default=10, ge=1, le=100, description="Number of notifications per page"),
     page: int = Query(default=1, ge=1, description="Page number (1-based)"),  # ✅ Changed from offset to page
@@ -901,6 +904,7 @@ async def get_notification_history(
 # ============================================================================
 
 @router.get("/webhook/status")
+@convert_notification_dates()
 async def get_webhook_integration_status(
     current_user: Dict[str, Any] = Depends(get_admin_user)
 ):

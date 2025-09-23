@@ -53,13 +53,17 @@ class TimezoneHandler:
         """
         if not utc_datetime:
             return None
-            
+        
+        # Handle timezone-aware datetime objects from MongoDB
+        if utc_datetime.tzinfo is not None:
+            # Convert to naive UTC datetime first
+            utc_datetime = utc_datetime.replace(tzinfo=None)
+        
         # Convert UTC to IST by adding IST offset (5 hours 30 minutes)
         ist_datetime = utc_datetime + cls.IST_OFFSET
         
         logger.debug(f"Timezone conversion: UTC {utc_datetime.strftime('%Y-%m-%d %H:%M:%S')} → IST {ist_datetime.strftime('%Y-%m-%d %H:%M:%S')}")
         return ist_datetime
-    
     @classmethod
     def validate_future_time_ist(cls, ist_datetime: datetime) -> Tuple[bool, str]:
         """
