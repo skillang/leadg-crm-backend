@@ -261,7 +261,7 @@ class RealtimeNotificationManager:
                 }
                 
                 # 🆕 NEW: Save notification to history
-                await self._save_notification_to_history(user_email, notification)
+                await self._save_notification_to_history(lead_id, message_data)
                 
                 # Send to all user's connections
                 await self._send_to_user(user_email, notification)
