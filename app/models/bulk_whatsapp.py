@@ -168,12 +168,8 @@ class BulkJobStatusResponse(BaseModel):
 
 class BulkJobListResponse(BaseModel):
     """Response model for listing bulk jobs"""
-    success: bool
     jobs: List[BulkJobStatusResponse]
-    total_jobs: int
-    page: int
-    per_page: int
-    total_pages: int
+    pagination: Dict[str, Any]
 
 class BulkStatsResponse(BaseModel):
     """Response model for bulk messaging statistics"""

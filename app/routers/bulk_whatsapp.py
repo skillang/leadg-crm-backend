@@ -155,9 +155,8 @@ async def list_bulk_jobs(
         total_jobs = await db.bulk_whatsapp_jobs.count_documents(query)
         
         # Get jobs with pagination
-        jobs_cursor = db.bulk_whatsapp_jobs.find(query).sort("created_at", -1).skip(skip).limit(per_page)
-        jobs = await jobs_cursor.to_list(length=per_page)
-        
+        jobs_cursor = db.bulk_whatsapp_jobs.find(query).sort("created_at", -1).skip(skip).limit(limit)
+        jobs = await jobs_cursor.to_list(length=limit)
         # Format jobs for response
         job_list = []
         for job in jobs:
@@ -194,7 +193,7 @@ async def list_bulk_jobs(
             job_list.append(BulkJobStatusResponse(**job_data))
         
         # Calculate pagination info
-        total_pages = (total_jobs + per_page - 1) // per_page
+        total_pages = (total_jobs + limit - 1) // limit
         
         return {
             "jobs": job_list,
