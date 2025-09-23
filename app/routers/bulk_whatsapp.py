@@ -138,8 +138,12 @@ async def list_bulk_jobs(
         
         if user_role != "admin":
             # Users can only see their own jobs
-            query["created_by"] = current_user.get("user_id")
-        
+            user_id = str(current_user.get("_id"))
+            query["created_by"] = user_id
+            logger.info(f"Non-admin user {current_user.get('email')} filtering jobs by created_by: {user_id}")
+        else:
+            logger.info(f"Admin user {current_user.get('email')} can see all jobs")
+                
         # Apply status filter
         if status:
             query["status"] = status
@@ -256,8 +260,11 @@ async def get_bulk_stats(
         user_role = current_user.get("role")
         
         if user_role != "admin":
-            base_query["created_by"] = current_user.get("user_id")
-        
+            user_id = str(current_user.get("_id"))
+            base_query["created_by"] = user_id
+            logger.info(f"Non-admin user {current_user.get('email')} getting stats for created_by: {user_id}")
+        else:
+            logger.info(f"Admin user {current_user.get('email')} getting system-wide stats")
         # Get job counts by status
         pipeline = [
             {"$match": base_query},

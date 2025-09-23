@@ -133,7 +133,7 @@ class BulkWhatsAppService:
                 
                 # Audit fields (SAME as email)
                 "created_by": current_user.get("user_id"),
-                "created_by_name": current_user.get("username"),
+                "created_by_name": f"{current_user.get('first_name', '')} {current_user.get('last_name', '')}".strip() or current_user.get('email', 'Unknown'),
                 "created_at": datetime.utcnow(),
                 "started_at": None,
                 "completed_at": None,
@@ -303,9 +303,12 @@ class BulkWhatsAppService:
             
             # Permission check (SAME as email)
             user_role = current_user.get("role")
-            if user_role != "admin" and job.get("created_by") != current_user.get("user_id"):
-                raise HTTPException(status_code=403, detail="Not authorized to access this job")
-            
+            user_id = str(current_user.get("_id"))
+
+            if user_role != "admin" and job.get("created_by") != user_id:
+                logger.warning(f"User {current_user.get('email')} attempted to access job {job_id} created by {job.get('created_by')}")
+                raise HTTPException(status_code=403, detail="Access denied - you can only view jobs you created")
+                        
             # Calculate progress percentage
             total = job.get("total_recipients", 0)
             processed = job.get("processed_count", 0)
@@ -365,8 +368,12 @@ class BulkWhatsAppService:
             
             # Permission check
             user_role = current_user.get("role")
-            if user_role != "admin" and job.get("created_by") != current_user.get("user_id"):
-                raise HTTPException(status_code=403, detail="Not authorized to cancel this job")
+            user_id = str(current_user.get("_id"))
+
+            if user_role != "admin" and job.get("created_by") != user_id:
+                logger.warning(f"User {current_user.get('email')} attempted to cancel job {job_id} created by {job.get('created_by')}")
+                raise HTTPException(status_code=403, detail="Access denied - you can only cancel jobs you created")
+                           
             
             # Check if job can be cancelled
             current_status = job.get("status")
@@ -444,8 +451,10 @@ class BulkWhatsAppService:
             
             # Permission check
             user_role = current_user.get("role")
-            if user_role != "admin" and job.get("created_by") != current_user.get("user_id"):
-                raise HTTPException(status_code=403, detail="Not authorized to reschedule this job")
+            user_id = str(current_user.get("_id"))
+
+            if user_role != "admin" and job.get("created_by") != user_id:
+                raise HTTPException(status_code=403, detail="Access denied - you can only reschedule jobs you created")
             
             # Check if job can be rescheduled
             if job.get("status") != BulkJobStatus.PENDING:
@@ -523,8 +532,11 @@ class BulkWhatsAppService:
             
             # Permission check - non-admin users can only see their own jobs
             if user_role != "admin":
-                query["created_by"] = current_user.get("user_id")
-            
+                user_id = str(current_user.get("_id"))
+                query["created_by"] = user_id
+                logger.info(f"Non-admin user {current_user.get('email')} filtering by created_by: {user_id}")
+            else:
+                logger.info(f"Admin user {current_user.get('email')} can see all jobs")
             # Status filter
             if status_filter:
                 query["status"] = status_filter
@@ -606,7 +618,7 @@ class BulkWhatsAppService:
                         "total_recipients": job_doc.get("total_recipients", 0),
                         "is_scheduled": job_doc.get("is_scheduled", False)
                     },
-                    "created_by": ObjectId(job_doc["created_by"]) if job_doc.get("created_by") else None,
+                    "created_by": ObjectId(job_doc["created_by"]) if job_doc.get("created_by") and ObjectId.is_valid(job_doc["created_by"]) else None,
                     "created_by_name": job_doc.get("created_by_name"),
                     "created_at": datetime.utcnow()
                 }
