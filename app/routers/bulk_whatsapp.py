@@ -118,7 +118,7 @@ async def get_bulk_job_status(
 @router.get("/jobs", response_model=BulkJobListResponse)
 async def list_bulk_jobs(
     page: int = Query(1, ge=1, description="Page number"),
-    per_page: int = Query(20, ge=1, le=100, description="Items per page"),
+    limit: int = Query(20, ge=1, le=100, description="Items per page"),
     status: Optional[str] = Query(None, description="Filter by status"),
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
@@ -149,7 +149,7 @@ async def list_bulk_jobs(
             query["status"] = status
         
         # Calculate pagination
-        skip = (page - 1) * per_page
+        skip = (page - 1) * limit
         
         # Get total count
         total_jobs = await db.bulk_whatsapp_jobs.count_documents(query)
@@ -196,14 +196,17 @@ async def list_bulk_jobs(
         # Calculate pagination info
         total_pages = (total_jobs + per_page - 1) // per_page
         
-        return BulkJobListResponse(
-            success=True,
-            jobs=job_list,
-            total_jobs=total_jobs,
-            page=page,
-            per_page=per_page,
-            total_pages=total_pages
-        )
+        return {
+            "jobs": job_list,
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total": total_jobs,
+                "pages": (total_jobs + limit - 1) // limit,
+                "has_next": skip + limit < total_jobs,
+                "has_prev": page > 1
+            }
+        }
         
     except Exception as e:
         logger.error(f"Error listing bulk jobs: {str(e)}")
