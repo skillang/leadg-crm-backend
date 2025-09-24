@@ -711,12 +711,12 @@ class LeadService:
         selected_user_emails: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
-        🔄 UPDATED: Bulk create leads with new ID generation format
+        🔧 FIXED: Bulk create leads with REAL-TIME duplicate detection
         """
         db = self.get_db()
         
         try:
-            # 🆕 NEW: Validate dynamic fields first
+            # Validate dynamic fields first
             field_validation = await self.validate_required_dynamic_fields()
             if not field_validation["can_create_leads"]:
                 return {
@@ -727,11 +727,46 @@ class LeadService:
             
             created_leads = []
             failed_leads = []
+            duplicates_skipped = []  # 🔧 Track duplicates separately
             assignment_summary = []
+            
+            logger.info(f"🚀 Processing {len(leads_data)} leads for bulk creation...")
             
             for i, lead_data in enumerate(leads_data):
                 try:
-                    # 🆕 NEW: Validate dynamic fields for each lead
+                    logger.info(f"📋 Processing lead {i+1}/{len(leads_data)}: {lead_data.get('email', 'no email')}")
+                    
+                    # 🔧 CRITICAL FIX: Check for duplicates against LIVE database
+                    duplicate_check = await self.check_duplicate_lead(
+                        email=lead_data.get("email", ""),
+                        contact_number=lead_data.get("contact_number", "")
+                    )
+                    
+                    if duplicate_check["is_duplicate"]:
+                        logger.warning(f"⚠️ DUPLICATE DETECTED for lead {i}: {duplicate_check['message']}")
+                        duplicates_skipped.append({
+                            "index": i,
+                            "data": {
+                                "name": lead_data.get("name", ""),
+                                "email": lead_data.get("email", ""),
+                                "contact_number": lead_data.get("contact_number", "")
+                            },
+                            "reason": duplicate_check["message"],
+                            "existing_lead_id": duplicate_check.get("existing_lead_id"),
+                            "duplicate_field": duplicate_check.get("duplicate_field"),
+                            "duplicate_value": duplicate_check.get("duplicate_value")
+                        })
+                        assignment_summary.append({
+                            "lead_id": None,
+                            "assigned_to": None,
+                            "status": "skipped_duplicate",
+                            "reason": duplicate_check["message"]
+                        })
+                        continue  # Skip this lead and move to next
+                    
+                    logger.info(f"✅ No duplicate found for lead {i}, proceeding with creation...")
+                    
+                    # Validate and set dynamic fields
                     validated_course_level = await self.validate_and_set_course_level(
                         lead_data.get("course_level")
                     )
@@ -739,29 +774,25 @@ class LeadService:
                         lead_data.get("source")
                     )
                     
-                    # 🔄 UPDATED: Generate lead ID using category-source combination
+                    # Generate lead ID using category-source combination
                     lead_id = await self.generate_lead_id_by_category_and_source(
                         category=lead_data.get("category", "General"),
                         source=validated_source
                     )
                     
-                    # Get next assignee based on method
-                    # Check if this lead should be explicitly unassigned
+                    # Handle assignment logic
                     lead_assigned_to = lead_data.get("assigned_to")
-
+                    
                     if lead_assigned_to == "unassigned":
-                        # Explicit unassigned for this lead
                         assigned_to = None
                         assigned_to_name = None
                         method = "unassigned"
-                        logger.info(f"Bulk lead {i} explicitly set to unassigned")
+                        logger.info(f"Lead {i} explicitly set to unassigned")
                     elif lead_assigned_to and lead_assigned_to != "unassigned":
-                        # Manual assignment for this specific lead
                         assigned_to = lead_assigned_to
                         method = "manual"
-                        logger.info(f"Bulk lead {i} manually assigned to: {assigned_to}")
+                        logger.info(f"Lead {i} manually assigned to: {assigned_to}")
                     else:
-                        # Auto-assign using round-robin (existing logic)
                         if assignment_method == "selected_users" and selected_user_emails:
                             assigned_to = await lead_assignment_service.get_next_assignee_selective_round_robin(
                                 selected_user_emails
@@ -770,6 +801,7 @@ class LeadService:
                         else:
                             assigned_to = await lead_assignment_service.get_next_assignee_round_robin()
                             method = "round_robin"
+                        logger.info(f"Lead {i} auto-assigned to: {assigned_to} using {method}")
                     
                     # Get assignee name
                     assigned_to_name = None
@@ -780,23 +812,24 @@ class LeadService:
                             if not assigned_to_name:
                                 assigned_to_name = assignee.get('email', 'Unknown')
                     
-                    # Create lead document
+                    # Create lead document with all required fields
                     lead_doc = {
                         "lead_id": lead_id,
                         "status": lead_data.get("status", "New"),
                         "name": lead_data.get("name", ""),
                         "email": lead_data.get("email", "").lower(),
                         "contact_number": lead_data.get("contact_number", ""),
-                        "phone_number": lead_data.get("contact_number", ""),
-                        "source": validated_source,  # 🔄 UPDATED: Use validated source
+                        "phone_number": lead_data.get("contact_number", ""),  # Legacy compatibility
+                        "source": validated_source,
                         "category": lead_data.get("category", "General"),
-                        "course_level": validated_course_level,  # 🔄 UPDATED: Use validated course level
+                        "course_level": validated_course_level,
                         
                         # Optional fields
                         "age": lead_data.get("age"),
                         "experience": lead_data.get("experience"),
                         "nationality": lead_data.get("nationality"),
-                        "date_of_birth": lead_data.get("date_of_birth"),  # 🆕 NEW
+                        "current_location": lead_data.get("current_location"),
+                        "date_of_birth": lead_data.get("date_of_birth"),
                         "call_stats": CallStatsModel.create_default().model_dump(),
                         
                         # Status and tags
@@ -810,40 +843,44 @@ class LeadService:
                         "assigned_to_name": assigned_to_name,
                         "assignment_method": method,
                         
-                        # Multi-assignment fields
+                        # Multi-assignment fields (for future compatibility)
                         "co_assignees": [],
                         "co_assignees_names": [],
                         "is_multi_assigned": False,
                         
-                        # Assignment history with enhanced tracking
-                        "assignment_history": [
-                            {
-                                "assigned_to": assigned_to,
-                                "assigned_to_name": assigned_to_name,
-                                "assigned_by": created_by,
-                                "assignment_method": method,
-                                "assigned_at": datetime.utcnow(),
-                                "reason": f"Bulk creation ({assignment_method})",
-                                "bulk_index": i,
-                                "selected_users_pool": selected_user_emails if assignment_method == "selected_users" else None,
-                                "validated_course_level": validated_course_level,
-                                "validated_source": validated_source,
-                                "lead_id_format": "category_source_combination"  # 🆕 NEW
-                            }
-                        ],
+                        # Assignment history
+                        "assignment_history": [{
+                            "assigned_to": assigned_to,
+                            "assigned_to_name": assigned_to_name,
+                            "assigned_by": created_by,
+                            "assignment_method": method,
+                            "assigned_at": datetime.utcnow(),
+                            "reason": f"Bulk creation ({assignment_method})",
+                            "bulk_index": i,
+                            "selected_users_pool": selected_user_emails if assignment_method == "selected_users" else None,
+                            "validated_course_level": validated_course_level,
+                            "validated_source": validated_source,
+                            "lead_id_format": "category_source_combination"
+                        }],
                         
                         # Additional info
                         "notes": lead_data.get("notes", ""),
                         "created_by": created_by,
                         "created_at": datetime.utcnow(),
-                        "updated_at": datetime.utcnow()
+                        "updated_at": datetime.utcnow(),
+                        
+                        # WhatsApp fields (initialize to defaults)
+                        "last_whatsapp_activity": None,
+                        "last_whatsapp_message": None,
+                        "whatsapp_message_count": 0,
+                        "unread_whatsapp_count": 0
                     }
                     
-                    # Insert lead
+                    # Insert lead into database
                     result = await db.leads.insert_one(lead_doc)
                     
                     if result.inserted_id:
-                        # Update user array
+                        # Update user array if assigned
                         if assigned_to:
                             await user_lead_array_service.add_lead_to_user_array(assigned_to, lead_id)
                         
@@ -853,11 +890,11 @@ class LeadService:
                             "assigned_to": assigned_to,
                             "validated_course_level": validated_course_level,
                             "validated_source": validated_source,
-                            "lead_id_format": "category_source_combination",  # 🆕 NEW
+                            "lead_id_format": "category_source_combination",
                             "status": "success"
                         })
                         
-                        logger.info(f"Bulk created lead {lead_id} assigned to {assigned_to} using new ID format")
+                        logger.info(f"✅ Successfully created lead {lead_id} (index {i})")
                     else:
                         failed_leads.append({
                             "index": i,
@@ -870,9 +907,10 @@ class LeadService:
                             "status": "failed",
                             "error": "Database insertion failed"
                         })
-                
+                        logger.error(f"❌ Failed to insert lead at index {i}")
+                    
                 except Exception as e:
-                    logger.error(f"Error creating lead at index {i}: {str(e)}")
+                    logger.error(f"❌ Error creating lead at index {i}: {str(e)}")
                     failed_leads.append({
                         "index": i,
                         "data": lead_data,
@@ -885,29 +923,46 @@ class LeadService:
                         "error": str(e)
                     })
             
+            # Final summary
+            total_processed = len(leads_data)
+            successfully_created = len(created_leads)
+            duplicates_count = len(duplicates_skipped)
+            failed_count = len(failed_leads)
+            
+            logger.info(f"🏁 Bulk creation completed:")
+            logger.info(f"   📊 Total processed: {total_processed}")
+            logger.info(f"   ✅ Successfully created: {successfully_created}")
+            logger.info(f"   ⚠️ Duplicates skipped: {duplicates_count}")
+            logger.info(f"   ❌ Failed: {failed_count}")
+            
             return {
-                "success": len(failed_leads) == 0,
-                "total_processed": len(leads_data),
-                "successfully_created": len(created_leads),
-                "failed_count": len(failed_leads),
+                "success": failed_count == 0,  # Success if no failures (duplicates are expected)
+                "message": f"Bulk creation completed: {successfully_created} created, {duplicates_count} duplicates skipped, {failed_count} failed",
+                "total_processed": total_processed,
+                "successfully_created": successfully_created,
+                "failed_count": failed_count,
+                "duplicates_skipped": duplicates_count,  # 🔧 Proper count
                 "created_lead_ids": created_leads,
                 "failed_leads": failed_leads,
+                "duplicate_leads": duplicates_skipped,  # 🔧 Full duplicate details
                 "assignment_method": assignment_method,
                 "selected_users": selected_user_emails if assignment_method == "selected_users" else None,
                 "assignment_summary": assignment_summary,
-                "lead_id_format": "category_source_combination"  # 🆕 NEW
+                "lead_id_format": "category_source_combination"
             }
             
         except Exception as e:
-            logger.error(f"Error in bulk lead creation: {str(e)}")
+            logger.error(f"❌ Critical error in bulk lead creation: {str(e)}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
             return {
                 "success": False,
                 "error": str(e),
                 "total_processed": len(leads_data),
                 "successfully_created": 0,
-                "failed_count": len(leads_data)
+                "failed_count": len(leads_data),
+                "duplicates_skipped": 0
             }
-
     # ============================================================================
     # 🆕 NEW: LEAD ID ANALYTICS AND STATISTICS
     # ============================================================================

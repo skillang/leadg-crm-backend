@@ -41,8 +41,7 @@ class CVProcessingService:
     
     def _map_experience_to_enum(self, raw_experience: str) -> Optional[ExperienceLevel]:
         """
-        Simple mapping of raw experience text to predefined enum values.
-        Returns None if no clear match is found.
+        Enhanced experience mapping with better pattern matching for job descriptions
         """
         if not raw_experience or not isinstance(raw_experience, str):
             return None
@@ -50,11 +49,40 @@ class CVProcessingService:
         # Convert to lowercase for matching
         exp_text = raw_experience.lower().strip()
         
-        # Simple keyword-based mapping
-        if any(keyword in exp_text for keyword in ['fresher', 'fresh graduate', 'new graduate', 'no experience', 'entry level']):
+        # Handle job descriptions by looking for experience keywords first
+        fresher_keywords = ['fresher', 'fresh graduate', 'new graduate', 'no experience', 'entry level', 'recent graduate']
+        if any(keyword in exp_text for keyword in fresher_keywords):
+            logger.info(f"Mapped experience '{raw_experience[:50]}...' to FRESHER")
             return ExperienceLevel.FRESHER
         
-        # Look for numeric patterns (most reliable)
+        # Look for date patterns to calculate experience (2024-2023 = 1 year)
+        year_pattern = r'\b(20\d{2})\b'
+        years = re.findall(year_pattern, exp_text)
+        if len(years) >= 2:
+            try:
+                years = [int(y) for y in years]
+                years.sort()
+                total_experience = years[-1] - years[0]  # Latest year - earliest year
+                
+                if total_experience < 1:
+                    logger.info(f"Calculated {total_experience} years from dates -> LESS_THAN_1_YEAR")
+                    return ExperienceLevel.LESS_THAN_1_YEAR
+                elif total_experience <= 3:
+                    logger.info(f"Calculated {total_experience} years from dates -> ONE_TO_THREE_YEARS")
+                    return ExperienceLevel.ONE_TO_THREE_YEARS
+                elif total_experience <= 5:
+                    logger.info(f"Calculated {total_experience} years from dates -> THREE_TO_FIVE_YEARS")
+                    return ExperienceLevel.THREE_TO_FIVE_YEARS
+                elif total_experience <= 10:
+                    logger.info(f"Calculated {total_experience} years from dates -> FIVE_TO_TEN_YEARS")
+                    return ExperienceLevel.FIVE_TO_TEN_YEARS
+                else:
+                    logger.info(f"Calculated {total_experience} years from dates -> MORE_THAN_TEN_YEARS")
+                    return ExperienceLevel.MORE_THAN_TEN_YEARS
+            except ValueError:
+                pass
+        
+        # Look for explicit year mentions (3 years, 2 yrs, etc.)
         year_matches = re.findall(r'\b(\d+(?:\.\d+)?)\s*(?:years?|yrs?)\b', exp_text)
         if year_matches:
             try:
@@ -79,8 +107,14 @@ class CVProcessingService:
         if any(keyword in exp_text for keyword in ['senior', 'lead', '10+', 'more than 10']):
             return ExperienceLevel.MORE_THAN_TEN_YEARS
         
-        # If we can't determine clearly, return None
-        logger.info(f"Could not map experience text to enum: '{raw_experience}' - leaving as None")
+        # If we have job titles/companies but no clear experience indicators, default to FRESHER
+        job_indicators = ['intern', 'trainee', 'junior', 'associate']
+        if any(indicator in exp_text for indicator in job_indicators):
+            logger.info(f"Found job indicators in '{raw_experience[:50]}...' -> defaulting to FRESHER")
+            return ExperienceLevel.FRESHER
+        
+        # If we can't determine clearly, return None and let user select manually
+        logger.info(f"Could not map experience text to enum: '{raw_experience[:100]}...' - leaving as None")
         return None
     
     # ============================================================================
@@ -396,7 +430,7 @@ class CVProcessingService:
         user_id: str,
         user_email: str
     ) -> Dict[str, Any]:
-        """Convert CV extraction to lead with proper experience mapping"""
+        """Convert CV extraction to lead with better validation and error handling"""
         db = self.get_db()
         processing_id = conversion_request.processing_id
         
@@ -426,41 +460,99 @@ class CVProcessingService:
                     "message": f"CV cannot be converted - current status: {extraction.get('status')}"
                 }
             
-            # Step 2: 🔧 FIX: Map experience text to enum value
+            # Step 1.5: Validate category and source BEFORE creating lead
+            if not conversion_request.category:
+                return {
+                    "success": False,
+                    "message": "Category is required for lead conversion"
+                }
+            
+            source_name = conversion_request.source or "cv_upload"
+            validation_result = await self._validate_category_and_source(
+                conversion_request.category, source_name
+            )
+            
+            if not validation_result["category_valid"]:
+                return {
+                    "success": False,
+                    "message": f"Category '{conversion_request.category}' not found or inactive. Please select a valid category."
+                }
+            
+            if not validation_result["source_valid"]:
+                return {
+                    "success": False,
+                    "message": f"Source '{source_name}' not found or inactive. Please contact admin to add this source."
+                }
+            
+            # Step 2: Extract and process data
             extracted_data = extraction.get("extracted_data", {})
             raw_experience = conversion_request.experience or extracted_data.get("experience")
             mapped_experience = self._map_experience_to_enum(raw_experience) if raw_experience else None
             
+            # Step 2.5: Validate required fields
+            name = conversion_request.name or extracted_data.get("name", "")
+            email = conversion_request.email or extracted_data.get("email", "")
+            contact_number = conversion_request.contact_number or extracted_data.get("phone", "")
+            
+            if not name.strip():
+                return {
+                    "success": False,
+                    "message": "Name is required for lead creation"
+                }
+            
+            if not email.strip():
+                return {
+                    "success": False,
+                    "message": "Email is required for lead creation"
+                }
+            
+            if not contact_number.strip():
+                return {
+                    "success": False,
+                    "message": "Contact number is required for lead creation"
+                }
+            
             # Import existing lead models
             from ..models.lead import LeadCreateComprehensive, LeadBasicInfo, LeadStatusAndTags, LeadAdditionalInfo
             
-            # Step 3: Build lead data with mapped experience
-            lead_data = LeadCreateComprehensive(
-                basic_info=LeadBasicInfo(
-                    name=conversion_request.name or extracted_data.get("name", ""),
-                    email=conversion_request.email or extracted_data.get("email", ""),
-                    contact_number=conversion_request.contact_number or extracted_data.get("phone", ""),
-                    source=conversion_request.source or "cv_upload",
-                    category=conversion_request.category,  # Required field
-                    age=conversion_request.age or extracted_data.get("age"),
-                    experience=mapped_experience,  # 🔧 FIX: Use mapped experience (None if no match)
-                    nationality=conversion_request.nationality
-                ),
-                status_and_tags=LeadStatusAndTags(
-                    stage=conversion_request.stage or "initial",
-                    lead_score=conversion_request.lead_score or 0,
-                    tags=conversion_request.tags or ["CV Upload"]
-                ),
-                additional_info=LeadAdditionalInfo(
-                    notes=self._build_lead_notes_from_cv(extraction, conversion_request.notes, raw_experience, mapped_experience)
-                ),
-                assignment={
-                    "assign_to": conversion_request.assign_to,
-                    "assignment_method": conversion_request.assignment_method or "unassigned"
+            # Step 3: Build lead data with validation
+            try:
+                lead_data = LeadCreateComprehensive(
+                    basic_info=LeadBasicInfo(
+                        name=name.strip(),
+                        email=email.strip(),
+                        contact_number=contact_number.strip(),
+                        source=source_name,
+                        category=conversion_request.category,
+                        age=conversion_request.age or extracted_data.get("age"),
+                        experience=mapped_experience,  # Can be None - that's OK
+                        nationality=conversion_request.nationality
+                    ),
+                    status_and_tags=LeadStatusAndTags(
+                        stage=conversion_request.stage or "initial",
+                        lead_score=conversion_request.lead_score or 0,
+                        tags=conversion_request.tags or ["CV Upload"]
+                    ),
+                    additional_info=LeadAdditionalInfo(
+                        notes=self._build_lead_notes_from_cv(extraction, conversion_request.notes, raw_experience, mapped_experience)
+                    ),
+                    assignment={
+                        "assign_to": conversion_request.assign_to,
+                        "assignment_method": conversion_request.assignment_method or "unassigned"
+                    }
+                )
+            except Exception as validation_error:
+                logger.error(f"Lead data validation error: {str(validation_error)}")
+                return {
+                    "success": False,
+                    "message": f"Lead data validation failed: {str(validation_error)}",
+                    "processing_id": processing_id,
+                    "validation_errors": [str(validation_error)]
                 }
-            )
             
             # Step 4: Create lead using existing lead service
+            logger.info(f"Creating lead with data: name={name}, email={email}, category={conversion_request.category}, experience={mapped_experience}")
+            
             lead_result = await lead_service.create_lead_comprehensive(
                 lead_data=lead_data,
                 created_by=user_id,
@@ -468,6 +560,7 @@ class CVProcessingService:
             )
             
             if not lead_result["success"]:
+                logger.error(f"Lead creation failed: {lead_result.get('message', 'Unknown error')}")
                 return {
                     "success": False,
                     "message": f"Lead creation failed: {lead_result['message']}",
@@ -491,7 +584,7 @@ class CVProcessingService:
             )
             
             # Step 6: Schedule cleanup (delete CV data after successful conversion)
-            asyncio.create_task(self._schedule_cv_cleanup(processing_id, delay_minutes=5))
+            asyncio.create_task(self._schedule_cv_cleanup(processing_id, delay_minutes=1))  # 1 minute for t
             
             logger.info(f"✅ CV converted to lead: {processing_id} -> {lead_result['lead']['lead_id']} (experience: {mapped_experience})")
             
@@ -513,10 +606,13 @@ class CVProcessingService:
             
         except Exception as e:
             logger.error(f"❌ Error converting CV to lead {processing_id}: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return {
                 "success": False,
                 "message": f"Conversion failed: {str(e)}",
-                "processing_id": processing_id
+                "processing_id": processing_id,
+                "validation_errors": [str(e)]
             }
     
     # ============================================================================
@@ -551,9 +647,12 @@ class CVProcessingService:
             if extraction.get("converted_to_lead", False):
                 return {
                     "success": False,
-                    "message": "Cannot delete CV - already converted to lead",
-                    "lead_id": extraction.get("lead_id")
+                    "message": "Cannot manually delete CV - already converted to lead. It will be automatically deleted within 5 minutes of conversion.",
+                    "lead_id": extraction.get("lead_id"),
+                    "converted_at": extraction.get("converted_at"),
+                    "auto_cleanup_scheduled": True
                 }
+
             
             # Delete the extraction
             result = await db.cv_extractions.delete_one({"processing_id": processing_id})
@@ -652,23 +751,36 @@ class CVProcessingService:
     async def _schedule_cv_cleanup(self, processing_id: str, delay_minutes: int = 5):
         """Schedule cleanup of CV data after successful conversion"""
         try:
+            logger.info(f"⏰ Scheduling automatic deletion of CV {processing_id} in {delay_minutes} minutes")
+            
             # Wait for the specified delay
             await asyncio.sleep(delay_minutes * 60)
             
-            # Delete the CV extraction record
             db = self.get_db()
+            
+            # Verify the CV was actually converted before cleanup
+            extraction = await db.cv_extractions.find_one({
+                "processing_id": processing_id,
+                "converted_to_lead": True
+            })
+            
+            if not extraction:
+                logger.warning(f"❌ Automatic cleanup skipped - CV not found or not converted: {processing_id}")
+                return
+            
+            # Delete the entire CV extraction record
             result = await db.cv_extractions.delete_one({
                 "processing_id": processing_id,
                 "converted_to_lead": True
             })
             
             if result.deleted_count > 0:
-                logger.info(f"🧹 CV data cleaned up: {processing_id}")
+                logger.info(f"✅ CV automatically deleted after conversion: {processing_id} -> Lead: {extraction.get('lead_id')}")
             else:
-                logger.warning(f"⚠️ CV cleanup failed - record not found: {processing_id}")
+                logger.error(f"❌ Automatic cleanup failed - could not delete: {processing_id}")
                 
         except Exception as e:
-            logger.error(f"❌ Error during CV cleanup for {processing_id}: {e}")
+            logger.error(f"❌ Error during automatic CV cleanup for {processing_id}: {e}")
     
     async def cleanup_old_failed_extractions(self, older_than_hours: int = 48) -> Dict[str, Any]:
         """Clean up old failed extraction records"""
@@ -878,6 +990,29 @@ class CVProcessingService:
             "can_convert": has_lead_creation_permission,  # Only lead creators can convert
             "can_delete_own": True,  # All users can delete their own unconverted CVs
             "can_delete_any": has_lead_creation_permission  # Only lead creators can delete any
+        }
+    
+    async def _validate_category_and_source(self, category: str, source: str) -> Dict[str, Any]:
+        """Validate that category and source exist in database"""
+        db = self.get_db()
+        
+        # Check category exists and is active
+        category_exists = await db.lead_categories.find_one({
+            "name": category, 
+            "is_active": True
+        })
+        
+        # Check source exists and is active  
+        source_exists = await db.sources.find_one({
+            "name": source, 
+            "is_active": True
+        })
+        
+        return {
+            "category_valid": bool(category_exists),
+            "source_valid": bool(source_exists),
+            "category": category,
+            "source": source
         }
 
 # Create service instance

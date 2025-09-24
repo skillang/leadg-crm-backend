@@ -2022,148 +2022,114 @@ async def delete_lead(
 # ============================================================================
 # BULK OPERATIONS WITH ENHANCED ASSIGNMENT SUPPORT
 # ============================================================================
-
 @router.post("/bulk-create", status_code=status.HTTP_201_CREATED)
 async def bulk_create_leads(
     leads_data: List[dict],  
     force_create: bool = Query(False, description="Create leads even if duplicates exist"),
-    # 🆕 NEW: Bulk creation with selective round robin
     assignment_method: str = Query("all_users", description="Assignment method: 'all_users' or 'selected_users'"),
     selected_user_emails: Optional[str] = Query(None, description="Comma-separated user emails for selective round robin"),
     current_user: Dict[str, Any] = Depends(get_user_with_bulk_lead_permission) 
 ):
     """
-    🔄 UPDATED: Bulk create leads with enhanced assignment options and NEW ID format
-    - 🆕 NEW: Category-Source combination lead IDs (NS-WB-1, SA-SM-2, etc.)
+    🔧 FIXED: Bulk create leads with PROPER duplicate detection
+    - Each lead is checked individually against the database in real-time
+    - Uses the lead_service method that includes comprehensive duplicate checking
     """
     try:
-        logger.info(f"Bulk creating {len(leads_data)} leads with assignment method: {assignment_method}")
+        logger.info(f"🚀 Bulk creating {len(leads_data)} leads by {current_user['email']} (force_create={force_create})")
         
-        # Parse selective round robin parameter
+        # Parse selected user emails
         selected_users = None
         if assignment_method == "selected_users" and selected_user_emails:
             selected_users = [email.strip() for email in selected_user_emails.split(",") if email.strip()]
-            
-            if not selected_users:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="selected_user_emails is required when assignment_method is 'selected_users'"
-                )
         
-        # 🆕 NEW: Validate all leads have required fields for new ID format
-        for index, lead_data in enumerate(leads_data):
-            if not lead_data.get("category"):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Lead at index {index}: Category is required for new ID format"
-                )
-            if not lead_data.get("source"):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Lead at index {index}: Source is required for new ID format"
-                )
-        
-        # Use enhanced bulk creation service with NEW ID generation
+        # 🔧 CRITICAL FIX: Use the service method that includes proper duplicate detection
         from ..services.lead_service import lead_service
         
-        # Check if enhanced bulk creation method exists
-        if hasattr(lead_service, 'bulk_create_leads_with_selective_assignment'):
-            result = await lead_service.bulk_create_leads_with_selective_assignment(
-                leads_data=leads_data,
-                created_by=str(current_user["_id"]),
-                assignment_method=assignment_method,
-                selected_user_emails=selected_users
-            )
-            
-            # 🆕 NEW: Add format info to response
-            result["lead_id_format"] = "category_source_combination"
-            result["format_info"] = "Generated IDs use format: {CATEGORY_SHORT}-{SOURCE_SHORT}-{NUMBER}"
-            
-            return convert_objectid_to_str(result)
-        else:
-            # Fallback to individual creation with NEW ID format
-            results = []
-            successful_creates = 0
-            failed_creates = 0
-            duplicates_skipped = 0
-            
-            for index, lead_data in enumerate(leads_data):
-                try:
-                    # Call the updated single lead endpoint
-                    result = await create_lead(
-                        lead_data=lead_data,
-                        force_create=force_create,
-                        selected_user_emails=selected_user_emails,
-                        current_user=current_user
-                    )
-                    
-                    if result.get("success"):
-                        results.append({
-                            "index": index,
-                            "status": "created",
-                            "lead_id": result.get("lead_id"),
-                            "lead_id_format": "category_source_combination",  # 🆕 NEW
-                            "assigned_to": result.get("assigned_to"),
-                            "assignment_method": result.get("assignment_method")
-                        })
-                        successful_creates += 1
-                    else:
-                        results.append({
-                            "index": index,
-                            "status": "failed",
-                            "error": "Single lead creation returned failure"
-                        })
-                        failed_creates += 1
-                        
-                except HTTPException as http_error:
-                    if "duplicate" in str(http_error.detail).lower():
-                        results.append({
-                            "index": index,
-                            "status": "skipped",
-                            "reason": "duplicate"
-                        })
-                        duplicates_skipped += 1
-                    else:
-                        results.append({
-                            "index": index,
-                            "status": "failed",
-                            "error": str(http_error.detail)
-                        })
-                        failed_creates += 1
-                        
-                except Exception as e:
-                    results.append({
-                        "index": index,
-                        "status": "failed",
-                        "error": str(e)
-                    })
-                    failed_creates += 1
-            
-            return {
-                "success": True,
-                "message": f"Bulk creation completed: {successful_creates} leads created, {duplicates_skipped} duplicates skipped, {failed_creates} failed",
-                "assignment_method": assignment_method,
-                "selected_users": selected_users,
-                "lead_id_format": "category_source_combination",  # 🆕 NEW
-                "format_info": "Generated IDs use format: {CATEGORY_SHORT}-{SOURCE_SHORT}-{NUMBER}",  # 🆕 NEW
-                "summary": {
-                    "total_attempted": len(leads_data),
-                    "successful_creates": successful_creates,
-                    "failed_creates": failed_creates,
-                    "duplicates_skipped": duplicates_skipped
-                },
-                "results": results
-            }
+        # Call the CORRECT service method that has duplicate detection
+        result = await lead_service.bulk_create_leads_with_selective_assignment(
+            leads_data=leads_data,
+            created_by=str(current_user["_id"]),
+            assignment_method=assignment_method,
+            selected_user_emails=selected_users
+            # 🔧 NOTE: We don't pass force_create here because the service method
+            # should handle duplicates properly according to the business logic
+        )
         
-    except HTTPException:
-        raise
+        logger.info(f"✅ Bulk creation completed: {result.get('successfully_created', 0)} created, {result.get('duplicates_skipped', 0)} duplicates")
+        
+        return convert_objectid_to_str(result)
+        
     except Exception as e:
-        logger.error(f"Bulk creation error: {e}")
+        logger.error(f"❌ Bulk creation error: {str(e)}")
+        import traceback
+        logger.error(f"❌ Traceback: {traceback.format_exc()}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to bulk create leads: {str(e)}"
+            detail=str(e)
         )
 
+
+# Add this single endpoint to your app/routers/leads.py file:
+
+@router.post("/check-duplicates")
+async def check_duplicates_batch(
+    leads_data: List[Dict[str, Any]],  # [{"email": "test@test.com", "contact_number": "1234567890"}, ...]
+    current_user: Dict[str, Any] = Depends(get_current_active_user)
+):
+    """
+    Check for duplicate leads during CSV parsing - minimal implementation
+    Returns which leads are duplicates so frontend can categorize them
+    """
+    try:
+        logger.info(f"Duplicate check for {len(leads_data)} leads by {current_user.get('email')}")
+        
+        # Import the lead service to use existing duplicate check method
+        from ..services.lead_service import lead_service
+        
+        duplicates = []
+        
+        # Check each lead for duplicates using existing method
+        for index, lead_info in enumerate(leads_data):
+            email = lead_info.get("email", "").strip()
+            contact_number = lead_info.get("contact_number", "").strip()
+            
+            if not email and not contact_number:
+                continue  # Skip if no email or phone to check
+            
+            # Use your existing duplicate check method
+            duplicate_check = await lead_service.check_duplicate_lead(
+                email=email if email else None,
+                contact_number=contact_number if contact_number else None
+            )
+            
+            if duplicate_check.get("is_duplicate"):
+                duplicates.append({
+                    "index": index,
+                    "email": email,
+                    "contact_number": contact_number,
+                    "existing_lead_id": duplicate_check.get("existing_lead_id"),
+                    "existing_lead_name": duplicate_check.get("existing_lead_name", "Unknown"),
+                    "duplicate_field": duplicate_check.get("duplicate_field"),
+                    "duplicate_value": duplicate_check.get("duplicate_value"),
+                    "message": duplicate_check.get("message")
+                })
+        
+        logger.info(f"Found {len(duplicates)} duplicates out of {len(leads_data)} checked")
+        
+        return {
+            "success": True,
+            "total_checked": len(leads_data),
+            "duplicates_found": len(duplicates),
+            "duplicates": duplicates
+        }
+        
+    except Exception as e:
+        logger.error(f"Error checking duplicates: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to check duplicates: {str(e)}"
+        )
 # ============================================================================
 # ADMIN ENDPOINTS WITH MULTI-ASSIGNMENT ENHANCEMENTS
 # ============================================================================
