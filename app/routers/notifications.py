@@ -847,7 +847,7 @@ async def get_notification_history(
                 "read_at": 1,
                 "_id": 0  # Exclude MongoDB _id
             }
-        ).sort("created_at", 1).skip(skip).limit(limit).to_list(None)
+        ).sort("created_at", -1).skip(skip).limit(limit).to_list(None)
         
         logger.info(f"📋 Retrieved {len(notifications)} notifications")
         
@@ -862,7 +862,7 @@ async def get_notification_history(
                 "message": notif.get("message_preview", ""),
                 "message_id": notif.get("message_id"),
                 "direction": notif.get("direction"),
-                "timestamp": notif["created_at"].isoformat(),
+                "timestamp": notif["created_at"],
                 "read": notif.get("read_at") is not None,
                 "read_at": notif["read_at"].isoformat() if notif.get("read_at") else None
             })
