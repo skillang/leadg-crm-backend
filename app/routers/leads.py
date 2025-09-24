@@ -702,13 +702,6 @@ async def process_lead_for_response(lead: Dict[str, Any], db, current_user: Dict
                     co_assignee_names.append(email)
             lead["co_assignees_names"] = co_assignee_names
         
-        # Handle current user name
-        if current_user:
-            full_name = f"{current_user.get('first_name', '')} {current_user.get('last_name', '')}".strip()
-            lead["assigned_to_name"] = full_name if full_name else current_user.get('email', 'Unknown')
-        else:
-            lead["assigned_to_name"] = None
-        
         return lead
         
     except Exception as e:
