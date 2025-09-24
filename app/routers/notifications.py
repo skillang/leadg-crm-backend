@@ -779,8 +779,14 @@ async def get_notification_history(
         logger.info(f"📧 Getting notification history for {user_email} - Page: {page}, Limit: {limit}")
         
         # Build query filters
-        query = {"user_email": user_email}
-        
+        query = {}
+
+        # Only filter by user_email for non-admin users
+        if current_user.get("role") != "admin":
+            query["user_email"] = user_email
+            logger.info(f"🔒 User access - filtering by user_email: {user_email}")
+        else:
+            logger.info(f"👑 Admin access - showing all notifications")
         # Date range filter
         if date_from or date_to:
             date_filter = {}
@@ -841,7 +847,7 @@ async def get_notification_history(
                 "read_at": 1,
                 "_id": 0  # Exclude MongoDB _id
             }
-        ).sort("created_at", -1).skip(skip).limit(limit).to_list(None)
+        ).sort("created_at", 1).skip(skip).limit(limit).to_list(None)
         
         logger.info(f"📋 Retrieved {len(notifications)} notifications")
         
