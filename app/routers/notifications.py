@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Dict, Any, List, Optional
 import logging
 from datetime import datetime, timedelta
+from app.utils.timezone_helper import TimezoneHandler 
 
 from ..utils.dependencies import get_current_user, get_admin_user
 from ..decorators.timezone_decorator import convert_notification_dates
@@ -26,6 +27,7 @@ router = APIRouter(tags=["WhatsApp Notifications"])
 # ============================================================================
 
 @router.get("/whatsapp/unread-status", response_model=BulkUnreadStatusResponse)
+@convert_notification_dates() 
 async def get_whatsapp_unread_status(
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
@@ -69,15 +71,22 @@ async def get_whatsapp_unread_status(
         unread_details = []
         total_unread_messages = 0
         
+        
         for lead in unread_leads:
             lead_unread_count = lead.get("unread_whatsapp_count", 0)
             total_unread_messages += lead_unread_count
+            
+            # Convert last_whatsapp_activity from UTC to IST
+            last_activity_utc = lead.get("last_whatsapp_activity")
+            last_activity_ist = None
+            if last_activity_utc:
+                last_activity_ist = TimezoneHandler.utc_to_ist(last_activity_utc)
             
             unread_details.append(UnreadStatusSummary(
                 lead_id=lead["lead_id"],
                 lead_name=lead.get("name"),
                 unread_count=lead_unread_count,
-                last_activity=lead.get("last_whatsapp_activity")
+                last_activity=last_activity_ist  # ← Now IST
             ))
         
         return BulkUnreadStatusResponse(
