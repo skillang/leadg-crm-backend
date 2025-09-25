@@ -163,10 +163,10 @@ async def preview_leads_from_form(
 @router.post("/import/single-form", summary="Import leads from single Facebook form")
 async def import_leads_single_form(
     import_request: LeadImportRequest,
-    background_tasks: BackgroundTasks,
+    # Remove background_tasks parameter - we don't need it anymore
     current_user: dict = Depends(get_admin_user)
 ):
-    """Import leads from a single Facebook form with smart categorization"""
+    """Import leads from a single Facebook form with immediate stats response"""
     try:
         # Get form info for category mapping
         forms_result = await facebook_leads_service.get_lead_forms()
@@ -193,38 +193,50 @@ async def import_leads_single_form(
             category = mapping["category"]
             logger.info(f"Auto-mapped form '{target_form['name']}' to category '{category}'")
         
-        # Start import in background
-        background_tasks.add_task(
-            facebook_leads_service.import_leads_to_crm,
+        # CHANGED: Call import directly (synchronous) instead of background task
+        import_result = await facebook_leads_service.import_leads_to_crm(
             import_request.form_id,
             current_user.get('email'),
             category,
             import_request.limit
         )
         
-        logger.info(f"Started Facebook lead import from form {import_request.form_id} by {current_user.get('email')}")
+        logger.info(f"Completed Facebook lead import from form {import_request.form_id} by {current_user.get('email')}")
         
-        return {
-            "success": True,
-            "message": f"Lead import started for form '{target_form['name']}'",
-            "form_info": {
-                "form_id": import_request.form_id,
-                "form_name": target_form["name"],
-                "assigned_category": category,
-                "estimated_leads": target_form.get("leads_count", "unknown")
-            },
-            "import_status": "in_progress"
-        }
+        # CHANGED: Return the actual import results instead of "in_progress"
+        if import_result["success"]:
+            return {
+                "success": True,
+                "message": f"Import completed for form '{target_form['name']}'",
+                "form_info": {
+                    "form_id": import_request.form_id,
+                    "form_name": target_form["name"],
+                    "assigned_category": category,
+                },
+                "import_status": "completed",
+                # Add the stats the frontend team wants
+                "stats": {
+                    "total_facebook_leads": import_result["summary"]["total_facebook_leads"],
+                    "imported_count": import_result["summary"]["imported_count"],
+                    "failed_count": import_result["summary"]["failed_count"],
+                    "skipped_count": import_result["summary"]["skipped_count"]
+                }
+            }
+        else:
+            # Handle import failure
+            raise HTTPException(
+                status_code=500,
+                detail=f"Import failed: {import_result.get('message', 'Unknown error')}"
+            )
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to start lead import: {str(e)}")
+        logger.error(f"Failed to import leads: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to start import: {str(e)}"
+            detail=f"Failed to import leads: {str(e)}"
         )
-
 # ============================================================================
 # WEBHOOK ENDPOINTS FOR AUTOMATIC LEAD IMPORT
 # ============================================================================

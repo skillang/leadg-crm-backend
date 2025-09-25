@@ -224,8 +224,8 @@ class FacebookLeadsService:
         return processed_lead
 
     async def import_leads_to_crm(self, form_id: str, user_email: str, 
-                                    category: str = "Digital Marketing", limit: int = 100) -> Dict[str, Any]:
-        """Import Facebook leads to LeadG CRM using comprehensive lead creation"""
+                                category: str = "Digital Marketing", limit: int = 100) -> Dict[str, Any]:
+        """Import Facebook leads to LeadG CRM with proper duplicate detection"""
         try:
             # Get leads from Facebook with limit
             fb_result = await self.get_leads_from_form(form_id, limit)
@@ -236,7 +236,7 @@ class FacebookLeadsService:
             fb_leads = fb_result["leads"]
             imported_count = 0
             failed_count = 0
-            skipped_count = 0
+            skipped_count = 0  # Now captures ALL duplicates
             errors = []
             
             db = get_database()
@@ -246,30 +246,34 @@ class FacebookLeadsService:
             
             for fb_lead in fb_leads:
                 try:
-                    # Check if lead already exists
+                    # STEP 1: Check Facebook ID duplicate (existing logic)
                     existing_lead = await db.leads.find_one({
                         "facebook_integration.facebook_lead_id": fb_lead["facebook_lead_id"]
                     })
                     
                     if existing_lead:
                         skipped_count += 1
+                        logger.info(f"⏭️ Skipped Facebook duplicate: {fb_lead['facebook_lead_id']} (already imported)")
                         continue
                     
-                    # Extract and map form data intelligently
+                    # STEP 2: Extract lead data for CRM duplicate check
                     raw_data = fb_lead.get("raw_field_data", {})
-                    
-                    # Debug logging to see actual data structure
-                    logger.info(f"Processing lead {fb_lead.get('facebook_lead_id')}: raw_data keys: {list(raw_data.keys())}")
-                    logger.info(f"Raw data content: {raw_data}")
-                    
-                    # Smart field mapping
                     name = self._extract_name(fb_lead, raw_data)
                     phone = self._extract_phone(fb_lead, raw_data)
                     email = self._extract_email(fb_lead, raw_data)
                     
-                    # Debug the extracted values
-                    logger.info(f"Extracted - Name: '{name}', Phone: '{phone}', Email: '{email}'")
+                    # STEP 3: Check CRM duplicates BEFORE creating lead
+                    duplicate_check = await lead_service.check_duplicate_lead(
+                        email=email,
+                        contact_number=phone
+                    )
                     
+                    if duplicate_check["is_duplicate"]:
+                        skipped_count += 1
+                        logger.info(f"⏭️ Skipped CRM duplicate: {fb_lead['facebook_lead_id']} - {duplicate_check['message']}")
+                        continue
+                    
+                    # STEP 4: Extract all other fields for lead creation
                     age = self._extract_age(raw_data)
                     experience = self._extract_experience(raw_data)
                     qualification = self._extract_qualification(raw_data)
@@ -283,7 +287,7 @@ class FacebookLeadsService:
                         qualification, german_status, raw_data
                     )
                     
-                    # Create comprehensive lead data structure
+                    # STEP 5: Create comprehensive lead data structure
                     from ..models.lead import LeadCreateComprehensive, LeadBasicInfo, LeadStatusAndTags, LeadAdditionalInfo
                     
                     lead_data = LeadCreateComprehensive(
@@ -291,11 +295,11 @@ class FacebookLeadsService:
                             name=name or "Facebook Lead",
                             email=email or f"facebook_{fb_lead['facebook_lead_id']}@placeholder.com",
                             contact_number=phone,
-                            source="facebook-leads",  # This matches your database source
+                            source="facebook-leads",
                             category=category,
                             course_level="undergraduate",
-                            age=None,
-                            experience=ExperienceLevel.FRESHER,
+                            age=age,
+                            experience=experience or ExperienceLevel.FRESHER,
                             nationality="",
                             current_location="Not mentioned"
                         ),
@@ -310,15 +314,15 @@ class FacebookLeadsService:
                             extra_info=extra_info
                         ),
                         assignment=LeadAssignmentInfo(
-                            assigned_to="unassigned"  # This forces all Facebook leads to be unassigned
+                            assigned_to="unassigned"
                         )
                     )
                     
-                    # Create lead using your comprehensive method
+                    # STEP 6: Create lead using comprehensive method with force_create=True
                     result = await lead_service.create_lead_comprehensive(
                         lead_data=lead_data,
                         created_by=user_email,
-                        force_create=False
+                        force_create=True  # Skip internal duplicate check since we already did it
                     )
                     
                     if result["success"]:
@@ -330,7 +334,9 @@ class FacebookLeadsService:
                         logger.info(f"✅ Imported Facebook lead: {fb_lead['facebook_lead_id']} → {lead_id}")
                     else:
                         failed_count += 1
-                        errors.append(f"Failed to import {fb_lead['facebook_lead_id']}: {result.get('message', 'Unknown error')}")
+                        error_msg = f"Failed to import {fb_lead['facebook_lead_id']}: {result.get('message', 'Unknown error')}"
+                        errors.append(error_msg)
+                        logger.error(error_msg)
                         
                 except Exception as e:
                     failed_count += 1
@@ -338,25 +344,37 @@ class FacebookLeadsService:
                     errors.append(error_msg)
                     logger.error(error_msg)
             
+            # Return the stats structure your frontend team expects
             return {
                 "success": True,
                 "summary": {
                     "total_facebook_leads": len(fb_leads),
                     "imported_count": imported_count,
                     "failed_count": failed_count,
-                    "skipped_count": skipped_count,
-                    "errors": errors[:10]  # Limit error list
+                    "skipped_count": skipped_count
                 },
-                "message": f"Import completed: {imported_count} imported, {failed_count} failed, {skipped_count} skipped"
+                "message": f"Successfully processed {len(fb_leads)} Facebook leads: {imported_count} imported, {failed_count} failed, {skipped_count} duplicates skipped",
+                "import_details": {
+                    "form_id": form_id,
+                    "category": category,
+                    "user_email": user_email,
+                    "processing_time": datetime.utcnow().isoformat()
+                },
+                "errors": errors[:10] if errors else []  # Limit errors to first 10 for response size
             }
-            
+                
         except Exception as e:
-            logger.error(f"Facebook import error: {str(e)}")
+            logger.error(f"Failed to import leads from form {form_id}: {str(e)}")
             return {
                 "success": False,
-                "error": str(e)
+                "message": f"Failed to import leads: {str(e)}",
+                "summary": {
+                    "total_facebook_leads": 0,
+                    "imported_count": 0,
+                    "failed_count": 0,
+                    "skipped_count": 0
+                }
             }
-
     def _extract_name(self, fb_lead: Dict[str, Any], raw_data: Dict[str, Any]) -> str:
         """Extract name from various possible field names"""
         return (

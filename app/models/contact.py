@@ -25,7 +25,7 @@ class ContactRelationship(str, Enum):
 class ContactBase(BaseModel):
     """Base contact model with common fields"""
     first_name: str
-    last_name: str
+    last_name: Optional[str] = None
     email: EmailStr
     phone: Optional[str] = None
     role: ContactRole
@@ -35,13 +35,25 @@ class ContactBase(BaseModel):
     notes: Optional[str] = None
     linked_leads: Optional[List[str]] = []
 
-    @validator('first_name', 'last_name')
-    def validate_names(cls, v):
-        if not v or not v.strip():
-            raise ValueError("Name cannot be empty")
-        if len(v.strip()) < 2:
-            raise ValueError("Name must be at least 2 characters")
-        return v.strip().title()
+    @validator('first_name')
+    def validate_first_name(cls, v):
+        if v is not None:
+            if not v or not v.strip():
+                raise ValueError("First name cannot be empty")
+            if len(v.strip()) < 2:
+                raise ValueError("First name must be at least 2 characters")
+            return v.strip().title()
+        return v
+
+    @validator('last_name')
+    def validate_last_name(cls, v):
+        if v is not None:  # Only validate if provided
+            if not v.strip():
+                raise ValueError("Last name cannot be empty")
+            if len(v.strip()) < 2:
+                raise ValueError("Last name must be at least 2 characters")
+            return v.strip().title()
+        return v
 
     @validator('phone')
     def validate_phone(cls, v):
@@ -102,13 +114,22 @@ class ContactUpdate(BaseModel):
     notes: Optional[str] = None
     linked_leads: Optional[List[str]] = None
 
-    @validator('first_name', 'last_name')
-    def validate_names(cls, v):
+    @validator('first_name')
+    def validate_first_name(cls, v):
         if v is not None:
             if not v or not v.strip():
-                raise ValueError("Name cannot be empty")
+                raise ValueError("First name cannot be empty")
             if len(v.strip()) < 2:
-                raise ValueError("Name must be at least 2 characters")
+                raise ValueError("First name must be at least 2 characters")
+            return v.strip().title()
+        return v
+    @validator('last_name')
+    def validate_last_name(cls, v):
+        if v is not None:  # Only validate if provided
+            if not v.strip():
+                raise ValueError("Last name cannot be empty")
+            if len(v.strip()) < 2:
+                raise ValueError("Last name must be at least 2 characters")
             return v.strip().title()
         return v
 
@@ -159,7 +180,7 @@ class ContactResponse(BaseModel):
     id: str
     lead_id: str
     first_name: str
-    last_name: str
+    last_name: Optional[str] = None
     full_name: str
     email: str
     phone: Optional[str] = None
