@@ -5,6 +5,10 @@ from typing import Optional, List
 from datetime import datetime
 from enum import Enum
 
+class StageAutomationConfig(BaseModel):
+    """Automation configuration for stages"""
+    template_name: str = Field(..., description="WhatsApp template name to send")
+
 class StageBase(BaseModel):
     """Base stage model"""
     name: str = Field(..., min_length=1, max_length=50, description="Stage name (e.g., Initial, Warm, Prospect)")
@@ -14,6 +18,19 @@ class StageBase(BaseModel):
     sort_order: int = Field(default=0, description="Order for displaying stages")
     is_active: bool = Field(default=True, description="Whether stage is active")
     is_default: bool = Field(default=False, description="Whether this is the default stage for new leads")
+    
+    # NEW AUTOMATION FIELDS
+    automation: bool = Field(default=False, description="Enable automation for this stage")
+    automation_config: Optional[StageAutomationConfig] = Field(None, description="Automation configuration")
+    
+    @validator('automation_config')
+    def validate_automation_config(cls, v, values):
+        """If automation is true, config must be provided"""
+        if values.get('automation') and not v:
+            raise ValueError('automation_config is required when automation is enabled')
+        if not values.get('automation') and v:
+            raise ValueError('automation_config should be null when automation is disabled')
+        return v
     
     @validator('name')
     def validate_name(cls, v):
@@ -44,6 +61,19 @@ class StageUpdate(BaseModel):
     is_active: Optional[bool] = None
     is_default: Optional[bool] = None
     
+    # NEW AUTOMATION FIELDS
+    automation: Optional[bool] = None
+    automation_config: Optional[StageAutomationConfig] = None
+    
+    @validator('automation_config')
+    def validate_automation_config(cls, v, values):
+        """If automation is true, config must be provided"""
+        if values.get('automation') and not v:
+            raise ValueError('automation_config is required when automation is enabled')
+        if values.get('automation') == False and v:
+            raise ValueError('automation_config should be null when automation is disabled')
+        return v
+    
     @validator('color')
     def validate_color(cls, v):
         if v and not v.startswith('#'):
@@ -66,6 +96,10 @@ class StageResponse(BaseModel):
     created_by: str
     created_at: datetime
     updated_at: Optional[datetime] = None
+    
+    # NEW AUTOMATION s
+    automation: bool
+    automation_config: Optional[StageAutomationConfig] = None
     
     class Config:
         from_attributes = True

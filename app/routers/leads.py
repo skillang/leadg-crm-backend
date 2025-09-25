@@ -5,6 +5,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta, date
 import logging
 from bson import ObjectId
+from ..services.whatsapp_message_service import whatsapp_message_service
 from ..services.tata_call_service import tata_call_service
 from app.decorators.timezone_decorator import convert_lead_dates, convert_dates_to_ist
 from ..services.user_lead_array_service import user_lead_array_service
@@ -1750,6 +1751,113 @@ async def update_lead_universal(
                 detail="Lead not found"
             )
         
+        # 🆕 NEW: AUTOMATION LOGIC - Check if stage is changing
+        new_stage = update_request.get("stage")
+        current_stage = lead.get("stage")
+        stage_changed = new_stage and new_stage != current_stage
+        
+        if stage_changed:
+            logger.info(f"🔄 Stage change detected: '{current_stage}' → '{new_stage}'")
+            
+            # Check if target stage has automation enabled
+            target_stage = await db.lead_stages.find_one({"name": new_stage})
+            if target_stage and target_stage.get("automation"):
+                logger.info(f"🤖 Automation enabled for stage '{new_stage}'")
+                
+                # Get automation config
+                automation_config = target_stage.get("automation_config")
+                if automation_config and automation_config.get("template_name"):
+                    template_name = automation_config["template_name"]
+                    
+                    # Check if user confirmed automation (frontend should send this)
+                    automation_approved = update_request.get("automation_approved")
+                    
+                    if automation_approved:
+                        logger.info(f"🚀 Sending WhatsApp template '{template_name}' for lead {lead_id}")
+                        
+                        try:
+                            # Send WhatsApp template
+                            from ..services.whatsapp_message_service import whatsapp_message_service
+                            
+                            contact_number = lead.get("contact_number") or lead.get("phone_number")
+                            if contact_number:
+                                whatsapp_result = await whatsapp_message_service.send_template_message(
+                                    contact=contact_number,        # ✅ Correct parameter name
+                                    template_name=template_name,   # ✅ Correct parameter name
+                                    lead_name=lead.get("name", "") # ✅ Correct parameter name
+                                )
+                            else:
+                                whatsapp_result = {
+                                    "success": False,
+                                    "error": "Lead has no phone number"
+                                }
+                            
+                            if whatsapp_result.get("success"):
+                                logger.info(f"✅ WhatsApp template sent successfully for lead {lead_id}")
+                                
+                                # Log automation activity
+                                automation_activity = {
+                                    "activity_type": "automation_executed",
+                                    "description": f"WhatsApp template '{template_name}' sent automatically due to stage change to '{new_stage}'",
+                                    "metadata": {
+                                        "template_name": template_name,
+                                        "automation_trigger": "stage_change",
+                                        "target_stage": new_stage,
+                                        "automation_approved": True
+                                    }
+                                }
+                            else:
+                                logger.error(f"❌ WhatsApp template failed for lead {lead_id}: {whatsapp_result.get('error')}")
+                                
+                                # Log automation failure
+                                automation_activity = {
+                                    "activity_type": "automation_failed",
+                                    "description": f"Failed to send WhatsApp template '{template_name}' for stage change to '{new_stage}': {whatsapp_result.get('error')}",
+                                    "metadata": {
+                                        "template_name": template_name,
+                                        "automation_trigger": "stage_change",
+                                        "target_stage": new_stage,
+                                        "error": whatsapp_result.get('error')
+                                    }
+                                }
+                            
+                            # Store automation activity for later logging
+                            update_request["_automation_activity"] = automation_activity
+                            
+                        except Exception as automation_error:
+                            logger.error(f"❌ Automation error for lead {lead_id}: {str(automation_error)}")
+                            
+                            # Log automation error
+                            automation_activity = {
+                                "activity_type": "automation_error",
+                                "description": f"Error executing automation for stage change to '{new_stage}': {str(automation_error)}",
+                                "metadata": {
+                                    "template_name": template_name,
+                                    "automation_trigger": "stage_change",
+                                    "target_stage": new_stage,
+                                    "error": str(automation_error)
+                                }
+                            }
+                            update_request["_automation_activity"] = automation_activity
+                    
+                    else:
+                        logger.info(f"ℹ️ Automation declined by user for lead {lead_id}")
+                        
+                        # Log automation decline
+                        automation_activity = {
+                            "activity_type": "automation_declined",
+                            "description": f"User declined to send WhatsApp template '{template_name}' for stage change to '{new_stage}'",
+                            "metadata": {
+                                "template_name": template_name,
+                                "automation_trigger": "stage_change",
+                                "target_stage": new_stage,
+                                "automation_approved": False
+                            }
+                        }
+                        update_request["_automation_activity"] = automation_activity
+        
+
+        
         logger.info(f"📋 Found lead {lead_id}, currently assigned to: {lead.get('assigned_to')}")
         
         # Enhanced permission checking for multi-assignment
@@ -1898,6 +2006,9 @@ async def update_lead_universal(
             logger.info(f"ℹ️ No assignment change, skipping user array updates")
         
         # Log all activities
+        automation_activity = update_request.get("_automation_activity")
+        if automation_activity:
+            activities_to_log.append(automation_activity)
         user_id = current_user.get("_id") or current_user.get("id")
         user_name = f"{current_user.get('first_name', '')} {current_user.get('last_name', '')}".strip()
         if not user_name:
