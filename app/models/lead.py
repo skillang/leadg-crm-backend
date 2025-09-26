@@ -273,6 +273,72 @@ class LeadBasicInfo(BaseModel):
     
     # NEW: Call stats field
     call_stats: Optional[CallStatsModel] = Field(default=None, description="Call statistics for this lead")
+    @validator('age', pre=True)
+    def validate_age_enhanced(cls, v):
+        """Enhanced age validator that handles Facebook age formats"""
+        import re
+        import logging
+        
+        logger = logging.getLogger(__name__)
+        
+        if v is None or v == "":
+            return None
+            
+        # If already an integer, validate range
+        if isinstance(v, int):
+            if 16 <= v <= 100:
+                return v
+            else:
+                logger.warning(f"Age {v} outside valid range (16-100)")
+                return None
+        
+        # Handle string values from Facebook
+        if isinstance(v, str):
+            age_str = v.strip().lower()
+            
+            # Handle empty strings and null-like values
+            if not age_str or age_str in ["not specified", "n/a", "undefined", "null", "none"]:
+                return None
+            
+            try:
+                # Handle range formats like "25_-_30", "18_-_25"
+                range_match = re.match(r'(\d+)_?-_?(\d+)', age_str)
+                if range_match:
+                    min_age = int(range_match.group(1))
+                    max_age = int(range_match.group(2))
+                    middle_age = (min_age + max_age) // 2
+                    if 16 <= middle_age <= 100:
+                        logger.info(f"Age range '{v}' converted to {middle_age}")
+                        return middle_age
+                
+                # Handle "35+" format  
+                plus_match = re.match(r'(\d+)\+', age_str)
+                if plus_match:
+                    base_age = int(plus_match.group(1))
+                    if 16 <= base_age <= 100:
+                        logger.info(f"Age '{v}' converted to {base_age}")
+                        return base_age
+                
+                # Handle direct integer strings "25", "30"
+                if age_str.isdigit():
+                    age = int(age_str)
+                    if 16 <= age <= 100:
+                        return age
+                
+                # Extract first number from complex strings
+                number_match = re.search(r'(\d+)', age_str)
+                if number_match:
+                    age = int(number_match.group(1))
+                    if 16 <= age <= 100:
+                        logger.info(f"Extracted age {age} from '{v}'")
+                        return age
+                
+            except (ValueError, AttributeError) as e:
+                logger.warning(f"Error parsing age '{v}': {e}")
+                return None
+        
+        logger.warning(f"Could not parse age value: '{v}', setting to None")
+        return None
     
     @validator('category')
     def validate_category(cls, v):

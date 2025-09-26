@@ -417,23 +417,84 @@ class FacebookLeadsService:
             ""
         ).strip()
 
-    def _extract_age(self, raw_data: Dict[str, Any]) -> str:
-        """Extract age information"""
-        return (
+    def _extract_age(self, raw_data: Dict[str, Any]) -> Optional[int]:
+        """Extract and transform age from Facebook lead data"""
+        import re
+        
+        # Try multiple field name variations for age
+        age_value = (
             raw_data.get("age information") or
             raw_data.get("age_information") or
             raw_data.get("age") or
             ""
         ).strip()
+        
+        if not age_value or age_value == "":
+            return None
+            
+        age_str = str(age_value).lower()
+        
+        # Handle "not specified", "n/a", etc.
+        if age_str in ["not specified", "n/a", "undefined", "null", "none"]:
+            return None
+        
+        try:
+            # Handle range formats like "25_-_30", "18_-_25"
+            range_match = re.match(r'(\d+)_?-_?(\d+)', age_str)
+            if range_match:
+                min_age = int(range_match.group(1))
+                max_age = int(range_match.group(2))
+                middle_age = (min_age + max_age) // 2
+                logger.info(f"Age range '{age_value}' converted to {middle_age}")
+                return middle_age
+            
+            # Handle "35+" format
+            plus_match = re.match(r'(\d+)\+', age_str)
+            if plus_match:
+                base_age = int(plus_match.group(1))
+                logger.info(f"Age '{age_value}' converted to {base_age}")
+                return base_age
+            
+            # Handle direct integer strings "25", "30"
+            if age_str.isdigit():
+                age = int(age_str)
+                if 16 <= age <= 100:
+                    return age
+            
+            return None
+            
+        except (ValueError, AttributeError) as e:
+            logger.warning(f"Error parsing age '{age_value}': {e}")
+            return None
 
-    def _extract_experience(self, raw_data: Dict[str, Any]) -> str:
-        """Extract experience information"""
-        return (
+    def _extract_experience(self, raw_data: Dict[str, Any]) -> Optional[str]:
+        """Extract and transform experience information"""
+        experience_value = (
             raw_data.get("years of experience ?") or
             raw_data.get("years_of_experience") or
             raw_data.get("experience") or
             ""
         ).strip()
+        
+        if not experience_value:
+            return None
+            
+        exp_str = str(experience_value).lower()
+        
+        # Handle empty and null-like values
+        if exp_str in ["not specified", "n/a", "undefined", "null", "none"]:
+            return None
+        
+        # Map Facebook experience formats to CRM formats
+        experience_mapping = {
+            "5+_years": "5_to_10_years",
+            "3_to_5_years": "3_to_5_years", 
+            "1_to_3_years": "1_to_3_years",
+            "less_than_1_year": "less_than_1_year",
+            "fresher": "fresher",
+        }
+        
+        return experience_mapping.get(exp_str, "fresher")
 
     def _extract_qualification(self, raw_data: Dict[str, Any]) -> str:
         """Extract qualification/education information"""
