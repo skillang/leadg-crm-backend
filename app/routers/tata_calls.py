@@ -476,7 +476,7 @@ async def process_incoming_call_to_timeline(payload: Dict[str, Any]):
         
     except Exception as e:
         logger.error(f"Error processing incoming call to timeline: {str(e)}", exc_info=True)
-        
+
 def clean_phone_number(phone: str) -> str:
     """Clean phone number for matching"""
     if not phone:
@@ -495,7 +495,7 @@ def clean_phone_number(phone: str) -> str:
     return cleaned
 
 async def log_to_timeline_updated(lead_id: str, call_id: str, description: str, payload: Dict[str, Any]):
-    """Enhanced timeline logging with proper attribution and recording URL"""
+    """Enhanced timeline logging with proper attribution and recording URL - FIXED"""
     try:
         db = get_database()
         
@@ -513,6 +513,11 @@ async def log_to_timeline_updated(lead_id: str, call_id: str, description: str, 
         direction = payload.get("direction", "unknown")
         call_direction = "incoming" if direction in ["inbound", "incoming"] else "outgoing"
         
+        # Initialize defaults
+        created_by = None
+        created_by_name = "System Generated"  # Default fallback
+        is_system_generated = True
+        
         # Set created_by and created_by_name based on call direction
         if call_direction == "incoming":
             # For incoming calls, attribute to the lead who called
@@ -523,15 +528,26 @@ async def log_to_timeline_updated(lead_id: str, call_id: str, description: str, 
         else:
             # For outgoing calls, find the agent who made the call
             agent_name = "System Generated"
-            created_by = None
-            is_system_generated = True
             
             # Try to identify the agent from webhook data
             answered_agent = payload.get("answered_agent", {})
             if isinstance(answered_agent, dict) and answered_agent.get("name"):
                 agent_name = answered_agent.get("name")
-                
-                # Find the user by agent name
+            elif payload.get("answered_agent_name") and payload.get("answered_agent_name") not in ["_name", ""]:
+                agent_name = payload.get("answered_agent_name")
+            else:
+                # FIXED: Check missed_agent array when agent didn't answer
+                missed_agent = payload.get("missed_agent", [])
+                if missed_agent and len(missed_agent) > 0:
+                    first_missed = missed_agent[0]
+                    if isinstance(first_missed, dict) and first_missed.get("name"):
+                        agent_name = first_missed.get("name")
+            
+            # Set created_by_name to agent_name
+            created_by_name = agent_name
+            
+            # Try to find the actual user in database
+            if agent_name != "System Generated":
                 user = await db.users.find_one({"$or": [
                     {"first_name": {"$regex": f".*{agent_name}.*", "$options": "i"}},
                     {"last_name": {"$regex": f".*{agent_name}.*", "$options": "i"}},
@@ -542,11 +558,6 @@ async def log_to_timeline_updated(lead_id: str, call_id: str, description: str, 
                     created_by = str(user["_id"])
                     created_by_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() or user.get('email')
                     is_system_generated = False
-                else:
-                    created_by_name = agent_name
-            elif payload.get("answered_agent_name") and payload.get("answered_agent_name") != "_name":
-                agent_name = payload.get("answered_agent_name")
-                created_by_name = agent_name
         
         # Get recording URL if available
         recording_url = payload.get("recording_url")
@@ -558,7 +569,7 @@ async def log_to_timeline_updated(lead_id: str, call_id: str, description: str, 
             "activity_type": "call",
             "description": description,
             "created_by": created_by,
-            "created_by_name": created_by_name,
+            "created_by_name": created_by_name,  # Now guaranteed to be set
             "created_at": datetime.utcnow(),
             "is_system_generated": is_system_generated,
             "metadata": {
@@ -599,8 +610,7 @@ async def log_to_timeline_updated(lead_id: str, call_id: str, description: str, 
     except Exception as e:
         logger.error(f"❌ Error logging to timeline: {str(e)}", exc_info=True)
         return False
-
-
+    
 def create_call_description(call_status: str, agent_name: str, duration: Any, customer_number: str) -> str:
     """Create human-readable timeline description - UPDATED"""
     try:
