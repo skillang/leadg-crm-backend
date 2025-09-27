@@ -420,26 +420,7 @@ class LeadService:
                     await user_lead_array_service.add_lead_to_user_array(assigned_to, lead_id)
                 
                 # Step 10: Log activity with enhanced metadata
-                await self.log_lead_activity(
-                    lead_id=lead_id,
-                    activity_type="lead_created",
-                    description=f"Lead created with ID: {lead_id}",
-                    created_by=created_by,
-                    metadata={
-                        "category": basic_info.category,
-                        "source": validated_source,
-                        "course_level": validated_course_level,
-                        "assigned_to": assigned_to,
-                        "assignment_method": assignment_method,
-                        "has_age": basic_info.age is not None,
-                        "has_experience": basic_info.experience is not None,
-                        "has_nationality": basic_info.nationality is not None,
-                        "lead_id_format": "category_source_combination",  # 🆕 NEW
-                        "category_short": validation_result.get("category_short_form"),
-                        "source_short": validation_result.get("source_short_form"),
-                        "lead_id_preview_matched": True
-                    }
-                )
+                
                 
                 logger.info(f"✅ Lead created successfully: {lead_id} with category-source combination format")
                 
@@ -645,27 +626,7 @@ class LeadService:
                 if assigned_to:
                     await user_lead_array_service.add_lead_to_user_array(assigned_to, lead_id)
                 
-                # Step 9: Log activity
-                await self.log_lead_activity(
-                    lead_id=lead_id,
-                    activity_type="lead_created",
-                    description=f"Lead created with ID: {lead_id}",
-                    created_by=created_by,
-                    metadata={
-                        "category": basic_info.category,
-                        "source": validated_source,
-                        "course_level": validated_course_level,
-                        "assigned_to": assigned_to,
-                        "assignment_method": assignment_method,
-                        "selected_users_pool": selected_user_emails,
-                        "has_age": basic_info.age is not None,
-                        "has_experience": basic_info.experience is not None,
-                        "has_nationality": basic_info.nationality is not None,
-                        "lead_id_format": "category_source_combination",  # 🆕 NEW
-                        "category_short": validation_result.get("category_short_form"),
-                        "source_short": validation_result.get("source_short_form")
-                    }
-                )
+                
                 
                 logger.info(f"Lead {lead_id} created and assigned to {assigned_to} using {assignment_method}")
                 

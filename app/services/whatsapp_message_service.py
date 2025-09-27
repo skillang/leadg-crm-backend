@@ -185,12 +185,7 @@ class WhatsAppMessageService:
                     set_unread_status=True  # 🆕 NEW: Mark lead as having unread messages
                 )
                 
-                # 🔥 FIXED: Pass current_user=None and message_content for proper activity logging
-                await CommunicationService.log_whatsapp_communication(
-                    lead["lead_id"], 
-                    current_user=None,  # ✅ Webhook messages don't have user context
-                    message_content=content  # ✅ Pass message content for preview
-                )
+               
 
                 # Log activity in lead timeline
                 await self._log_whatsapp_activity(

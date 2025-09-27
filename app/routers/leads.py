@@ -1972,19 +1972,7 @@ async def update_lead_universal(
                     await user_lead_array_service.add_lead_to_user_array(new_assignee, lead_id)
                     logger.info(f"✅ Successfully added lead {lead_id} to {new_assignee}")
                 
-                # Log assignment activity
-                if old_assignee != new_assignee:
-                    assignment_activity = {
-                        "activity_type": "lead_reassigned",
-                        "description": f"Lead reassigned from '{old_assignee or 'Unassigned'}' to '{new_assignee or 'Unassigned'}'",
-                        "metadata": {
-                            "old_assignee": old_assignee,
-                            "new_assignee": new_assignee,
-                            "reassigned_by": current_user.get("email"),
-                            "previous_co_assignees": old_co_assignees
-                        }
-                    }
-                    activities_to_log.append(assignment_activity)
+                
                     
             except Exception as array_error:
                 logger.error(f"❌ CRITICAL: Enhanced user array update failed: {str(array_error)}")

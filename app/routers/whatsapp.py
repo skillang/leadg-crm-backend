@@ -863,13 +863,7 @@ async def store_outgoing_message(
             }
         )
         
-        # Log communication activity - ONLY ONCE
-        await CommunicationService.log_whatsapp_communication(
-            lead.get("lead_id"),
-            current_user=current_user,
-            message_content=message_content
-        )
-        
+       
         logger.info(f"✅ Stored outgoing message for lead {lead.get('lead_id')} by {user_name}")
         
     except Exception as e:
