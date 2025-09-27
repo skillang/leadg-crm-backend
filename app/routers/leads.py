@@ -1301,36 +1301,35 @@ async def get_my_leads(
         base_user_query = {
             "$or": [
                 {"assigned_to": current_user["email"]},
-                 {"co_assignees": {"$in": [current_user["email"]]}}
+                {"co_assignees": {"$in": [current_user["email"]]}}
             ]
         }
         
-        # Start with the base user query
-        query = base_user_query
+        # 🔧 FIXED: Build filters array instead of overwriting query
+        filters = []
         
-        # 🆕 NEW: Add the same filtering logic as get_leads
         if stage:
-            query["stage"] = stage
+            filters.append({"stage": stage})
             
         if status:
-            query["status"] = status
+            filters.append({"status": status})
         elif lead_status:
             possible_old_statuses = [k for k, v in OLD_TO_NEW_STATUS_MAPPING.items() if v == lead_status.value]
             status_conditions = [{"status": lead_status.value}]
             if possible_old_statuses:
                 status_conditions.extend([{"status": old_status} for old_status in possible_old_statuses])
-            query["$or"] = status_conditions
+            filters.append({"$or": status_conditions})
             
         if category:
-            query["category"] = category
+            filters.append({"category": category})
             
         if source:
-            query["source"] = source
+            filters.append({"source": source})
             
         if course_level:
-            query["course_level"] = course_level
+            filters.append({"course_level": course_level})
             
-        # Handle date range
+        # Handle date ranges
         if created_from or created_to:
             date_query = {}
             if created_from:
@@ -1344,9 +1343,8 @@ async def get_my_leads(
                 except ValueError:
                     pass
             if date_query:
-                query["created_at"] = date_query
+                filters.append({"created_at": date_query})
         
-        # Handle updated_at date range
         if updated_from or updated_to:
             date_query = {}
             if updated_from:
@@ -1358,9 +1356,8 @@ async def get_my_leads(
                     end_date = end_date.replace(hour=23, minute=59, second=59)
                 date_query["$lte"] = end_date
             if date_query:
-                query["updated_at"] = date_query
+                filters.append({"updated_at": date_query})
 
-        # Handle last_contacted date range  
         if last_contacted_from or last_contacted_to:
             date_query = {}
             if last_contacted_from:
@@ -1368,7 +1365,7 @@ async def get_my_leads(
             if last_contacted_to:
                 date_query["$lte"] = datetime.fromisoformat(last_contacted_to)
             if date_query:
-                query["last_contacted"] = date_query
+                filters.append({"last_contacted": date_query})
         
         # Handle search
         if search:
@@ -1381,21 +1378,13 @@ async def get_my_leads(
                     {"phone_number": {"$regex": search, "$options": "i"}}
                 ]
             }
-            if "$or" in query:
-                query = {
-                    "$and": [
-                        {"assigned_to": current_user["email"]},
-                        {"$or": query["$or"]},
-                        search_condition
-                    ]
-                }
-            else:
-                query = {
-                    "$and": [
-                        {"assigned_to": current_user["email"]},
-                        search_condition
-                    ]
-                }
+            filters.append(search_condition)
+        
+        # 🔧 FIXED: Combine base query with filters using $and
+        if filters:
+            query = {"$and": [base_user_query] + filters}
+        else:
+            query = base_user_query
         
         total = await db.leads.count_documents(query)
         skip = (page - 1) * limit
