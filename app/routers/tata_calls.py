@@ -266,60 +266,60 @@ async def handle_tata_webhook(request: Request):
         }
 
 async def process_webhook_to_timeline(payload: Dict[str, Any]):
+    """Enhanced outgoing call processing with better agent identification"""
     try:
-        call_id = payload.get("call_id")
+        call_id = payload.get("call_id") or payload.get("uuid")
+        call_status = payload.get("call_status", "unknown")
         customer_number = payload.get("call_to_number")
-        call_status = payload.get("call_status")
-        
-        # Get agent information
-        answered_agent = payload.get("answered_agent")
-        missed_agent = payload.get("missed_agent", [])
-        
-        agent_name = "Unknown"
-        
-        # Determine who handled the call
-        if answered_agent and isinstance(answered_agent, dict):
-            agent_name = answered_agent.get("name", "Unknown")
-        elif missed_agent and len(missed_agent) > 0:
-            agent_name = missed_agent[0].get("name", "Unknown")
         
         # Get call timing
-        duration = int(payload.get("duration", 0)) if payload.get("duration") else 0
-        billsec = int(payload.get("billsec", 0)) if payload.get("billsec") else 0
-        actual_duration = billsec if billsec > 0 else duration
+        duration = payload.get("duration", 0) or payload.get("billsec", 0)
+        if isinstance(duration, str):
+            duration = int(duration) if duration.isdigit() else 0
         
-        # Determine correct timeline description
-        if call_status == "answered" and actual_duration > 0:
-            # Customer answered and had conversation
-            minutes = actual_duration // 60
-            seconds = actual_duration % 60
+        # Better agent identification for outgoing calls
+        answered_agent = payload.get("answered_agent", {})
+        missed_agent = payload.get("missed_agent", [])
+        
+        agent_name = "Unknown Agent"
+        
+        if isinstance(answered_agent, dict) and answered_agent.get("name"):
+            agent_name = answered_agent.get("name")
+        elif missed_agent and len(missed_agent) > 0:
+            agent_name = missed_agent[0].get("name", "Unknown Agent")
+        elif payload.get("answered_agent_name") and payload.get("answered_agent_name") != "_name":
+            agent_name = payload.get("answered_agent_name")
+        
+        # Find lead by customer phone number
+        lead_id = await find_lead_by_phone_number(customer_number)
+        
+        if not lead_id:
+            logger.warning(f"No lead found for outgoing call to: {customer_number}")
+            return
+        
+        # Create timeline description
+        if call_status == "answered" and duration > 0:
+            minutes = duration // 60
+            seconds = duration % 60
             duration_text = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
             description = f"Call initiated and answered by customer (Duration: {duration_text}) - Handled by {agent_name}"
-            
         elif call_status == "missed":
             if answered_agent:
-                # Agent answered but customer didn't
                 description = f"Call initiated and missed by customer - Agent {agent_name} was ready"
             elif missed_agent:
-                # Agent missed the call
                 description = f"Call initiated and missed by agent - {agent_name} didn't answer"
             else:
-                # General missed call
                 description = f"Call initiated and missed by customer"
         else:
             description = f"Call initiated - Status: {call_status}"
         
-        # Find lead and log to timeline
-        lead_id = await find_lead_by_phone_number(customer_number)
+        # Log to enhanced timeline
+        await log_to_timeline_updated(lead_id, call_id, description, payload)
         
-        if lead_id:
-            await log_to_timeline_updated(lead_id, call_id, description, payload)
-            logger.info(f"Timeline logged: {description}")
-        else:
-            logger.error(f"Cannot log timeline - no lead found for {customer_number}")
+        logger.info(f"Outgoing call logged: {description}")
         
     except Exception as e:
-        logger.error(f"Webhook processing error: {str(e)}")
+        logger.error(f"Error processing outgoing call: {str(e)}", exc_info=True)
 
 async def find_lead_by_phone_number(phone_number: str) -> Optional[str]:
     """Find lead by phone number - updated for actual database schema"""
@@ -408,16 +408,14 @@ async def handle_incoming_calls_webhook(
         )
 
 async def process_incoming_call_to_timeline(payload: Dict[str, Any]):
-    """Process incoming call webhook - FIXED agent detection"""
+    """Enhanced incoming call processing with lead attribution"""
     try:
-        # Extract call data
         call_id = payload.get("call_id") or payload.get("uuid")
         call_status = payload.get("call_status", "unknown")
         
         # For incoming calls, the caller is the customer (lead)
         customer_number = payload.get("caller_id_number") or payload.get("call_from_number")
         
-        # Clean customer number (remove country code prefixes if needed)
         if customer_number:
             customer_number = customer_number.replace("+", "")
         
@@ -426,42 +424,27 @@ async def process_incoming_call_to_timeline(payload: Dict[str, Any]):
         if isinstance(duration, str):
             duration = int(duration) if duration.isdigit() else 0
         
-        logger.info(f"Processing incoming call from {customer_number} - Status: {call_status}, Duration: {duration}s")
-        
-        # FIXED: Better agent detection logic
+        # Enhanced agent detection
         agent_name = "Unknown Agent"
-        agent_handled = False
         
-        # Check answered_agent first (if call was answered)
         answered_agent = payload.get("answered_agent")
         if answered_agent:
             if isinstance(answered_agent, dict) and answered_agent.get("name"):
                 agent_name = answered_agent.get("name")
-                agent_handled = True
-                logger.info(f"Call answered by agent: {agent_name}")
             elif isinstance(answered_agent, str) and answered_agent.strip():
                 agent_name = answered_agent
-                agent_handled = True
-                logger.info(f"Call answered by agent: {agent_name}")
         
-        # If no answered agent, check answered_agent_name
-        if not agent_handled:
+        if agent_name == "Unknown Agent":
             answered_agent_name = payload.get("answered_agent_name")
             if answered_agent_name and answered_agent_name != "_name" and answered_agent_name.strip():
                 agent_name = answered_agent_name
-                agent_handled = True
-                logger.info(f"Call answered by agent (from name field): {agent_name}")
         
-        # If still no agent found, check missed_agent array
-        if not agent_handled:
+        if agent_name == "Unknown Agent":
             missed_agents = payload.get("missed_agent", [])
             if missed_agents and len(missed_agents) > 0:
-                # Get the first missed agent
                 first_missed = missed_agents[0]
                 if isinstance(first_missed, dict) and first_missed.get("name"):
                     agent_name = first_missed.get("name")
-                    agent_handled = False  # This agent missed the call
-                    logger.info(f"Call missed by agent: {agent_name}")
         
         # Find lead by customer phone number
         lead_id = await find_lead_by_phone_number(customer_number)
@@ -470,48 +453,30 @@ async def process_incoming_call_to_timeline(payload: Dict[str, Any]):
             logger.warning(f"No lead found for incoming call from: {customer_number}")
             return
         
-        # Create timeline description based on call outcome and agent involvement
+        # Create timeline description
         if call_status == "answered" and duration > 0:
-            # Customer called and agent answered
             minutes = duration // 60
             seconds = duration % 60
             duration_text = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
             description = f"Call dialed by lead and answered by agent - {agent_name} (Duration: {duration_text})"
-            
         elif call_status == "missed" or call_status == "noanswer":
-            # Customer called but agent didn't answer
             if agent_name != "Unknown Agent":
                 description = f"Call dialed by lead and missed by agent - {agent_name} didn't answer"
             else:
                 description = f"Call dialed by lead and missed by agent - No agent available"
-                
         elif call_status == "answered" and duration == 0:
-            # Agent answered but immediately hung up
             description = f"Call dialed by lead and answered by agent - {agent_name} (immediate hangup)"
-            
         else:
-            # Fallback for other statuses
-            if agent_name != "Unknown Agent":
-                description = f"Call dialed by lead - {agent_name} was notified (Status: {call_status})"
-            else:
-                description = f"Call dialed by lead - Status: {call_status}"
+            description = f"Call dialed by lead - Status: {call_status}"
         
-        # Log to timeline with incoming call metadata
-        incoming_metadata = {
-            **payload,
-            "call_direction": "incoming",
-            "customer_initiated": True,
-            "source": "smartflo_incoming_webhook",
-            "detected_agent": agent_name,
-            "agent_answered": agent_handled
-        }
-        
-        await log_to_timeline_updated(lead_id, call_id, description, incoming_metadata)
+        # Log to enhanced timeline (will be attributed to the lead)
+        await log_to_timeline_updated(lead_id, call_id, description, payload)
         
         logger.info(f"Incoming call timeline logged for lead {lead_id}: {description}")
         
     except Exception as e:
         logger.error(f"Error processing incoming call to timeline: {str(e)}", exc_info=True)
+        
 def clean_phone_number(phone: str) -> str:
     """Clean phone number for matching"""
     if not phone:
@@ -530,7 +495,7 @@ def clean_phone_number(phone: str) -> str:
     return cleaned
 
 async def log_to_timeline_updated(lead_id: str, call_id: str, description: str, payload: Dict[str, Any]):
-    """Log webhook call data to timeline - FIXED VERSION"""
+    """Enhanced timeline logging with proper attribution and recording URL"""
     try:
         db = get_database()
         
@@ -544,34 +509,88 @@ async def log_to_timeline_updated(lead_id: str, call_id: str, description: str, 
             logger.info(f"Call {call_id} already logged for lead {lead_id}")
             return True
         
-        # Create timeline entry with correct structure matching your database schema
+        # Determine call direction and set appropriate attribution
+        direction = payload.get("direction", "unknown")
+        call_direction = "incoming" if direction in ["inbound", "incoming"] else "outgoing"
+        
+        # Set created_by and created_by_name based on call direction
+        if call_direction == "incoming":
+            # For incoming calls, attribute to the lead who called
+            lead = await db.leads.find_one({"lead_id": lead_id})
+            created_by = lead_id  # Use lead_id as identifier
+            created_by_name = lead.get("name", "Unknown Lead") if lead else "Unknown Lead"
+            is_system_generated = False  # Lead initiated this call
+        else:
+            # For outgoing calls, find the agent who made the call
+            agent_name = "System Generated"
+            created_by = None
+            is_system_generated = True
+            
+            # Try to identify the agent from webhook data
+            answered_agent = payload.get("answered_agent", {})
+            if isinstance(answered_agent, dict) and answered_agent.get("name"):
+                agent_name = answered_agent.get("name")
+                
+                # Find the user by agent name
+                user = await db.users.find_one({"$or": [
+                    {"first_name": {"$regex": f".*{agent_name}.*", "$options": "i"}},
+                    {"last_name": {"$regex": f".*{agent_name}.*", "$options": "i"}},
+                    {"email": {"$regex": f".*{agent_name.lower()}.*", "$options": "i"}}
+                ]})
+                
+                if user:
+                    created_by = str(user["_id"])
+                    created_by_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() or user.get('email')
+                    is_system_generated = False
+                else:
+                    created_by_name = agent_name
+            elif payload.get("answered_agent_name") and payload.get("answered_agent_name") != "_name":
+                agent_name = payload.get("answered_agent_name")
+                created_by_name = agent_name
+        
+        # Get recording URL if available
+        recording_url = payload.get("recording_url")
+        has_recording = bool(recording_url and recording_url.strip())
+        
+        # Create enhanced timeline entry
         timeline_entry = {
             "lead_id": lead_id,
-            "activity_type": "call",  # Make sure this is "call"
+            "activity_type": "call",
             "description": description,
-            "created_by": None,  # System generated
-            "created_by_name": "System Generated", 
+            "created_by": created_by,
+            "created_by_name": created_by_name,
             "created_at": datetime.utcnow(),
-            "is_system_generated": True,
+            "is_system_generated": is_system_generated,
             "metadata": {
                 "source": "smartflo_webhook",
                 "call_id": call_id,
+                "call_direction": call_direction,
                 "call_status": payload.get("call_status"),
-                "agent_name": payload.get("answered_agent", {}).get("name") if payload.get("answered_agent") else None,
-                "duration": payload.get("billsec", 0),
-                "customer_number": payload.get("call_to_number"),
+                "duration": payload.get("billsec", 0) or payload.get("duration", 0),
+                "customer_number": payload.get("call_to_number") if call_direction == "outgoing" else payload.get("caller_id_number"),
+                "agent_name": payload.get("answered_agent", {}).get("name") if isinstance(payload.get("answered_agent"), dict) else payload.get("answered_agent_name"),
                 "hangup_cause": payload.get("hangup_cause"),
-                "recording_url": payload.get("recording_url"),
-                "full_webhook_payload": payload  # For debugging
+                "start_stamp": payload.get("start_stamp"),
+                "end_stamp": payload.get("end_stamp"),
+                "answer_stamp": payload.get("answer_stamp"),
+                # Recording information
+                "has_recording": has_recording,
+                "recording_url": recording_url if has_recording else None,
+                "aws_recording_id": payload.get("aws_call_recording_identifier"),
+                # Full webhook payload for debugging
+                "full_webhook_payload": payload
             }
         }
         
-        # Insert into lead_activities collection (same as frontend reads from)
+        # Insert into lead_activities collection
         result = await db.lead_activities.insert_one(timeline_entry)
         
         if result.inserted_id:
             logger.info(f"✅ Timeline entry created for lead {lead_id}: {description}")
             logger.info(f"✅ Inserted with ID: {result.inserted_id}")
+            logger.info(f"✅ Attribution: {created_by_name} ({'Lead' if call_direction == 'incoming' else 'Agent'})")
+            if has_recording:
+                logger.info(f"✅ Recording available: {recording_url}")
             return True
         else:
             logger.error(f"❌ Failed to insert timeline entry for lead {lead_id}")
