@@ -1402,9 +1402,9 @@ async def delete_user(
                 {"assigned_to": user_email},
                 {
                     "$set": {
-                        "assigned_to": current_admin_email,
-                        "assigned_to_name": f"{current_user.get('first_name', '')} {current_user.get('last_name', '')}".strip(),
-                        "reassignment_reason": f"User {user_email} was deleted",
+                        "assigned_to": None,  # Set to None for unassigned
+                        "assigned_to_name": None,  # Clear the name as well
+                        "reassignment_reason": f"User {user_email} was deleted - lead unassigned",
                         "updated_at": datetime.utcnow()
                     }
                 }
@@ -1776,9 +1776,9 @@ async def delete_user(
                 {"assigned_to": user_email},
                 {
                     "$set": {
-                        "assigned_to": current_admin_email,
-                        "assigned_to_name": f"{current_user.get('first_name', '')} {current_user.get('last_name', '')}".strip(),
-                        "reassignment_reason": f"User {user_email} was deleted",
+                        "assigned_to": None,  # Set to None for unassigned
+                        "assigned_to_name": None,  # Clear the name as well
+                        "reassignment_reason": f"User {user_email} was deleted - lead unassigned",
                         "updated_at": datetime.utcnow()
                     }
                 }

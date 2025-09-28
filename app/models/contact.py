@@ -104,7 +104,7 @@ class ContactCreate(ContactBase):
 class ContactUpdate(BaseModel):
     """Model for updating an existing contact"""
     first_name: Optional[str] = None
-    last_name: Optional[str] = None
+    last_name: Optional[str] = Field(None, max_length=100)
     email: Optional[EmailStr] = None
     phone: Optional[str] = None
     role: Optional[ContactRole] = None

@@ -48,8 +48,8 @@ class ContactService:
             contact_doc = {
                 "lead_id": lead_id,
                 "first_name": contact_data.first_name,
-                "last_name": contact_data.last_name,
-                "full_name": f"{contact_data.first_name} {contact_data.last_name}".strip(),
+                "last_name": contact_data.last_name or "",
+                "full_name": f"{contact_data.first_name} {contact_data.last_name or ''}".strip(),
                 "email": contact_data.email,
                 "phone": contact_data.phone,
                 "role": contact_data.role.value,
@@ -294,7 +294,7 @@ class ContactService:
             if "first_name" in update_data or "last_name" in update_data:
                 first_name = update_data.get("first_name", existing_contact.get("first_name", ""))
                 last_name = update_data.get("last_name", existing_contact.get("last_name", ""))
-                update_data["full_name"] = f"{first_name} {last_name}".strip()
+                update_data["full_name"] = f"{first_name} {last_name or ''}".strip()
             
             # Add update metadata
             update_data["updated_at"] = datetime.utcnow()
