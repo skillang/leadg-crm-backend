@@ -228,7 +228,56 @@ async def create_indexes():
         await bulk_whatsapp_collection.create_index([("status", 1), ("cancelled_at", 1)])  # Old cancelled jobs
         
         logger.info("✅ Bulk WhatsApp Jobs indexes created")
-        
+
+        logger.info("🤖 Creating Automation Campaigns collection indexes...")
+
+        campaigns_collection = db.automation_campaigns
+
+        # Essential indexes for campaign management
+        await campaigns_collection.create_index("campaign_id", unique=True)
+        await campaigns_collection.create_index("campaign_type")  # whatsapp or email
+        await campaigns_collection.create_index("status")  # active, paused, deleted
+        await campaigns_collection.create_index("created_by")
+        await campaigns_collection.create_index("created_at")
+
+        # Filter indexes
+        await campaigns_collection.create_index("send_to_all")
+        await campaigns_collection.create_index("stage_ids")
+        await campaigns_collection.create_index("source_ids")
+
+        # Scheduling indexes
+        await campaigns_collection.create_index("use_custom_dates")
+        await campaigns_collection.create_index([("status", 1), ("created_at", -1)])
+        await campaigns_collection.create_index([("campaign_type", 1), ("status", 1)])
+        await campaigns_collection.create_index([("created_by", 1), ("created_at", -1)])
+
+        logger.info("✅ Automation Campaigns indexes created")
+
+        # ============================================================================
+        # 🆕 NEW: CAMPAIGN TRACKING COLLECTION INDEXES
+        # ============================================================================
+        logger.info("📊 Creating Campaign Tracking collection indexes...")
+
+        tracking_collection = db.campaign_tracking
+
+        # Essential tracking indexes
+        await tracking_collection.create_index("campaign_id")
+        await tracking_collection.create_index("lead_id")
+        await tracking_collection.create_index([("campaign_id", 1), ("lead_id", 1)], unique=True)
+
+        # Status and execution indexes
+        await tracking_collection.create_index("status")  # active, paused, completed
+        await tracking_collection.create_index("job_type")  # enrollment or job
+        await tracking_collection.create_index("execute_at")
+        await tracking_collection.create_index([("status", 1), ("execute_at", 1)])
+
+        # Performance indexes
+        await tracking_collection.create_index([("campaign_id", 1), ("status", 1)])
+        await tracking_collection.create_index([("lead_id", 1), ("status", 1)])
+        await tracking_collection.create_index([("status", 1), ("created_at", -1)])
+        await tracking_collection.create_index("created_at")
+
+        logger.info("✅ Campaign Tracking indexes created")
 
         # ============================================================================
         # 🆕 NEW: NOTIFICATION HISTORY COLLECTION INDEXES
@@ -449,7 +498,8 @@ async def get_collection_stats():
             "lead_counters",
             "whatsapp_messages",  # WhatsApp messages collection
             "bulk_whatsapp_jobs",
-            
+            "automation_campaigns",      # ADD THIS
+            "campaign_tracking",         # ADD THIS            
             "notification_history", 
             "token_blacklist",
             "user_sessions",
@@ -530,6 +580,28 @@ async def get_collection_stats():
                     
                     text_jobs = await db[collection_name].count_documents({"message_type": "text"})
                     stats[f"{collection_name}_text"] = text_jobs
+                
+                # 🆕 NEW: Automation campaigns stats
+                elif collection_name == "automation_campaigns":
+                    active = await db[collection_name].count_documents({"status": "active"})
+                    stats[f"{collection_name}_active"] = active
+                    
+                    paused = await db[collection_name].count_documents({"status": "paused"})
+                    stats[f"{collection_name}_paused"] = paused
+                    
+                    whatsapp = await db[collection_name].count_documents({"campaign_type": "whatsapp"})
+                    stats[f"{collection_name}_whatsapp"] = whatsapp
+                    
+                    email = await db[collection_name].count_documents({"campaign_type": "email"})
+                    stats[f"{collection_name}_email"] = email
+
+                elif collection_name == "campaign_tracking":
+                    pending = await db[collection_name].count_documents({"status": "pending"})
+                    stats[f"{collection_name}_pending"] = pending
+                    
+                    completed = await db[collection_name].count_documents({"status": "completed"})
+                    stats[f"{collection_name}_completed"] = completed
+
                 elif collection_name == "notification_history":
                     # Notification type breakdown
                     whatsapp_notifications = await db[collection_name].count_documents({"notification_type": "new_whatsapp_message"})
@@ -626,6 +698,11 @@ async def init_database():
         logger.info(f"   ├─ Pending: {stats.get('bulk_whatsapp_jobs_pending', 0)}, Processing: {stats.get('bulk_whatsapp_jobs_processing', 0)}")
         logger.info(f"   ├─ Completed: {stats.get('bulk_whatsapp_jobs_completed', 0)}, Failed: {stats.get('bulk_whatsapp_jobs_failed', 0)}")
         logger.info(f"   └─ Scheduled: {stats.get('bulk_whatsapp_jobs_scheduled', 0)}, Immediate: {stats.get('bulk_whatsapp_jobs_immediate', 0)}")
+    
+    if stats.get('automation_campaigns', 0) > 0:
+        logger.info(f"🤖 Campaigns: {stats.get('automation_campaigns', 0)} total")
+        logger.info(f"   ├─ Active: {stats.get('automation_campaigns_active', 0)}, Paused: {stats.get('automation_campaigns_paused', 0)}")
+        logger.info(f"   └─ WhatsApp: {stats.get('automation_campaigns_whatsapp', 0)}, Email: {stats.get('automation_campaigns_email', 0)}")
 
 async def cleanup_database():
     """Cleanup database resources"""

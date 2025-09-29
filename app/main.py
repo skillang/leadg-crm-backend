@@ -9,12 +9,13 @@ import time
 from .config.settings import settings
 # Import the correct scheduler functions
 from app.utils.whatsapp_scheduler import start_whatsapp_scheduler, stop_whatsapp_scheduler
+from app.utils.campaign_cron import start_campaign_cron, stop_campaign_cron
 from .config.database import connect_to_mongo, close_mongo_connection
 from .routers import (
     auth, leads, tasks, notes, documents, timeline, contacts, lead_categories, 
     stages, statuses, course_levels, sources, whatsapp, emails, permissions, 
     tata_auth, tata_calls, tata_users, bulk_whatsapp, realtime, notifications, 
-    integrations, admin_calls, password_reset ,cv_processing ,facebook_leads  # NEW: Admin dashboard router
+    integrations, admin_calls, password_reset ,cv_processing ,facebook_leads, automation_campaigns 
 )
 
 logging.basicConfig(
@@ -65,6 +66,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"❌ Failed to start WhatsApp scheduler: {e}")
         logger.warning("⚠️ Continuing without WhatsApp scheduler")
+
+    try:
+        await start_campaign_cron()
+        logger.info("✅ Campaign automation cron started successfully")
+    except Exception as e:
+        logger.error(f"❌ Failed to start campaign cron: {e}")
+        logger.warning("⚠️ Continuing without campaign automation")
     
     # Initialize default permissions for existing users
     await initialize_user_permissions()
@@ -87,6 +95,12 @@ async def lifespan(app: FastAPI):
         logger.info("✅ WhatsApp scheduler stopped")
     except Exception as e:
         logger.error(f"❌ Error stopping WhatsApp scheduler: {e}")
+    
+    try:
+        await stop_campaign_cron()
+        logger.info("✅ Campaign cron stopped")
+    except Exception as e:
+        logger.error(f"❌ Error stopping campaign cron: {e}")
     
     # Cleanup real-time connections
     await cleanup_realtime_connections()
@@ -349,7 +363,7 @@ async def health_check():
             "auth", "leads", "tasks", "notes", "documents", "timeline", "contacts", 
             "stages", "statuses", "course-levels", "sources", "whatsapp", "realtime", 
             "emails", "permissions", "tata-auth", "tata-calls", "tata-users", 
-            "bulk-whatsapp", "integrations", "admin-calls" , "cv-processing"
+            "bulk-whatsapp", "integrations", "admin-calls" , "cv-processing","automation-campaigns"
         ]
     }
 
@@ -527,7 +541,7 @@ app.include_router(
     tags=["Integrations"]
 )
 
-# NEW: Include admin call dashboard router
+# NEW: admin call dashboard router
 app.include_router(
     admin_calls.router,
     prefix="/admin",
@@ -543,6 +557,12 @@ app.include_router(
     facebook_leads.router,
     prefix="/facebook",  # Add prefix here
     tags=["Facebook Integration"]
+)
+
+app.include_router(
+    automation_campaigns.router,
+    prefix="/campaigns",
+    tags=["Automation Campaigns"]
 )
 
 

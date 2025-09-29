@@ -1,5 +1,5 @@
 # app/models/contact.py - Contact Models (Fixed Pydantic V2)
-from pydantic import BaseModel, EmailStr, validator
+from pydantic import BaseModel, EmailStr, validator, Field
 from typing import Optional, List
 from enum import Enum
 from datetime import datetime

@@ -1764,9 +1764,9 @@ async def update_lead_universal(
                             contact_number = lead.get("contact_number") or lead.get("phone_number")
                             if contact_number:
                                 whatsapp_result = await whatsapp_message_service.send_template_message(
-                                    contact=contact_number,        # ✅ Correct parameter name
-                                    template_name=template_name,   # ✅ Correct parameter name
-                                    lead_name=lead.get("name", "") # ✅ Correct parameter name
+                                    contact=contact_number,
+                                    template_name=template_name,
+                                    lead_name=lead.get("name", "")
                                 )
                             else:
                                 whatsapp_result = {
@@ -1838,7 +1838,24 @@ async def update_lead_universal(
                         }
                         update_request["_automation_activity"] = automation_activity
         
-
+        # 🆕 NEW: Check campaign criteria when stage or source changes
+        new_source = update_request.get("source")
+        current_source = lead.get("source")
+        source_changed = new_source and new_source != current_source
+        
+        if stage_changed or source_changed:
+            try:
+                from ..services.campaign_executor import campaign_executor
+                
+                logger.info(f"🤖 Checking campaign criteria for lead {lead_id}")
+                await campaign_executor.check_lead_criteria_change(
+                    lead_id=lead_id,
+                    new_stage=new_stage,
+                    new_source=new_source
+                )
+            except Exception as campaign_error:
+                logger.error(f"Campaign criteria check failed: {str(campaign_error)}")
+                # Don't fail the update if campaign check fails
         
         logger.info(f"📋 Found lead {lead_id}, currently assigned to: {lead.get('assigned_to')}")
         
@@ -1960,8 +1977,6 @@ async def update_lead_universal(
                     logger.info(f"📥 Adding lead {lead_id} to {new_assignee}")
                     await user_lead_array_service.add_lead_to_user_array(new_assignee, lead_id)
                     logger.info(f"✅ Successfully added lead {lead_id} to {new_assignee}")
-                
-                
                     
             except Exception as array_error:
                 logger.error(f"❌ CRITICAL: Enhanced user array update failed: {str(array_error)}")
@@ -2034,7 +2049,7 @@ async def update_lead_universal(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to update lead"
         )
-
+        
 # ============================================================================
 # DELETE ENDPOINT WITH MULTI-ASSIGNMENT CLEANUP
 # ============================================================================
