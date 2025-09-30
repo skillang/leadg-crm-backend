@@ -93,20 +93,32 @@ class CampaignService:
             
             logger.info(f"Campaign created successfully: {campaign_id}")
             
-            # Create schedule preview
+           # Create schedule preview - UPDATED SECTION
             schedule_preview = []
-            for template in campaign_data.templates:
-                if campaign_data.use_custom_dates:
+
+            if campaign_data.use_custom_dates:
+                # For custom dates, show only templates with custom dates
+                for template in campaign_data.templates:
                     schedule_preview.append({
                         "template_name": template.template_name,
                         "send_date": template.custom_date,
                         "sequence": template.sequence_order
                     })
-                else:
+            else:
+                # For auto-schedule, show ALL scheduled jobs based on message_limit
+                templates = [template.dict() for template in campaign_data.templates]
+                message_days = self._calculate_schedule_days(
+                    campaign_data.campaign_duration_days,
+                    campaign_data.message_limit
+                )
+                
+                # Generate schedule for all messages (cycling through templates)
+                for i in range(campaign_data.message_limit):
+                    template = templates[i % len(templates)]
                     schedule_preview.append({
-                        "template_name": template.template_name,
-                        "send_day": template.scheduled_day,
-                        "sequence": template.sequence_order
+                        "template_name": template["template_name"],
+                        "send_day": message_days[i],
+                        "sequence": i + 1
                     })
             
             return {
@@ -114,6 +126,7 @@ class CampaignService:
                 "message": "Campaign created successfully",
                 "campaign_id": campaign_id,
                 "campaign_name": campaign_data.campaign_name,
+                "total_scheduled_messages": len(schedule_preview),  # ADD THIS LINE
                 "schedule_preview": schedule_preview
             }
             

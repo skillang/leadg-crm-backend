@@ -308,6 +308,8 @@ class CampaignExecutor:
         except Exception as e:
             logger.error(f"Error creating message jobs: {str(e)}")
 
+
+
     def _calculate_decay_distribution(self, message_count: int, total_days: int) -> List[float]:
         """
         Calculate message distribution with decay pattern (frequent early, sparse later)
@@ -356,21 +358,33 @@ class CampaignExecutor:
         return days
 
     async def check_lead_criteria_change(
-        self,
-        lead_id: str,
-        new_stage: Optional[str] = None,
-        new_source: Optional[str] = None
-    ) -> None:
+    self,
+    lead_id: str,
+    new_stage: Optional[str] = None,
+    new_source: Optional[str] = None
+) -> None:
         """
         Check if lead still matches campaign criteria after stage/source change
         
         Args:
             lead_id: Lead ID
-            new_stage: New stage (if changed)
-            new_source: New source (if changed)
+            new_stage: New stage NAME (if changed)
+            new_source: New source NAME (if changed)
         """
         try:
             logger.info(f"Checking campaign criteria for lead {lead_id}")
+            
+            # Get the lead to check current stage/source
+            lead = await self.db.leads.find_one({"lead_id": lead_id})
+            if not lead:
+                logger.error(f"Lead {lead_id} not found")
+                return
+            
+            # Use provided values or get from lead document
+            current_stage = new_stage or lead.get("stage")
+            current_source = new_source or lead.get("source")
+            
+            logger.info(f"Lead {lead_id} current stage: {current_stage}, source: {current_source}")
             
             # Get all active enrollments for this lead
             enrollments = await self.db[self.enrollment_collection].find({
@@ -393,10 +407,11 @@ class CampaignExecutor:
                 # Check if lead still matches criteria
                 still_matches = await self._check_criteria_match(
                     campaign,
-                    enrollment,
-                    new_stage,
-                    new_source
+                    current_stage,
+                    current_source
                 )
+                
+                logger.info(f"Campaign {campaign['campaign_id']} match result: {still_matches}")
                 
                 if not still_matches:
                     # Pause this enrollment
@@ -407,34 +422,66 @@ class CampaignExecutor:
             logger.error(f"Error checking lead criteria: {str(e)}")
     
     async def _check_criteria_match(
-        self,
-        campaign: Dict[str, Any],
-        enrollment: Dict[str, Any],
-        new_stage: Optional[str],
-        new_source: Optional[str]
-    ) -> bool:
+    self,
+    campaign: Dict[str, Any],
+    current_stage: Optional[str],  # Stage NAME from lead
+    current_source: Optional[str]  # Source NAME from lead
+) -> bool:
         """
         Check if lead still matches campaign criteria
+        
+        Args:
+            campaign: Campaign document
+            current_stage: Lead's current stage NAME
+            current_source: Lead's current source NAME
         
         Returns:
             True if still matches
         """
-        if campaign["send_to_all"]:
+        try:
+            if campaign["send_to_all"]:
+                logger.info("Campaign is send_to_all, returning True")
+                return True
+            
+            # Get required stage and source names from campaign
+            required_stages = []
+            required_sources = []
+            
+            if campaign.get("stage_ids"):
+                required_stages = await self._convert_stage_ids_to_names(campaign["stage_ids"])
+                logger.info(f"Required stages: {required_stages}, Current stage: {current_stage}")
+            
+            if campaign.get("source_ids"):
+                required_sources = await self._convert_source_ids_to_names(campaign["source_ids"])
+                logger.info(f"Required sources: {required_sources}, Current source: {current_source}")
+            
+            # Check based on what's configured in campaign
+            if required_stages and required_sources:
+                # Both stage AND source must match
+                stage_match = current_stage in required_stages
+                source_match = current_source in required_sources
+                logger.info(f"Stage match: {stage_match}, Source match: {source_match}")
+                return stage_match and source_match
+            
+            elif required_stages:
+                # Only stage needs to match
+                stage_match = current_stage in required_stages
+                logger.info(f"Stage only match: {stage_match}")
+                return stage_match
+            
+            elif required_sources:
+                # Only source needs to match
+                source_match = current_source in required_sources
+                logger.info(f"Source only match: {source_match}")
+                return source_match
+            
+            # No criteria specified - should not happen but return True
+            logger.warning("No stage or source criteria in campaign")
             return True
-        
-        # Check stage
-        if campaign.get("stage_ids") and new_stage:
-            stage_names = await self._convert_stage_ids_to_names(campaign["stage_ids"])
-            if new_stage not in stage_names:
-                return False
-
-        # Check source
-        if campaign.get("source_ids") and new_source:
-            source_names = await self._convert_source_ids_to_names(campaign["source_ids"])
-            if new_source not in source_names:
-                return False
-        
-        return True
+            
+        except Exception as e:
+            logger.error(f"Error checking criteria match: {str(e)}")
+            return False
     
     async def _pause_enrollment(self, campaign_id: str, lead_id: str) -> None:
         """Pause enrollment and cancel pending jobs"""
