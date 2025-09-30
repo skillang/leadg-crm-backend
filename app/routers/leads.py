@@ -1839,23 +1839,42 @@ async def update_lead_universal(
                         update_request["_automation_activity"] = automation_activity
         
         # 🆕 NEW: Check campaign criteria when stage or source changes
+        
         new_source = update_request.get("source")
         current_source = lead.get("source")
         source_changed = new_source and new_source != current_source
-        
+
         if stage_changed or source_changed:
             try:
                 from ..services.campaign_executor import campaign_executor
                 
                 logger.info(f"🤖 Checking campaign criteria for lead {lead_id}")
+                
+                # 🔥 NEW: Convert stage/source names to ObjectIds for campaign comparison
+                new_stage_id = None
+                new_source_id = None
+                
+                if new_stage:
+                    # Get stage ObjectId from stage name
+                    stage_doc = await db.lead_stages.find_one({"name": new_stage})
+                    if stage_doc:
+                        new_stage_id = str(stage_doc["_id"])
+                
+                if new_source:
+                    # Get source ObjectId from source name
+                    source_doc = await db.lead_sources.find_one({"name": new_source})
+                    if source_doc:
+                        new_source_id = str(source_doc["_id"])
+                
+                # Pass ObjectIds to campaign executor
                 await campaign_executor.check_lead_criteria_change(
                     lead_id=lead_id,
-                    new_stage=new_stage,
-                    new_source=new_source
+                    new_stage_id=new_stage_id,  # 🔥 Changed from new_stage
+                    new_source_id=new_source_id  # 🔥 Changed from new_source
                 )
             except Exception as campaign_error:
                 logger.error(f"Campaign criteria check failed: {str(campaign_error)}")
-                # Don't fail the update if campaign check fails
+        # Don't fail the update if campaign check fails                # Don't fail the update if campaign check fails
         
         logger.info(f"📋 Found lead {lead_id}, currently assigned to: {lead.get('assigned_to')}")
         

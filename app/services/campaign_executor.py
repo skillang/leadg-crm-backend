@@ -114,10 +114,14 @@ class CampaignExecutor:
                 filters = []
                 
                 if campaign.get("stage_ids"):
-                    filters.append({"stage": {"$in": campaign["stage_ids"]}})
-                
+                    # Convert stage ObjectIds to stage names
+                    stage_names = await self._convert_stage_ids_to_names(campaign["stage_ids"])
+                    filters.append({"stage": {"$in": stage_names}})
+
                 if campaign.get("source_ids"):
-                    filters.append({"source": {"$in": campaign["source_ids"]}})
+                    # Convert source ObjectIds to source names
+                    source_names = await self._convert_source_ids_to_names(campaign["source_ids"])
+                    filters.append({"source": {"$in": source_names}})
                 
                 if filters:
                     query["$and"] = filters
@@ -153,6 +157,30 @@ class CampaignExecutor:
             
         except Exception as e:
             logger.error(f"Error finding matching leads: {str(e)}")
+            return []
+        
+    async def _convert_stage_ids_to_names(self, stage_ids: List[str]) -> List[str]:
+        """Convert stage ObjectIds to stage names"""
+        try:
+            stage_object_ids = [ObjectId(sid) for sid in stage_ids]
+            stages = await self.db.lead_stages.find(
+                {"_id": {"$in": stage_object_ids}}
+            ).to_list(None)
+            return [stage["name"] for stage in stages]
+        except Exception as e:
+            logger.error(f"Error converting stage IDs to names: {str(e)}")
+            return []
+
+    async def _convert_source_ids_to_names(self, source_ids: List[str]) -> List[str]:
+        """Convert source ObjectIds to source names"""
+        try:
+            source_object_ids = [ObjectId(sid) for sid in source_ids]
+            sources = await self.db.lead_sources.find(
+                {"_id": {"$in": source_object_ids}}
+            ).to_list(None)
+            return [source["name"] for source in sources]
+        except Exception as e:
+            logger.error(f"Error converting source IDs to names: {str(e)}")
             return []
     
     async def _enroll_single_lead(
@@ -339,12 +367,14 @@ class CampaignExecutor:
         
         # Check stage
         if campaign.get("stage_ids") and new_stage:
-            if new_stage not in campaign["stage_ids"]:
+            stage_names = await self._convert_stage_ids_to_names(campaign["stage_ids"])
+            if new_stage not in stage_names:
                 return False
-        
+
         # Check source
         if campaign.get("source_ids") and new_source:
-            if new_source not in campaign["source_ids"]:
+            source_names = await self._convert_source_ids_to_names(campaign["source_ids"])
+            if new_source not in source_names:
                 return False
         
         return True
