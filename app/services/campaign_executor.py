@@ -3,6 +3,7 @@ from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
 from bson import ObjectId
 import logging
+from app.decorators.timezone_decorator import ist_time_to_utc_datetime
 
 from app.config.database import get_database
 from app.models.campaign_tracking import (
@@ -229,15 +230,15 @@ class CampaignExecutor:
                 if campaign["use_custom_dates"]:
                     # Use specific date
                     send_date = datetime.strptime(template["custom_date"], "%Y-%m-%d")
-                    send_time = datetime.strptime(campaign["send_time"], "%H:%M").time()
-                    execute_at = datetime.combine(send_date, send_time)
+                    # Convert IST time to UTC
+                    execute_at = ist_time_to_utc_datetime(send_date, campaign["send_time"])
                 else:
                     # Calculate based on scheduled_day
                     days_to_add = template["scheduled_day"]
-                    send_time = datetime.strptime(campaign["send_time"], "%H:%M").time()
-                    execute_at = enrollment_time + timedelta(days=days_to_add)
-                    execute_at = datetime.combine(execute_at.date(), send_time)
-                
+                    target_date = enrollment_time + timedelta(days=days_to_add)
+                    # Convert IST time to UTC
+                    execute_at = ist_time_to_utc_datetime(target_date, campaign["send_time"])
+                            
                 # Create job document
                 job_doc = {
                     "campaign_id": campaign_id,

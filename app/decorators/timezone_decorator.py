@@ -6,6 +6,8 @@ from datetime import datetime
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from app.utils.response_formatters import convert_response_dates
+import pytz
+
 
 logger = logging.getLogger(__name__)
 
@@ -214,6 +216,37 @@ def convert_notification_dates():
         'timestamp', 'updated_at'
     ]
     return convert_dates_to_ist(notification_date_fields)
+
+
+def ist_time_to_utc_datetime(date_obj: datetime, time_str: str) -> datetime:
+    """
+    Convert IST time string to UTC datetime for job scheduling
+    Inverse operation of convert_dates_to_ist decorator
+    
+    Args:
+        date_obj: Base date to apply time to
+        time_str: Time in HH:MM format (assumed IST)
+    
+    Returns:
+        datetime in UTC (naive, no tzinfo)
+    
+    Example:
+        >>> base_date = datetime(2025, 9, 30)
+        >>> ist_time_to_utc_datetime(base_date, "11:30")
+        datetime(2025, 9, 30, 6, 0)  # 11:30 IST → 06:00 UTC
+    """
+    ist = pytz.timezone('Asia/Kolkata')
+    
+    # Parse time string
+    time_parts = datetime.strptime(time_str, "%H:%M").time()
+    
+    # Combine date and time in IST
+    ist_datetime = ist.localize(datetime.combine(date_obj.date(), time_parts))
+    
+    # Convert to UTC and remove tzinfo (MongoDB stores naive UTC)
+    utc_datetime = ist_datetime.astimezone(pytz.UTC).replace(tzinfo=None)
+    
+    return utc_datetime
 
 # ================================
 # USAGE EXAMPLES
