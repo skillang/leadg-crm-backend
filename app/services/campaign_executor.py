@@ -240,71 +240,113 @@ class CampaignExecutor:
             return False
     
     async def _create_message_jobs(
-        self,
-        campaign: Dict[str, Any],
-        lead: Dict[str, Any],
-        enrollment: Dict[str, Any]
-    ) -> None:
-        """
-        Create all message jobs for a lead
-        
-        Args:
-            campaign: Campaign document
-            lead: Lead document
-            enrollment: Enrollment document
-        """
+    self,
+    campaign: Dict[str, Any],
+    lead: Dict[str, Any],
+    enrollment: Dict[str, Any]
+) -> None:
+        """Create looped message jobs with decay distribution pattern"""
         try:
             campaign_id = campaign["campaign_id"]
             lead_id = lead["lead_id"]
             enrollment_time = enrollment["enrolled_at"]
             
+            message_limit = campaign.get("message_limit", 10)
+            campaign_days = campaign.get("campaign_duration_days", 30)
+            templates = campaign["templates"]
+            send_time = campaign.get("send_time", "10:00")
+            
+            if not templates:
+                logger.error("No templates provided for campaign")
+                return
+            
+            # Calculate decay pattern distribution
+            message_days = self._calculate_decay_distribution(message_limit, campaign_days)
+            
             jobs = []
             
-            for template in campaign["templates"]:
-                # Calculate execute_at time
-                if campaign["use_custom_dates"]:
-                    # Use specific date
-                    send_date = datetime.strptime(template["custom_date"], "%Y-%m-%d")
-                    # Convert IST time to UTC
-                    execute_at = ist_time_to_utc_datetime(send_date, campaign["send_time"])
-                else:
-                    # Calculate based on scheduled_day
-                    days_to_add = template["scheduled_day"]
-                    target_date = enrollment_time + timedelta(days=days_to_add)
-                    # Convert IST time to UTC
-                    execute_at = ist_time_to_utc_datetime(target_date, campaign["send_time"])
-                            
-                # Create job document
+            for message_number in range(message_limit):
+                # Get template (loop through templates)
+                template = templates[message_number % len(templates)]
+                
+                # Get the day for this message
+                day_offset = message_days[message_number]
+                
+                # Calculate execution datetime
+                target_date = enrollment_time + timedelta(days=day_offset)
+                execute_at = ist_time_to_utc_datetime(target_date, send_time)
+                
                 job_doc = {
                     "campaign_id": campaign_id,
                     "lead_id": lead_id,
                     "job_type": "message_job",
-                    
                     "channel": campaign["campaign_type"],
-                    "template_id": template["template_id"],
                     "template_name": template["template_name"],
-                    "sequence_order": template["sequence_order"],
-                    
+                    "sequence_order": message_number + 1,
                     "execute_at": execute_at,
                     "status": TrackingStatus.PENDING.value,
-                    
                     "attempts": 0,
                     "max_attempts": 3,
-                    "error_message": None,
-                    
                     "created_at": datetime.utcnow()
                 }
-                
                 jobs.append(job_doc)
+                
+                logger.debug(f"Message {message_number + 1}: Day {day_offset}, Template: {template['template_name']}")
             
-            # Insert all jobs
             if jobs:
                 await self.db[self.jobs_collection].insert_many(jobs)
-                logger.debug(f"Created {len(jobs)} jobs for lead {lead_id}")
-            
+                logger.info(f"Created {len(jobs)} decay-pattern jobs for lead {lead_id} over {campaign_days} days")
+                
         except Exception as e:
             logger.error(f"Error creating message jobs: {str(e)}")
-    
+
+    def _calculate_decay_distribution(self, message_count: int, total_days: int) -> List[float]:
+        """
+        Calculate message distribution with decay pattern (frequent early, sparse later)
+        
+        Pattern: Day 0, 1, 3, 6, 10, 15, 18, 22, 26, 29...
+        
+        Args:
+            message_count: Number of messages to send
+            total_days: Campaign duration in days
+            
+        Returns:
+            List of days when messages should be sent
+        """
+        if message_count == 0:
+            return []
+        
+        if message_count == 1:
+            return [0]
+        
+        days = [0]  # First message on day 0
+        current_day = 0
+        
+        # Define gap progression (starts small, grows larger)
+        for i in range(1, message_count):
+            if i == 1:
+                gap = 1  # Day 1
+            elif i == 2:
+                gap = 2  # Day 3
+            elif i == 3:
+                gap = 3  # Day 6
+            elif i == 4:
+                gap = 4  # Day 10
+            elif i == 5:
+                gap = 5  # Day 15
+            else:
+                gap = 3  # Then every 3-4 days
+            
+            current_day += gap
+            
+            # Ensure we don't exceed total_days
+            if current_day >= total_days:
+                current_day = total_days - (message_count - i)
+            
+            days.append(min(current_day, total_days - 1))
+        
+        return days
+
     async def check_lead_criteria_change(
         self,
         lead_id: str,
