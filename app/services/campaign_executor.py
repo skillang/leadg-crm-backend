@@ -94,53 +94,64 @@ class CampaignExecutor:
             }
     
     async def _find_matching_leads(self, campaign: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """
-        Find leads that match campaign criteria
-        
-        Args:
-            campaign: Campaign document
-            
-        Returns:
-            List of matching lead documents
-        """
+        """Find leads that match campaign criteria with combination logic"""
         try:
             query = {}
             
             if campaign["send_to_all"]:
-                # Send to all leads
                 logger.info("Campaign set to send_to_all")
             else:
-                # Build filter query
-                filters = []
+                stage_names = []
+                source_names = []
                 
+                # Convert IDs to names
                 if campaign.get("stage_ids"):
-                    # Convert stage ObjectIds to stage names
                     stage_names = await self._convert_stage_ids_to_names(campaign["stage_ids"])
-                    filters.append({"stage": {"$in": stage_names}})
-
-                if campaign.get("source_ids"):
-                    # Convert source ObjectIds to source names
-                    source_names = await self._convert_source_ids_to_names(campaign["source_ids"])
-                    filters.append({"source": {"$in": source_names}})
                 
-                if filters:
-                    query["$and"] = filters
+                if campaign.get("source_ids"):
+                    source_names = await self._convert_source_ids_to_names(campaign["source_ids"])
+                
+                # Build query based on what's selected
+                if stage_names and source_names:
+                    # Both selected: Create all combinations (stage1+source1, stage1+source2, etc.)
+                    combinations = []
+                    for stage in stage_names:
+                        for source in source_names:
+                            combinations.append({
+                                "$and": [
+                                    {"stage": stage},
+                                    {"source": source}
+                                ]
+                            })
+                    query["$or"] = combinations
+                    
+                elif stage_names:
+                    # Only stages selected
+                    query["stage"] = {"$in": stage_names}
+                    
+                elif source_names:
+                    # Only sources selected
+                    query["source"] = {"$in": source_names}
             
-            # Ensure lead has contact info based on campaign type
+            # Add contact info requirement
             if campaign["campaign_type"] == "whatsapp":
-                query["$or"] = [
-                    {"contact_number": {"$exists": True, "$ne": "", "$ne": None}},
-                    {"phone_number": {"$exists": True, "$ne": "", "$ne": None}}
-                ]
+                contact_filter = {
+                    "$or": [
+                        {"contact_number": {"$exists": True, "$ne": "", "$ne": None}},
+                        {"phone_number": {"$exists": True, "$ne": "", "$ne": None}}
+                    ]
+                }
+                if "$or" in query:
+                    query = {"$and": [{"$or": query["$or"]}, contact_filter]}
+                else:
+                    query.update(contact_filter)
+                    
             elif campaign["campaign_type"] == "email":
                 query["email"] = {"$exists": True, "$ne": "", "$ne": None}
             
             # Exclude already enrolled leads
             already_enrolled = await self.db[self.enrollment_collection].find(
-                {
-                    "campaign_id": campaign["campaign_id"],
-                    "job_type": "enrollment"
-                },
+                {"campaign_id": campaign["campaign_id"], "job_type": "enrollment"},
                 {"lead_id": 1}
             ).to_list(None)
             
@@ -150,15 +161,12 @@ class CampaignExecutor:
             
             logger.info(f"Lead query: {query}")
             
-            # Find matching leads
             leads = await self.db.leads.find(query).to_list(None)
-            
             return leads
             
         except Exception as e:
             logger.error(f"Error finding matching leads: {str(e)}")
             return []
-        
     async def _convert_stage_ids_to_names(self, stage_ids: List[str]) -> List[str]:
         """Convert stage ObjectIds to stage names"""
         try:
