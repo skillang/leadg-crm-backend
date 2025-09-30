@@ -174,11 +174,18 @@ class CampaignExecutor:
     async def _convert_source_ids_to_names(self, source_ids: List[str]) -> List[str]:
         """Convert source ObjectIds to source names"""
         try:
+            logger.info(f"Converting source IDs: {source_ids}")  # ADD THIS
             source_object_ids = [ObjectId(sid) for sid in source_ids]
-            sources = await self.db.lead_sources.find(
+            logger.info(f"ObjectIds created: {source_object_ids}")  # ADD THIS
+            
+            sources = await self.db.sources.find(
                 {"_id": {"$in": source_object_ids}}
             ).to_list(None)
-            return [source["name"] for source in sources]
+            
+            logger.info(f"Found sources: {sources}")  # ADD THIS
+            result = [source["name"] for source in sources]
+            logger.info(f"Converted to names: {result}")  # ADD THIS
+            return result
         except Exception as e:
             logger.error(f"Error converting source IDs to names: {str(e)}")
             return []
