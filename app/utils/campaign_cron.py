@@ -261,25 +261,60 @@ class CampaignCron:
             return False
     
     async def _check_lead_matches_criteria(
-        self,
-        campaign: Dict[str, Any],
-        lead: Dict[str, Any]
-    ) -> bool:
+    self,
+    campaign: Dict[str, Any],
+    lead: Dict[str, Any]
+) -> bool:
         """Check if lead still matches campaign criteria"""
-        if campaign["send_to_all"]:
+        try:
+            if campaign["send_to_all"]:
+                return True
+            
+            # Import the converter functions
+            from app.services.campaign_executor import campaign_executor
+            
+            # Get required stage and source names from campaign
+            required_stages = []
+            required_sources = []
+            
+            if campaign.get("stage_ids"):
+                required_stages = await campaign_executor._convert_stage_ids_to_names(campaign["stage_ids"])
+                logger.debug(f"Required stages: {required_stages}, Lead stage: {lead.get('stage')}")
+            
+            if campaign.get("source_ids"):
+                required_sources = await campaign_executor._convert_source_ids_to_names(campaign["source_ids"])
+                logger.debug(f"Required sources: {required_sources}, Lead source: {lead.get('source')}")
+            
+            # Get current lead stage and source
+            current_stage = lead.get("stage")
+            current_source = lead.get("source")
+            
+            # Check based on what's configured in campaign
+            if required_stages and required_sources:
+                # Both stage AND source must match
+                stage_match = current_stage in required_stages
+                source_match = current_source in required_sources
+                logger.debug(f"Both criteria check - Stage match: {stage_match}, Source match: {source_match}")
+                return stage_match and source_match
+            
+            elif required_stages:
+                # Only stage needs to match
+                stage_match = current_stage in required_stages
+                logger.debug(f"Stage only check - Match: {stage_match}")
+                return stage_match
+            
+            elif required_sources:
+                # Only source needs to match
+                source_match = current_source in required_sources
+                logger.debug(f"Source only check - Match: {source_match}")
+                return source_match
+            
+            # No criteria specified
             return True
-        
-        # Check stage
-        if campaign.get("stage_ids"):
-            if lead.get("stage") not in campaign["stage_ids"]:
-                return False
-        
-        # Check source
-        if campaign.get("source_ids"):
-            if lead.get("source") not in campaign["source_ids"]:
-                return False
-        
-        return True
+            
+        except Exception as e:
+            logger.error(f"Error checking lead criteria match: {str(e)}")
+            return False
     
     async def _pause_enrollment(self, campaign_id: str, lead_id: str):
         """Pause enrollment when criteria no longer match"""
