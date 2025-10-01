@@ -47,3 +47,6 @@ htmlcov/
 # Git
 *.swp
 .git/
+
+#Firebase Files
+**/firebase_service_key.json

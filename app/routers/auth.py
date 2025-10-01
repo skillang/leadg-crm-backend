@@ -209,15 +209,37 @@ async def login_user(request: Request, login_data: LoginRequest):
         )
     
     # Reset failed login attempts and update login info
+    # await db.users.update_one(
+    #     {"_id": user["_id"]},
+    #     {
+    #         "$set": {
+    #             "last_login": datetime.utcnow(),
+    #             "last_activity": datetime.utcnow(),
+    #             "failed_login_attempts": 0,
+    #             "locked_until": None
+    #         },
+    #         "$inc": {"login_count": 1}
+    #     }
+    # )
+
+    update_data = {
+    "last_login": datetime.utcnow(),
+    "last_activity": datetime.utcnow(),
+    "failed_login_attempts": 0,
+    "locked_until": None
+    }
+
+    # Store FCM token if provided in login request
+    if hasattr(login_data, 'fcm_token') and login_data.fcm_token:
+        update_data["fcm_token"] = login_data.fcm_token
+        update_data["fcm_token_updated_at"] = datetime.utcnow()
+        logger.info(f"FCM token registered for user: {user['email']}")
+
+    # Single database update with all fields
     await db.users.update_one(
         {"_id": user["_id"]},
         {
-            "$set": {
-                "last_login": datetime.utcnow(),
-                "last_activity": datetime.utcnow(),
-                "failed_login_attempts": 0,
-                "locked_until": None
-            },
+            "$set": update_data,
             "$inc": {"login_count": 1}
         }
     )
