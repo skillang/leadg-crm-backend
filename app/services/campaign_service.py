@@ -146,6 +146,55 @@ class CampaignService:
             
             if campaign:
                 campaign["_id"] = str(campaign["_id"])
+                
+                # Expand templates to full schedule
+                templates = campaign.get("templates", [])
+                message_limit = campaign.get("message_limit", len(templates))
+                use_custom_dates = campaign.get("use_custom_dates", False)
+                
+                expanded_schedule = []
+                
+                if use_custom_dates:
+                    # For custom dates, return templates with renamed fields
+                    for template in templates:
+                        expanded_schedule.append({
+                            "template_id": template.get("template_id"),
+                            "template_name": template.get("template_name"),
+                            "send_day": None,
+                            "sequence": template.get("sequence_order"),
+                            "custom_date": template.get("custom_date")
+                        })
+                else:
+                    # For auto-schedule, expand based on message_limit
+                    campaign_duration = campaign.get("campaign_duration_days", 30)
+                    message_days = self._calculate_schedule_days(campaign_duration, message_limit)
+                    
+                    # Generate schedule for all messages (cycling through templates)
+                    for i in range(message_limit):
+                        template = templates[i % len(templates)]
+                        expanded_schedule.append({
+                            "template_id": template.get("template_id"),
+                            "template_name": template.get("template_name"),
+                            "send_day": message_days[i],
+                            "sequence": i + 1,
+                            "custom_date": None
+                        })
+                
+                campaign["templates"] = expanded_schedule
+            
+            return campaign
+            
+        except Exception as e:
+            logger.error(f"Error getting campaign {campaign_id}: {str(e)}")
+            return None
+        """Get campaign by ID"""
+        try:
+            campaign = await self.db[self.collection_name].find_one(
+                {"campaign_id": campaign_id}
+            )
+            
+            if campaign:
+                campaign["_id"] = str(campaign["_id"])
             
             return campaign
             

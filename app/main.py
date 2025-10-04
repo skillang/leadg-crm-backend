@@ -15,7 +15,7 @@ from .routers import (
     auth, leads, tasks, notes, documents, timeline, contacts, lead_categories, 
     stages, statuses, course_levels, sources, whatsapp, emails, permissions, 
     tata_auth, tata_calls, tata_users, bulk_whatsapp, realtime, notifications, 
-    integrations, admin_calls, password_reset ,cv_processing ,facebook_leads, automation_campaigns 
+    integrations, admin_calls, password_reset ,cv_processing ,facebook_leads, automation_campaigns, fcm_notifications, fcm_test
 )
 
 logging.basicConfig(
@@ -564,6 +564,15 @@ app.include_router(
     prefix="/campaigns",
     tags=["Automation Campaigns"]
 )
+
+app.include_router(
+    fcm_notifications.router, 
+    prefix="/fcm", 
+    tags=["FCM Notifications"]
+)
+
+app.include_router(fcm_test.router, prefix="/fcm-test", tags=["FCM Testing"])
+
 
 
 if __name__ == "__main__":

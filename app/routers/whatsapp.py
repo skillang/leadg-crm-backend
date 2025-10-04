@@ -137,42 +137,38 @@ async def fetch_templates_from_cms() -> List[Dict[str, Any]]:
 # 🆕 NEW: WEBHOOK ENDPOINTS (Core Chat Functionality)
 # ================================
 
-@router.post("/webhook", response_model=WebhookProcessingResponse)
-async def handle_whatsapp_webhook(
-    request: Request,
-    background_tasks: BackgroundTasks
-):
-    """
-    Handle incoming WhatsApp webhook notifications from mydreamstechnology
-    This endpoint receives real-time updates when customers send messages
-    """
-    try:
-        # Get raw request body
-        webhook_payload = await request.json()
+# @router.post("/webhook", response_model=WebhookProcessingResponse)
+# async def handle_whatsapp_webhook(
+#     request: Request,
+#     background_tasks: BackgroundTasks
+# ):
+#     """Handle incoming WhatsApp webhook - WITH FCM NOTIFICATIONS"""
+#     try:
+#         # [Your existing webhook logging code...]
+#         webhook_payload = await request.json()
         
-        logger.info(f"Received WhatsApp webhook: {webhook_payload}")
+#         logger.info(f"Received WhatsApp webhook: {webhook_payload}")
         
-        # Process webhook asynchronously for better performance
-        background_tasks.add_task(
-            whatsapp_message_service.process_incoming_webhook,
-            webhook_payload
-        )
+#         # Process webhook asynchronously
+#         background_tasks.add_task(
+#             whatsapp_message_service.process_incoming_webhook,
+#             webhook_payload
+#         )
         
-        # Return immediate success response for webhook
-        return WebhookProcessingResponse(
-            success=True,
-            processed_messages=0,  # Will be updated in background
-            processed_statuses=0,
-            errors=0,
-            details={"status": "processing_in_background"}
-        )
+#         # 🆕 NEW: FCM notification code (paste the entire snippet from above here)
         
-    except Exception as e:
-        logger.error(f"Webhook processing error: {str(e)}")
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Webhook processing failed: {str(e)}"
-        )
+#         # Return success response
+#         return WebhookProcessingResponse(
+#             success=True,
+#             processed_messages=0,
+#             processed_statuses=0,
+#             errors=0,
+#             details={"status": "processing_in_background"}
+#         )
+        
+#     except Exception as e:
+#         logger.error(f"Webhook processing error: {str(e)}")
+#         raise HTTPException(status_code=500, detail=f"Webhook processing failed: {str(e)}")
 
 @router.get("/webhook")
 async def verify_webhook(
@@ -715,7 +711,6 @@ async def send_template_to_lead(
         }
 
 
-
 @router.post("/send-text")
 async def send_text_message(
     request: SendTextRequest,
@@ -881,6 +876,116 @@ async def handle_whatsapp_webhook(
     request: Request,
     background_tasks: BackgroundTasks
 ):
+    """Handle incoming WhatsApp webhook - WITH DETAILED LOGGING AND FCM NOTIFICATIONS"""
+    try:
+        # Log EVERYTHING from mydreamstechnology
+        raw_body = await request.body()
+        headers = dict(request.headers)
+        
+        # Log raw data
+        logger.info("=" * 60)
+        logger.info("🚀 MYDREAMSTECHNOLOGY WEBHOOK RECEIVED")
+        logger.info(f"📝 Raw Body: {raw_body.decode('utf-8', errors='ignore')}")
+        logger.info(f"🔧 Headers: {headers}")
+        logger.info("=" * 60)
+        
+        # Parse JSON
+        webhook_payload = await request.json()
+        
+        # Log structured data
+        logger.info("📊 PARSED WEBHOOK DATA:")
+        logger.info(f"   - Root keys: {list(webhook_payload.keys())}")
+        logger.info(f"   - Messages count: {len(webhook_payload.get('messages', []))}")
+        logger.info(f"   - Statuses count: {len(webhook_payload.get('statuses', []))}")
+        
+        # Log each message in detail
+        messages = webhook_payload.get('messages', [])
+        for i, msg in enumerate(messages):
+            logger.info(f"📨 MESSAGE {i+1}:")
+            logger.info(f"   - From: {msg.get('from', 'MISSING')}")
+            logger.info(f"   - ID: {msg.get('id', 'MISSING')}")
+            logger.info(f"   - Type: {msg.get('type', 'MISSING')}")
+            logger.info(f"   - Timestamp: {msg.get('timestamp', 'MISSING')}")
+            if msg.get('type') == 'text':
+                text_body = msg.get('text', {}).get('body', 'NO_TEXT')
+                logger.info(f"   - Text: {text_body}")
+            logger.info(f"   - Full message data: {msg}")
+        
+        logger.info("=" * 60)
+        
+        # Process webhook asynchronously
+        background_tasks.add_task(
+            whatsapp_message_service.process_incoming_webhook,
+            webhook_payload
+        )
+        
+        # 🆕 NEW: Trigger FCM notification for assigned agent
+        try:
+            if messages:
+                first_message = messages[0]
+                phone_number = first_message.get('from', '')
+                
+                # Find lead by phone number
+                db = get_database()
+                lead = await db.leads.find_one({
+                    "$or": [
+                        {"phone_number": {"$regex": phone_number[-10:]}},
+                        {"contact_number": {"$regex": phone_number[-10:]}}
+                    ]
+                })
+                
+                if lead and lead.get("assigned_to"):
+                    # Get assigned agent's FCM token
+                    assigned_agent = await db.users.find_one(
+                        {"email": lead["assigned_to"]},
+                        {"fcm_token": 1, "email": 1, "first_name": 1}
+                    )
+                    
+                    if assigned_agent and assigned_agent.get("fcm_token"):
+                        # Prepare notification payload
+                        message_preview = first_message.get('text', {}).get('body', 'New message')[:50]
+                        
+                        fcm_payload = {
+                            "token": assigned_agent["fcm_token"],
+                            "title": f"New message from {lead.get('name', 'Lead')}",
+                            "message": message_preview,
+                            "link": f"/leads/{lead.get('lead_id')}/whatsapp"
+                        }
+                        
+                        # Send to frontend FCM endpoint
+                        frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
+                        async with httpx.AsyncClient(timeout=5.0) as client:
+                            await client.post(
+                                f"{frontend_url}/send-notification",
+                                json=fcm_payload
+                            )
+                        
+                        logger.info(f"✅ FCM notification sent to {assigned_agent['email']} for lead {lead.get('lead_id')}")
+                    else:
+                        logger.debug(f"No FCM token found for agent {lead.get('assigned_to')}")
+                else:
+                    logger.debug(f"No assigned agent for lead or lead not found")
+                    
+        except Exception as fcm_error:
+            # Don't fail webhook if FCM fails
+            logger.warning(f"⚠️ FCM notification failed: {str(fcm_error)}")
+        
+        # Return success response
+        return WebhookProcessingResponse(
+            success=True,
+            processed_messages=len(messages),
+            processed_statuses=len(webhook_payload.get('statuses', [])),
+            errors=0,
+            details={"status": "processing_in_background"}
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ WEBHOOK ERROR: {str(e)}")
+        logger.error(f"Raw body was: {raw_body.decode('utf-8', errors='ignore') if 'raw_body' in locals() else 'FAILED_TO_READ'}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Webhook processing failed: {str(e)}"
+        )
     """Handle incoming WhatsApp webhook - WITH DETAILED LOGGING"""
     try:
         # 🔍 LOG EVERYTHING FROM MYDREAMSTECHNOLOGY

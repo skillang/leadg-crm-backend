@@ -70,6 +70,7 @@ async def create_indexes():
         await db.users.create_index("departments")  # For department-based assignment
         await db.users.create_index([("departments", 1), ("is_active", 1)])
         await db.users.create_index([("email", 1), ("is_active", 1)])  # Fast user validation
+        await db.users.create_index("fcm_token")  # For FCM push notifications
         
         logger.info("✅ Enhanced Users indexes created")
         

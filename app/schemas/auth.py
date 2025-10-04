@@ -6,6 +6,7 @@ class LoginRequest(BaseModel):
     email: EmailStr
     password: str
     remember_me: bool = False
+    fcm_token: Optional[str] = None  
 
     class Config:
         json_schema_extra = {

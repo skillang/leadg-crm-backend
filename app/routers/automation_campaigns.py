@@ -460,9 +460,9 @@ async def get_enrolled_leads(
                 enriched_enrollments.append({
                     "lead_id": enrollment["lead_id"],
                     "lead_name": lead.get("name", "Unknown"),
-                    "lead_email": lead.get("email", ""),
+                    "email": lead.get("email", ""),
                     "enrolled_at": enrollment["enrolled_at"],
-                    "status": enrollment["status"],
+                    "enrollment_status": enrollment["status"],
                     "messages_sent": enrollment.get("messages_sent", 0),
                     "current_sequence": enrollment.get("current_sequence", 0)
                 })
