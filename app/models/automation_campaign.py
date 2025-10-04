@@ -12,10 +12,11 @@ class CampaignType(str, Enum):
 
 
 class CampaignStatus(str, Enum):
-    """Campaign status enum"""
-    ACTIVE = "active"
-    PAUSED = "paused"
-    DELETED = "deleted"
+    ACTIVE = "active"       
+    PAUSED = "paused"        
+    DELETED = "deleted"      
+    COMPLETED = "completed" 
+    CANCELLED = "cancelled"
 
 
 class CampaignTemplate(BaseModel):

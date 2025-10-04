@@ -609,15 +609,24 @@ class WhatsAppMessageService:
             status = status_data.get("status")
             timestamp_str = status_data.get("timestamp")
             
+            logger.info(f"Processing status update: message_id={message_id}, status={status}")
+            
+            # Prepare update fields
+            update_fields = {
+                "status": self._normalize_message_status(status),
+                "updated_at": datetime.utcnow()
+            }
+            
+            # If status is "read", also update is_read field
+            if status and status.lower() == "read":
+                update_fields["is_read"] = True
+                update_fields["read_at"] = datetime.utcnow()
+                logger.info(f"Message {message_id} marked as READ")
+            
             # Update message status
             update_result = await db.whatsapp_messages.update_one(
                 {"message_id": message_id},
-                {
-                    "$set": {
-                        "status": self._normalize_message_status(status),
-                        "updated_at": datetime.utcnow()
-                    }
-                }
+                {"$set": update_fields}
             )
             
             if update_result.modified_count > 0:
@@ -642,6 +651,7 @@ class WhatsAppMessageService:
                 "error": str(e),
                 "status_data": status_data
             }
+ 
     async def get_chat_history(
         self, 
         lead_id: str, 

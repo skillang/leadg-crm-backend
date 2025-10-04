@@ -141,7 +141,9 @@ async def get_lead_tasks(
             lead_id, 
             current_user.get("user_id") or current_user.get("_id") or current_user.get("id"),
             current_user["role"], 
-            status_filter
+            status_filter,
+            page,      
+            limit 
         )
         
         return {
@@ -457,13 +459,15 @@ async def get_my_tasks(
         # Check if user is admin
         if current_user.get("role") == "admin":
             # For admins, get ALL tasks from ALL users
-            result = await task_service.get_all_tasks(status_filter)
+            result = await task_service.get_all_tasks(status_filter, page, limit)
             logger.info(f"Admin {current_user.get('email')} retrieved {result['total']} total tasks")
         else:
             # For regular users, get only their assigned tasks
             result = await task_service.get_user_tasks(
                 str(user_id),
-                status_filter
+                status_filter,
+                page,     
+                limit 
             )
             logger.info(f"User {current_user.get('email')} retrieved {result['total']} assigned tasks")
         
@@ -476,17 +480,17 @@ async def get_my_tasks(
         )
         
         return {
-            "tasks": result["tasks"],
-            "stats": global_stats,
-            "pagination": {
-                "page": page,
-                "limit": limit, 
-                "total": global_stats["total_tasks"],
-                "pages": (global_stats["total_tasks"] + limit - 1) // limit,
-                "has_next": page * limit < global_stats["total_tasks"],
-                "has_prev": page > 1
+                "tasks": result["tasks"],
+                "stats": global_stats,
+                "pagination": {
+                    "page": page,
+                    "limit": limit, 
+                    "total": result["total"],  # ✅ Use result['total'] from service
+                    "pages": (result["total"] + limit - 1) // limit,
+                    "has_next": page * limit < result["total"],
+                    "has_prev": page > 1
+                }
             }
-        }
     except HTTPException:
         raise
     except Exception as e:

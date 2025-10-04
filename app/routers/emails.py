@@ -1,11 +1,12 @@
 # app/routers/emails.py
-from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
 from bson import ObjectId
 import logging
 import asyncio
 import aiohttp
+from fastapi import status as http_status
 
 from ..config.database import get_database
 from ..config.settings import settings
@@ -599,6 +600,129 @@ async def get_email_statistics(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get email statistics: {str(e)}"
+        )
+    
+# Add this to app/routers/emails.py
+
+# Add this to app/routers/emails.py
+@router.get("/bulk-history")
+async def get_bulk_email_history(
+    page: int = Query(1, ge=1, description="Page number"),
+    limit: int = Query(20, ge=1, le=100, description="Items per page"),
+    status_filter: Optional[str] = Query(None, alias="status", description="Filter by status: sent, failed, pending, cancelled"),
+    search: Optional[str] = Query(None, description="Search by template name or email ID"),
+    current_user: Dict[str, Any] = Depends(get_current_active_user)
+):
+    """
+    Get ALL bulk email history - SAME pattern as WhatsApp bulk jobs
+    
+    Permission Rules (IDENTICAL to WhatsApp):
+    - Admin: Can see all bulk email jobs
+    - User: Can only see bulk email jobs they created
+    """
+    try:
+        db = get_database()
+        
+        # Build query - only get bulk emails (emails with multiple lead_ids)
+        query = {
+            "lead_ids": {"$exists": True, "$ne": None, "$ne": []}  # ✅ Fix: Check for None too
+        }
+        
+       
+        user_role = current_user.get("role")
+        
+        if user_role != "admin":
+            # Users can only see their own jobs (stored as string, not ObjectId)
+            user_id = str(current_user.get("_id"))
+            query["created_by"] = user_id  # Match created_by field
+            logger.info(f"Non-admin user {current_user.get('email')} filtering jobs by created_by: {user_id}")
+        else:
+            logger.info(f"Admin user {current_user.get('email')} can see all jobs")
+        
+        # Add status filter
+        if status_filter:
+            query["status"] = status_filter
+        
+        # Add search filter
+        if search:
+            query["$or"] = [
+                {"email_id": {"$regex": search, "$options": "i"}},
+                {"template_name": {"$regex": search, "$options": "i"}},
+                {"template_key": {"$regex": search, "$options": "i"}}
+            ]
+        
+       
+        total = await db.crm_lead_emails.count_documents(query)
+        
+        
+        skip = (page - 1) * limit
+        total_pages = (total + limit - 1) // limit if total > 0 else 1  # ✅ Fix: Handle zero total
+        has_next = page < total_pages
+        has_prev = page > 1
+        
+        # Get bulk emails with pagination
+        emails_cursor = db.crm_lead_emails.find(query).sort("created_at", -1).skip(skip).limit(limit)
+        emails = await emails_cursor.to_list(None)
+        
+       
+        bulk_emails = []
+        for email in emails:
+            # ✅ Fix: Safely get recipients and lead_ids with default empty list
+            recipients = email.get("recipients", []) or []
+            lead_ids = email.get("lead_ids", []) or []
+            
+            # Calculate success/failed counts from recipients
+            success_count = sum(1 for r in recipients if r.get("status") == "sent")
+            failed_count = sum(1 for r in recipients if r.get("status") == "failed")
+            pending_count = sum(1 for r in recipients if r.get("status") == "pending")
+            
+            # Calculate progress percentage
+            total_recipients = email.get("total_recipients", 0)
+            processed = success_count + failed_count
+            progress_percentage = (processed / total_recipients * 100) if total_recipients > 0 else 0
+            
+            bulk_email = {
+                "email_id": email.get("email_id", ""),
+                "template_key": email.get("template_key", ""),
+                "template_name": email.get("template_name", ""),
+                "sender_email": email.get("sender_email", ""),
+                "total_recipients": total_recipients,
+                "success_count": success_count,
+                "failed_count": failed_count,
+                "pending_count": pending_count,
+                "progress_percentage": round(progress_percentage, 2),
+                "status": email.get("status", "pending"),
+                "is_scheduled": email.get("is_scheduled", False),
+                "scheduled_time": email.get("scheduled_time"),
+                "sent_at": email.get("sent_at"),
+                "created_by_name": email.get("created_by_name", "Unknown"),
+                "created_at": email.get("created_at"),
+                "completed_at": email.get("completed_at"),
+                "lead_count": len(lead_ids)  # ✅ Fix: Now safe because lead_ids defaults to []
+            }
+            bulk_emails.append(bulk_email)
+        
+        # ✅ UNIVERSAL PAGINATION RESPONSE (matches PaginationMeta interface)
+        return {
+            "success": True,
+            "bulk_emails": bulk_emails,
+            "pagination": {
+                "total": total,           # Total records
+                "page": page,             # Current page (1-based)
+                "limit": limit,           # Items per page
+                "pages": total_pages,     # Total pages (consistent naming)
+                "has_next": has_next,     # Boolean: more pages available
+                "has_prev": has_prev      # Boolean: previous pages available
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting bulk email history: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,  # ✅ Fix: Use http_status
+            detail=f"Failed to get bulk email history: {str(e)}"
         )
 
 # ============================================================================

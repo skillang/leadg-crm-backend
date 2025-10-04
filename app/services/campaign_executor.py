@@ -520,6 +520,71 @@ class CampaignExecutor:
         except Exception as e:
             logger.error(f"Error pausing enrollment: {str(e)}")
 
-
+    async def check_and_complete_campaign(self, campaign_id: str) -> None:
+        """
+        Check if campaign has finished all messages and mark as completed
+        
+        Args:
+            campaign_id: Campaign ID to check
+        """
+        try:
+            logger.info(f"Checking completion status for campaign {campaign_id}")
+            
+            # Get campaign
+            campaign = await campaign_service.get_campaign(campaign_id)
+            if not campaign:
+                logger.error(f"Campaign {campaign_id} not found")
+                return
+            
+            # Only check active campaigns
+            if campaign["status"] != "active":
+                logger.debug(f"Campaign {campaign_id} is {campaign['status']}, skipping completion check")
+                return
+            
+            # Count total message jobs for this campaign
+            total_jobs = await self.db[self.jobs_collection].count_documents({
+                "campaign_id": campaign_id,
+                "job_type": "message_job"
+            })
+            
+            if total_jobs == 0:
+                logger.debug(f"No message jobs found for campaign {campaign_id}")
+                return
+            
+            # Count pending jobs
+            pending_jobs = await self.db[self.jobs_collection].count_documents({
+                "campaign_id": campaign_id,
+                "job_type": "message_job",
+                "status": TrackingStatus.PENDING.value
+            })
+            
+            logger.info(f"Campaign {campaign_id}: {pending_jobs} pending out of {total_jobs} total jobs")
+            
+            # If no pending jobs, mark campaign as completed
+            if pending_jobs == 0:
+                success = await campaign_service.complete_campaign(campaign_id)
+                if success:
+                    logger.info(f"✅ Campaign {campaign_id} marked as COMPLETED - all messages sent")
+                    
+                    # Also update all active enrollments to completed
+                    await self.db[self.enrollment_collection].update_many(
+                        {
+                            "campaign_id": campaign_id,
+                            "job_type": "enrollment",
+                            "status": TrackingStatus.ACTIVE.value
+                        },
+                        {
+                            "$set": {
+                                "status": TrackingStatus.COMPLETED.value,
+                                "updated_at": datetime.utcnow()
+                            }
+                        }
+                    )
+                    logger.info(f"Updated all enrollments to completed for campaign {campaign_id}")
+                else:
+                    logger.error(f"Failed to mark campaign {campaign_id} as completed")
+                    
+        except Exception as e:
+            logger.error(f"Error checking campaign completion: {str(e)}")
 # Global service instance
 campaign_executor = CampaignExecutor()

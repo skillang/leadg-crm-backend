@@ -476,7 +476,7 @@ class TaskService:
             logger.error(f"Error updating task: {str(e)}")
             return False
 
-    async def get_lead_tasks(self, lead_id: str, user_id: str, user_role: str, status_filter: Optional[str] = None) -> Dict[str, Any]:
+    async def get_lead_tasks(self, lead_id: str, user_id: str, user_role: str, status_filter: Optional[str] = None, page: int = 1, limit: int = 20) -> Dict[str, Any]:
         """Get all tasks for a lead - FIXED ACCESS CONTROL"""
         try:
             logger.info(f"Getting tasks for lead: {lead_id}, user: {user_id}, role: {user_role}")
@@ -530,10 +530,12 @@ class TaskService:
             logger.info(f"Query: {query}")
             
             # Get ALL tasks for this lead
-            tasks_cursor = db.lead_tasks.find(query).sort("created_at", -1)
+            skip = (page - 1) * limit
+            total = await db.lead_tasks.count_documents(query)
+            tasks_cursor = db.lead_tasks.find(query).sort("created_at", -1).skip(skip).limit(limit)
             tasks = await tasks_cursor.to_list(None)
-            
-            logger.info(f"Found {len(tasks)} tasks for lead {lead_id}")
+
+            logger.info(f"Found {len(tasks)} tasks for page {page} (total: {total}) for lead {lead_id}")
             
             # Populate user names for each task
             # Populate user names for each task with efficient ObjectId conversion
@@ -593,13 +595,15 @@ class TaskService:
             
             return {
                 "tasks": enriched_tasks,
-                "total": len(enriched_tasks),
+                "total": total,
                 "stats": {}
             }
             
         except Exception as e:
             logger.error(f"Error getting lead tasks: {str(e)}")
             raise Exception(f"Failed to get lead tasks: {str(e)}")
+
+
 
     async def get_task_by_id(self, task_id: str, user_id: str, user_role: str) -> Optional[Dict[str, Any]]:
         """Get a specific task by ID"""
@@ -694,7 +698,7 @@ class TaskService:
             logger.error(f"Error deleting task: {str(e)}")
             return False
     
-    async def get_user_tasks(self, user_id: str, status_filter: Optional[str] = None) -> Dict[str, Any]:
+    async def get_user_tasks(self, user_id: str, status_filter: Optional[str] = None, page: int = 1, limit: int = 20) -> Dict[str, Any]:
         """Get all tasks assigned to a user across all leads"""
         try:
             db = get_database()
@@ -711,8 +715,10 @@ class TaskService:
                 else:
                     query["status"] = status_filter
             
-            tasks_cursor = db.lead_tasks.find(query).sort("due_datetime", 1)
-            tasks = await tasks_cursor.to_list(None)
+            skip = (page - 1) * limit
+            total = await db.lead_tasks.count_documents(query)
+            tasks_cursor = db.lead_tasks.find(query).sort("due_datetime", 1).skip(skip).limit(limit)
+            tasks = await tasks_cursor.to_list(None)            
             
             enriched_tasks = []
             for task in tasks:
@@ -775,14 +781,14 @@ class TaskService:
             
             return {
                 "tasks": enriched_tasks,
-                "total": len(enriched_tasks)
+                "total": total
             }
             
         except Exception as e:
             logger.error(f"Error getting user tasks: {str(e)}")
             return {"tasks": [], "total": 0}
 
-    async def get_all_tasks(self, status_filter: Optional[str] = None) -> Dict[str, Any]:
+    async def get_all_tasks(self, status_filter: Optional[str] = None, page: int = 1, limit: int = 20) -> Dict[str, Any]:
         """Get ALL tasks from ALL users - Admin only function"""
         try:
             db = get_database()
@@ -806,7 +812,9 @@ class TaskService:
             logger.info(f"Admin query for all tasks: {query}")
             
             # Get ALL tasks sorted by creation date
-            tasks_cursor = db.lead_tasks.find(query).sort("created_at", -1)
+            skip = (page - 1) * limit
+            total = await db.lead_tasks.count_documents(query)
+            tasks_cursor = db.lead_tasks.find(query).sort("created_at", -1).skip(skip).limit(limit)
             tasks = await tasks_cursor.to_list(None)
             
             logger.info(f"Found {len(tasks)} total tasks across all users")
@@ -874,7 +882,7 @@ class TaskService:
             
             return {
                 "tasks": enriched_tasks,
-                "total": len(enriched_tasks)
+                "total": total
             }
             
         except Exception as e:

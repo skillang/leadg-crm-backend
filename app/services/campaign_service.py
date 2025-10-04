@@ -154,19 +154,19 @@ class CampaignService:
             return None
     
     async def list_campaigns(
-        self,
-        campaign_type: Optional[str] = None,
-        status: Optional[str] = None,
-        created_by: Optional[str] = None,
-        skip: int = 0,
-        limit: int = 20
-    ) -> Dict[str, Any]:
+    self,
+    campaign_type: Optional[str] = None,
+    status: Optional[str] = None,
+    created_by: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 20
+) -> Dict[str, Any]:
         """
-        List campaigns with filtering
+        List campaigns with filtering - SHOWS ALL STATUSES BY DEFAULT
         
         Args:
             campaign_type: Filter by type (whatsapp/email)
-            status: Filter by status (active/paused/deleted)
+            status: Filter by status (active/paused/deleted/completed/cancelled) - shows ALL if None
             created_by: Filter by creator email
             skip: Number of records to skip
             limit: Maximum records to return
@@ -181,17 +181,21 @@ class CampaignService:
             if campaign_type:
                 query["campaign_type"] = campaign_type
             
+            # ✅ FIX: Show ALL statuses when no filter is applied
+            # Only filter by status if explicitly provided
             if status:
                 query["status"] = status
-            else:
-                # Don't show deleted campaigns by default
-                query["status"] = {"$ne": CampaignStatus.DELETED.value}
+            # Don't add any default status filter - show everything including deleted
             
             if created_by:
                 query["created_by"] = created_by
             
             # Get total count
             total = await self.db[self.collection_name].count_documents(query)
+            
+            # ✅ Calculate pagination metadata
+            total_pages = (total + limit - 1) // limit if total > 0 else 0
+            current_page = (skip // limit) + 1
             
             # Get campaigns
             cursor = self.db[self.collection_name].find(query)\
@@ -205,12 +209,16 @@ class CampaignService:
             for campaign in campaigns:
                 campaign["_id"] = str(campaign["_id"])
             
+            # ✅ UNIVERSAL PAGINATION STRUCTURE (matches other endpoints)
             return {
                 "success": True,
                 "campaigns": campaigns,
                 "total": total,
-                "skip": skip,
-                "limit": limit
+                "page": current_page,
+                "limit": limit,
+                "pages": total_pages,
+                "has_next": current_page < total_pages,
+                "has_prev": current_page > 1
             }
             
         except Exception as e:
@@ -219,9 +227,15 @@ class CampaignService:
                 "success": False,
                 "campaigns": [],
                 "total": 0,
+                "page": 1,
+                "limit": limit,
+                "pages": 0,
+                "has_next": False,
+                "has_prev": False,
                 "error": str(e)
             }
-    
+
+
     async def update_campaign_status(
         self,
         campaign_id: str,
@@ -277,6 +291,13 @@ class CampaignService:
     async def resume_campaign(self, campaign_id: str) -> bool:
         """Resume paused campaign"""
         return await self.update_campaign_status(campaign_id, CampaignStatus.ACTIVE.value)
+    async def complete_campaign(self, campaign_id: str) -> bool:
+        """Mark campaign as completed"""
+        return await self.update_campaign_status(campaign_id, "completed")
+
+    async def cancel_campaign(self, campaign_id: str) -> bool:
+        """Mark campaign as cancelled"""
+        return await self.update_campaign_status(campaign_id, "cancelled")
     
     def _calculate_schedule_days(
         self,

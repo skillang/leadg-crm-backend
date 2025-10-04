@@ -93,12 +93,7 @@ class CampaignCron:
             logger.error(f"Error processing pending jobs: {str(e)}")
     
     async def _execute_job(self, job: Dict[str, Any]):
-        """
-        Execute a single campaign job
         
-        Args:
-            job: Job document from database
-        """
         try:
             db = get_database()
             job_id = job["_id"]
@@ -173,6 +168,11 @@ class CampaignCron:
                 )
                 
                 logger.info(f"Job {job_id} completed successfully")
+                
+                
+                from app.services.campaign_executor import campaign_executor
+                await campaign_executor.check_and_complete_campaign(campaign_id)
+                
             else:
                 # Increment attempts
                 new_attempts = job["attempts"] + 1
@@ -197,7 +197,8 @@ class CampaignCron:
         except Exception as e:
             logger.error(f"Error executing job: {str(e)}")
             await self._fail_job(job["_id"], str(e))
-    
+
+
     async def _send_message(
         self,
         job: Dict[str, Any],

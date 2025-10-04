@@ -79,13 +79,18 @@ async def create_campaign(
 @router.get("/list")
 async def list_campaigns(
     campaign_type: Optional[str] = Query(None, description="Filter by type (whatsapp/email)"),
-    status: Optional[str] = Query(None, description="Filter by status (active/paused)"),
+    status: Optional[str] = Query(None, description="Filter by status (active/paused/deleted/completed/cancelled). Shows ALL if not specified."),
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(20, ge=1, le=100, description="Items per page"),
     current_user: Dict[str, Any] = Depends(get_admin_user)
 ):
     """
     List all campaigns with filtering (Admin only)
+    
+    ✅ FIXED:
+    - Shows ALL campaign statuses by default (active, paused, deleted, completed, cancelled)
+    - Universal pagination structure matching other endpoints
+    - Includes enrollment and message statistics
     
     - Supports filtering by type and status
     - Paginated results
@@ -97,7 +102,7 @@ async def list_campaigns(
         # Get campaigns from service
         result = await campaign_service.list_campaigns(
             campaign_type=campaign_type,
-            status=status,
+            status=status,  # ✅ Will show ALL statuses if None
             skip=skip,
             limit=limit
         )
@@ -137,14 +142,17 @@ async def list_campaigns(
             campaign["messages_sent"] = messages_sent
             campaign["messages_pending"] = messages_pending
         
+        # ✅ UNIVERSAL PAGINATION STRUCTURE (matches notifications, leads, notes, etc.)
         return {
             "success": True,
             "campaigns": campaigns,
             "pagination": {
-                "page": page,
-                "limit": limit,
-                "total": result["total"],
-                "pages": (result["total"] + limit - 1) // limit
+                "total": result["total"],       # Total records
+                "page": page,                   # Current page (1-based)
+                "limit": limit,                 # Items per page
+                "pages": result["pages"],       # Total pages
+                "has_next": result["has_next"], # Boolean: more pages available
+                "has_prev": result["has_prev"]  # Boolean: previous pages available
             }
         }
         
@@ -156,7 +164,7 @@ async def list_campaigns(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to list campaigns: {str(e)}"
         )
-
+    
 
 @router.get("/{campaign_id}")
 async def get_campaign(
@@ -459,14 +467,18 @@ async def get_enrolled_leads(
                     "current_sequence": enrollment.get("current_sequence", 0)
                 })
         
+        total_pages = (total + limit - 1) // limit if total > 0 else 0
+        
         return {
             "success": True,
             "enrollments": enriched_enrollments,
             "pagination": {
-                "page": page,
-                "limit": limit,
-                "total": total,
-                "pages": (total + limit - 1) // limit
+                "total": total,                  
+                "page": page,                     
+                "limit": limit,                   
+                "pages": total_pages,             
+                "has_next": page < total_pages,   
+                "has_prev": page > 1              
             }
         }
         
